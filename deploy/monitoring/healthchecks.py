@@ -179,10 +179,10 @@ class HealthcheckConfig:
     log_jsonl_path: str
     emit_hooks: bool
 
-    allowed_roles: Tuple[str, ...)
+    allowed_roles: Tuple[str, ...]
     require_active_subscription: bool
     subscription_status: str
-    allowed_plans: Tuple[str, ...)
+    allowed_plans: Tuple[str, ...]
     current_plan: str
 
     @classmethod
