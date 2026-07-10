@@ -1,0 +1,70 @@
+{
+  "root": "C:\\william_ai_system",
+  "success": true,
+  "started_at": 1783279450.0354939,
+  "finished_at": 1783279473.3267677,
+  "duration_seconds": 23.291,
+  "summary": {
+    "checks": 5,
+    "passed_checks": 5,
+    "failed_checks": 0,
+    "total_items": 1000,
+    "passed_items": 1000,
+    "failed_items": 0,
+    "warnings": 0
+  },
+  "results": [
+    {
+      "name": "project_structure",
+      "success": true,
+      "message": "Basic William/Jarvis structure detected.",
+      "total": 18,
+      "passed": 18,
+      "failed": 0,
+      "warnings": 0,
+      "details": [
+        "Detected files: total=361, python=310, frontend/js-ts=20, kotlin=4"
+      ]
+    },
+    {
+      "name": "python_syntax_compile",
+      "success": true,
+      "message": "All Python files compile.",
+      "total": 310,
+      "passed": 310,
+      "failed": 0,
+      "warnings": 0,
+      "details": []
+    },
+    {
+      "name": "config_parse",
+      "success": true,
+      "message": "Config files look parseable.",
+      "total": 11,
+      "passed": 11,
+      "failed": 0,
+      "warnings": 0,
+      "details": []
+    },
+    {
+      "name": "secret_scan_light",
+      "success": true,
+      "message": "No obvious hardcoded secrets found.",
+      "total": 351,
+      "passed": 351,
+      "failed": 0,
+      "warnings": 0,
+      "details": []
+    },
+    {
+      "name": "python_code_shape",
+      "success": true,
+      "message": "Python files contain importable code structures.",
+      "total": 310,
+      "passed": 310,
+      "failed": 0,
+      "warnings": 0,
+      "details": []
+    }
+  ]
+}

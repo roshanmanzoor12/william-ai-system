@@ -1,0 +1,475 @@
+# ============================================================
+# William / Jarvis Multi-Agent AI SaaS System
+# Digital Promotix
+# File: docker-compose.yml
+# Purpose: Backend, PostgreSQL, Redis, worker, dashboard services
+# Agent/Module: Deployment Prompt Bible
+# ============================================================
+#
+# Production-style Docker Compose stack for:
+# - FastAPI backend API
+# - PostgreSQL database
+# - Redis cache / queue broker
+# - Background worker service
+# - Next.js dashboard
+#
+# Security notes:
+# - Do not hardcode secrets in this file.
+# - Put secrets in .env, Docker secrets, or your cloud secret manager.
+# - Keep PostgreSQL and Redis on the internal Docker network only.
+# - Expose only API and dashboard ports unless using Nginx.
+# - API/worker code must enforce user_id and workspace_id isolation.
+# - Sensitive/state-changing actions must route through Security Agent.
+# - Completed actions should emit Verification Agent payloads.
+# - Memory, logs, analytics, files, billing, and agent access must stay workspace-scoped.
+# ============================================================
+
+name: william-jarvis
+
+services:
+  # ----------------------------------------------------------
+  # PostgreSQL
+  # ----------------------------------------------------------
+  # Stores users, workspaces, roles, subscriptions, audit logs,
+  # memory metadata, task history, billing state, agent registry,
+  # workflow state, and analytics events.
+  #
+  # Isolation rule:
+  # Application tables should include user_id and workspace_id
+  # where user-specific/workspace-specific data is stored.
+  # ----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: william-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-william}
+      POSTGRES_USER: ${POSTGRES_USER:-william}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+
+    ports:
+      # For production behind Nginx/cloud networking, remove this mapping
+      # or bind to localhost only:
+      # "127.0.0.1:5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    volumes:
+      - william_postgres_data:/var/lib/postgresql/data
+
+    networks:
+      - william_internal
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-william} -d ${POSTGRES_DB:-william}"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ----------------------------------------------------------
+  # Redis
+  # ----------------------------------------------------------
+  # Used for queues, task orchestration, locks, rate limits,
+  # cache, session hints, and worker coordination.
+  #
+  # Do not store raw secrets or unrestricted user memory in Redis.
+  # Any user/workspace cache keys should include workspace/user scope.
+  # ----------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: william-redis
+    restart: unless-stopped
+
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--requirepass",
+        "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
+      ]
+
+    ports:
+      # For production behind private networking, remove this mapping
+      # or bind to localhost only:
+      # "127.0.0.1:6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
+
+    volumes:
+      - william_redis_data:/data
+
+    networks:
+      - william_internal
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ----------------------------------------------------------
+  # Backend API
+  # ----------------------------------------------------------
+  # Main FastAPI API for auth, users, workspaces, tasks, memory,
+  # agents, billing, security approvals, analytics, workflows,
+  # and dashboard data.
+  #
+  # Required app behavior:
+  # - Every task must include user_id and workspace_id.
+  # - Never mix tenant data across users/workspaces.
+  # - Role, permission, plan, and subscription checks happen here.
+  # - Sensitive actions must create Security Agent approval records.
+  # - Completed actions should prepare Verification Agent payloads.
+  # - State-changing actions should write audit logs.
+  # ----------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+
+    image: william-jarvis-api:${WILLIAM_IMAGE_TAG:-latest}
+    container_name: william-api
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    environment:
+      # Runtime mode
+      APP_ENV: ${APP_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      HOST: 0.0.0.0
+      PORT: 8000
+      WORKERS: ${API_WORKERS:-2}
+
+      # Database / cache
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-william}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-william}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      # Security secrets - required at runtime, never hardcoded
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+
+      # SaaS isolation / policy toggles
+      REQUIRE_USER_WORKSPACE_SCOPE: ${REQUIRE_USER_WORKSPACE_SCOPE:-true}
+      REQUIRE_ROLE_PERMISSION_CHECKS: ${REQUIRE_ROLE_PERMISSION_CHECKS:-true}
+      REQUIRE_PLAN_SUBSCRIPTION_CHECKS: ${REQUIRE_PLAN_SUBSCRIPTION_CHECKS:-true}
+      REQUIRE_AUDIT_LOGS: ${REQUIRE_AUDIT_LOGS:-true}
+      REQUIRE_SECURITY_APPROVALS: ${REQUIRE_SECURITY_APPROVALS:-true}
+      REQUIRE_VERIFICATION_PAYLOADS: ${REQUIRE_VERIFICATION_PAYLOADS:-true}
+
+      # Agent integration URLs
+      MASTER_AGENT_URL: ${MASTER_AGENT_URL:-http://api:8000/internal/agents/master}
+      SECURITY_AGENT_URL: ${SECURITY_AGENT_URL:-http://api:8000/internal/agents/security}
+      MEMORY_AGENT_URL: ${MEMORY_AGENT_URL:-http://api:8000/internal/agents/memory}
+      VERIFICATION_AGENT_URL: ${VERIFICATION_AGENT_URL:-http://api:8000/internal/agents/verification}
+
+      # CORS / frontend
+      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+
+      # Storage paths
+      WILLIAM_STORAGE_DIR: /app/storage
+      WILLIAM_LOG_DIR: /app/logs
+      WILLIAM_TMP_DIR: /app/tmp
+
+      # Optional integrations
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+    ports:
+      - "${API_PORT:-8000}:8000"
+
+    volumes:
+      - william_api_storage:/app/storage
+      - william_api_logs:/app/logs
+      - william_api_tmp:/app/tmp
+
+    networks:
+      - william_internal
+      - william_public
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:8000/health || curl -fsS http://127.0.0.1:8000/api/health"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ----------------------------------------------------------
+  # Worker
+  # ----------------------------------------------------------
+  # Background worker for queued tasks, agent orchestration,
+  # workflow execution, scheduled jobs, memory processing,
+  # analytics rollups, verification payloads, and audit events.
+  #
+  # Required worker behavior:
+  # - Poll only authorized workspace-scoped jobs.
+  # - Reject any job missing user_id or workspace_id.
+  # - Route sensitive actions to Security Agent approval flow.
+  # - Write safe action reports for Verification Agent.
+  # - Never execute cross-workspace memory/file/task access.
+  # ----------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+
+    image: william-jarvis-worker:${WILLIAM_IMAGE_TAG:-latest}
+    container_name: william-worker
+    restart: unless-stopped
+
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-william}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-william}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+
+      API_BASE_URL: http://api:8000
+
+      REQUIRE_USER_WORKSPACE_SCOPE: ${REQUIRE_USER_WORKSPACE_SCOPE:-true}
+      REQUIRE_ROLE_PERMISSION_CHECKS: ${REQUIRE_ROLE_PERMISSION_CHECKS:-true}
+      REQUIRE_PLAN_SUBSCRIPTION_CHECKS: ${REQUIRE_PLAN_SUBSCRIPTION_CHECKS:-true}
+      REQUIRE_AUDIT_LOGS: ${REQUIRE_AUDIT_LOGS:-true}
+      REQUIRE_SECURITY_APPROVALS: ${REQUIRE_SECURITY_APPROVALS:-true}
+      REQUIRE_VERIFICATION_PAYLOADS: ${REQUIRE_VERIFICATION_PAYLOADS:-true}
+
+      MASTER_AGENT_URL: ${MASTER_AGENT_URL:-http://api:8000/internal/agents/master}
+      SECURITY_AGENT_URL: ${SECURITY_AGENT_URL:-http://api:8000/internal/agents/security}
+      MEMORY_AGENT_URL: ${MEMORY_AGENT_URL:-http://api:8000/internal/agents/memory}
+      VERIFICATION_AGENT_URL: ${VERIFICATION_AGENT_URL:-http://api:8000/internal/agents/verification}
+
+      WILLIAM_STORAGE_DIR: /app/storage
+      WILLIAM_LOG_DIR: /app/logs
+      WILLIAM_TMP_DIR: /app/tmp
+
+      WORKER_NAME: ${WORKER_NAME:-william-worker-1}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      WORKER_HEARTBEAT_SECONDS: ${WORKER_HEARTBEAT_SECONDS:-20}
+      WORKER_TASK_VISIBILITY_TIMEOUT_SECONDS: ${WORKER_TASK_VISIBILITY_TIMEOUT_SECONDS:-300}
+
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+    # The worker command is intentionally flexible.
+    # It tries known worker entrypoints safely.
+    # Adjust this when your final worker module is locked.
+    command: >
+      sh -c "
+      if python -c 'import apps.worker.main' >/dev/null 2>&1; then
+        exec python -m apps.worker.main;
+      elif python -c 'import worker' >/dev/null 2>&1; then
+        exec python -m worker;
+      elif python -c 'import apps.api.worker' >/dev/null 2>&1; then
+        exec python -m apps.api.worker;
+      else
+        echo 'No worker entrypoint found. Expected apps.worker.main, worker, or apps.api.worker.' >&2;
+        exit 1;
+      fi
+      "
+
+    volumes:
+      - william_api_storage:/app/storage
+      - william_worker_logs:/app/logs
+      - william_worker_tmp:/app/tmp
+
+    networks:
+      - william_internal
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import os, sys; sys.exit(0 if os.getenv('WORKER_NAME') else 1)\""
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ----------------------------------------------------------
+  # Dashboard
+  # ----------------------------------------------------------
+  # Next.js dashboard for users, workspaces, tasks, agents,
+  # analytics, billing, calls, workflows, security approvals,
+  # memory, and settings.
+  #
+  # Required dashboard behavior:
+  # - API calls must include authenticated user/workspace context.
+  # - UI must hide actions based on role, plan, and permissions.
+  # - Dangerous actions should call API approval endpoints.
+  # - Dashboard should not directly access database or Redis.
+  # ----------------------------------------------------------
+  dashboard:
+    image: node:20-alpine
+    container_name: william-dashboard
+    restart: unless-stopped
+
+    working_dir: /app/apps/dashboard
+
+    depends_on:
+      api:
+        condition: service_healthy
+
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      NEXT_TELEMETRY_DISABLED: "1"
+
+      # Browser-facing API URL
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+
+      # Server-side internal API URL
+      API_INTERNAL_URL: http://api:8000
+
+      # SaaS safety toggles
+      NEXT_PUBLIC_REQUIRE_WORKSPACE_SCOPE: ${REQUIRE_USER_WORKSPACE_SCOPE:-true}
+      NEXT_PUBLIC_REQUIRE_ROLE_PERMISSION_CHECKS: ${REQUIRE_ROLE_PERMISSION_CHECKS:-true}
+      NEXT_PUBLIC_REQUIRE_PLAN_SUBSCRIPTION_CHECKS: ${REQUIRE_PLAN_SUBSCRIPTION_CHECKS:-true}
+
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+
+    volumes:
+      # Mount source for local/prod hybrid usage.
+      # For stricter production, replace this with a dedicated dashboard Dockerfile.
+      - .:/app
+
+      # Keep node_modules isolated inside container.
+      - william_dashboard_node_modules:/app/apps/dashboard/node_modules
+      - william_dashboard_next:/app/apps/dashboard/.next
+
+    command: >
+      sh -c "
+      if [ -f package.json ]; then
+        npm install &&
+        npm run build &&
+        npm run start -- -p 3000;
+      elif [ -f ../../package.json ]; then
+        cd ../.. &&
+        npm install &&
+        npm run build --workspace=apps/dashboard &&
+        npm run start --workspace=apps/dashboard -- -p 3000;
+      else
+        echo 'No dashboard package.json found. Expected apps/dashboard/package.json or root package.json.' >&2;
+        exit 1;
+      fi
+      "
+
+    networks:
+      - william_public
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:3000 >/dev/null 2>&1 || exit 1"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+    security_opt:
+      - no-new-privileges:true
+
+# ============================================================
+# Networks
+# ============================================================
+# william_internal:
+#   Private service-to-service network for database, Redis,
+#   API, and worker.
+#
+# william_public:
+#   Public-facing network for API/dashboard/Nginx.
+#   In a production VPS setup, Nginx should be attached here.
+# ============================================================
+networks:
+  william_internal:
+    name: william-internal
+    driver: bridge
+    internal: false
+
+  william_public:
+    name: william-public
+    driver: bridge
+
+# ============================================================
+# Volumes
+# ============================================================
+# Persistent volumes keep data safe across container restarts.
+# Do not delete these unless you intentionally want data loss.
+# ============================================================
+volumes:
+  william_postgres_data:
+    name: william-postgres-data
+
+  william_redis_data:
+    name: william-redis-data
+
+  william_api_storage:
+    name: william-api-storage
+
+  william_api_logs:
+    name: william-api-logs
+
+  william_api_tmp:
+    name: william-api-tmp
+
+  william_worker_logs:
+    name: william-worker-logs
+
+  william_worker_tmp:
+    name: william-worker-tmp
+
+  william_dashboard_node_modules:
+    name: william-dashboard-node-modules
+
+  william_dashboard_next:
+    name: william-dashboard-next

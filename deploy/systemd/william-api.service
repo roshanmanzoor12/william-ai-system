@@ -1,0 +1,260 @@
+# ============================================================
+# William / Jarvis Multi-Agent AI SaaS System
+# Digital Promotix
+# File: deploy/systemd/william-api.service
+# Purpose: systemd service for API
+# Agent/Module: Deployment Prompt Bible
+# Required class/component name: William-api.service
+# ============================================================
+#
+# This service runs the William / Jarvis FastAPI backend directly
+# on a Linux/VPS host using systemd.
+#
+# Use this when you deploy without Docker for the API process.
+# If you are using docker-compose.yml, you usually do NOT need
+# this service because Docker manages the API container.
+#
+# Security / SaaS isolation notes:
+# - systemd starts the process, but the API code must enforce:
+#   user_id, workspace_id, roles, permissions, plan/subscription
+#   checks, audit logs, Security Agent approvals, and Verification
+#   Agent payloads.
+# - Never store real secrets inside this service file.
+# - Secrets must be loaded from /etc/william/william-api.env or
+#   a proper secret manager.
+# - PostgreSQL and Redis should be reachable only through private
+#   network interfaces/firewall rules.
+# ============================================================
+
+[Unit]
+Description=William / Jarvis Production API
+Documentation=https://digitalpromotix.com
+After=network-online.target
+Wants=network-online.target
+
+# If PostgreSQL and Redis are installed as host services, these
+# dependencies help start the API after them. If they run in Docker
+# or managed cloud services, these lines are harmless but optional.
+After=postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+
+[Service]
+# ------------------------------------------------------------
+# Service identity
+# ------------------------------------------------------------
+# Create this user before enabling the service:
+#   sudo useradd --system --create-home --home-dir /opt/william \
+#     --shell /usr/sbin/nologin william
+# ------------------------------------------------------------
+User=william
+Group=william
+
+# ------------------------------------------------------------
+# Project paths
+# ------------------------------------------------------------
+# Recommended production layout:
+#   /opt/william/current        -> current release/app folder
+#   /opt/william/venv           -> Python virtual environment
+#   /opt/william/storage        -> workspace-scoped storage
+#   /var/log/william            -> service logs if app writes files
+#   /etc/william/william-api.env -> runtime environment/secrets
+# ------------------------------------------------------------
+WorkingDirectory=/opt/william/current
+
+# ------------------------------------------------------------
+# Environment file
+# ------------------------------------------------------------
+# This file must contain runtime values such as:
+#
+# APP_ENV=production
+# HOST=127.0.0.1
+# PORT=8000
+# WORKERS=2
+# LOG_LEVEL=info
+#
+# DATABASE_URL=postgresql+asyncpg://...
+# REDIS_URL=redis://...
+#
+# SECRET_KEY=...
+# JWT_SECRET=...
+# ENCRYPTION_KEY=...
+#
+# REQUIRE_USER_WORKSPACE_SCOPE=true
+# REQUIRE_ROLE_PERMISSION_CHECKS=true
+# REQUIRE_PLAN_SUBSCRIPTION_CHECKS=true
+# REQUIRE_AUDIT_LOGS=true
+# REQUIRE_SECURITY_APPROVALS=true
+# REQUIRE_VERIFICATION_PAYLOADS=true
+#
+# MASTER_AGENT_URL=http://127.0.0.1:8000/internal/agents/master
+# SECURITY_AGENT_URL=http://127.0.0.1:8000/internal/agents/security
+# MEMORY_AGENT_URL=http://127.0.0.1:8000/internal/agents/memory
+# VERIFICATION_AGENT_URL=http://127.0.0.1:8000/internal/agents/verification
+#
+# Permissions:
+#   sudo chown root:william /etc/william/william-api.env
+#   sudo chmod 640 /etc/william/william-api.env
+# ------------------------------------------------------------
+EnvironmentFile=/etc/william/william-api.env
+
+# ------------------------------------------------------------
+# Safe default environment values
+# ------------------------------------------------------------
+# These are non-secret defaults only. Real secrets stay in the
+# EnvironmentFile above.
+# ------------------------------------------------------------
+Environment=APP_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=8000
+Environment=WORKERS=2
+Environment=LOG_LEVEL=info
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=WILLIAM_STORAGE_DIR=/opt/william/storage
+Environment=WILLIAM_LOG_DIR=/var/log/william
+Environment=WILLIAM_TMP_DIR=/tmp/william-api
+
+# ------------------------------------------------------------
+# Pre-start checks
+# ------------------------------------------------------------
+# These commands fail fast if the app folder or virtualenv is missing.
+# They do not print secrets.
+# ------------------------------------------------------------
+ExecStartPre=/usr/bin/test -d /opt/william/current
+ExecStartPre=/usr/bin/test -x /opt/william/venv/bin/python
+ExecStartPre=/usr/bin/test -x /opt/william/venv/bin/gunicorn
+ExecStartPre=/usr/bin/mkdir -p /opt/william/storage /var/log/william /tmp/william-api
+ExecStartPre=/usr/bin/chown -R william:william /opt/william/storage /var/log/william /tmp/william-api
+
+# ------------------------------------------------------------
+# Production startup
+# ------------------------------------------------------------
+# Startup logic:
+# - Prefer apps.api.main:app for monorepo layout.
+# - Fallback to main:app for simple layout.
+#
+# Uses:
+# - gunicorn as production process manager
+# - uvicorn worker for FastAPI/ASGI
+# - stdout/stderr logs for journald
+#
+# Do not use --reload in production.
+# ------------------------------------------------------------
+ExecStart=/bin/sh -c '\
+  if /opt/william/venv/bin/python -c "import apps.api.main" >/dev/null 2>&1; then \
+    exec /opt/william/venv/bin/gunicorn apps.api.main:app \
+      --worker-class uvicorn.workers.UvicornWorker \
+      --workers ${WORKERS:-2} \
+      --bind ${HOST:-127.0.0.1}:${PORT:-8000} \
+      --log-level ${LOG_LEVEL:-info} \
+      --access-logfile - \
+      --error-logfile - \
+      --timeout 120 \
+      --graceful-timeout 30 \
+      --keep-alive 5; \
+  elif /opt/william/venv/bin/python -c "import main" >/dev/null 2>&1; then \
+    exec /opt/william/venv/bin/gunicorn main:app \
+      --worker-class uvicorn.workers.UvicornWorker \
+      --workers ${WORKERS:-2} \
+      --bind ${HOST:-127.0.0.1}:${PORT:-8000} \
+      --log-level ${LOG_LEVEL:-info} \
+      --access-logfile - \
+      --error-logfile - \
+      --timeout 120 \
+      --graceful-timeout 30 \
+      --keep-alive 5; \
+  else \
+    echo "No FastAPI app found. Expected apps.api.main:app or main:app." >&2; \
+    exit 1; \
+  fi \
+'
+
+# ------------------------------------------------------------
+# Restart policy
+# ------------------------------------------------------------
+# Keeps the API alive after crashes but avoids tight restart loops.
+# ------------------------------------------------------------
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# ------------------------------------------------------------
+# Stop behavior
+# ------------------------------------------------------------
+# SIGTERM allows Gunicorn/Uvicorn to gracefully finish requests.
+# ------------------------------------------------------------
+KillSignal=SIGTERM
+TimeoutStartSec=60
+TimeoutStopSec=45
+
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
+# Logs are available with:
+#   sudo journalctl -u william-api -f
+# Do not log request bodies, tokens, raw secrets, memory payloads,
+# billing payloads, or cross-workspace data.
+# ------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=william-api
+
+# ------------------------------------------------------------
+# Security hardening
+# ------------------------------------------------------------
+# These settings reduce the blast radius of a compromised process.
+# If your app needs extra OS-level access, loosen only the exact
+# setting required.
+# ------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/william/storage /var/log/william /tmp/william-api
+RuntimeDirectory=william-api
+RuntimeDirectoryMode=0750
+StateDirectory=william-api
+StateDirectoryMode=0750
+CacheDirectory=william-api
+CacheDirectoryMode=0750
+
+# Prevent privilege escalation and risky kernel/system access.
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# Restrict device access.
+PrivateDevices=true
+
+# Restrict access to kernel tunables and logs.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+
+# Memory protections.
+MemoryDenyWriteExecute=false
+
+# Network/address families needed for normal API operation.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Syscall filtering: safe baseline for web services.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# File creation mask.
+UMask=0027
+
+# ------------------------------------------------------------
+# Resource limits
+# ------------------------------------------------------------
+# Tune these for your VPS size and workload.
+# ------------------------------------------------------------
+LimitNOFILE=65535
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

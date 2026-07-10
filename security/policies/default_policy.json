@@ -1,0 +1,1441 @@
+{
+  "policy_metadata": {
+    "policy_name": "William Jarvis Default Global Security Policy",
+    "policy_id": "william.security.default_policy.v1",
+    "version": "1.0.0",
+    "project": "William / Jarvis Multi-Agent AI SaaS System",
+    "company": "Digital Promotix",
+    "file_path": "security/policies/default_policy.json",
+    "purpose": "Default global policy rules for blocked, sensitive, approval-required, and allowed actions.",
+    "status": "active",
+    "environment": "all",
+    "last_updated": "2026-07-05",
+    "contains_secrets": false,
+    "safe_for_import": true,
+    "compatible_with": {
+      "master_agent": true,
+      "security_agent": true,
+      "verification_agent": true,
+      "memory_agent": true,
+      "agent_registry": true,
+      "agent_loader": true,
+      "agent_router": true,
+      "dashboard_api": true,
+      "fastapi": true,
+      "multi_tenant_saas": true
+    }
+  },
+  "global_principles": {
+    "safety_first": true,
+    "saas_isolation_required": true,
+    "least_privilege_default": true,
+    "deny_by_default_for_unknown_sensitive_actions": true,
+    "allow_read_only_safe_actions_by_default": true,
+    "require_user_id_for_user_scoped_actions": true,
+    "require_workspace_id_for_workspace_scoped_actions": true,
+    "never_mix_user_data": true,
+    "never_mix_workspace_data": true,
+    "never_log_raw_secrets": true,
+    "never_store_plaintext_sensitive_data_in_memory": true,
+    "never_execute_destructive_actions_without_approval": true,
+    "never_execute_financial_actions_without_approval": true,
+    "never_send_messages_calls_or_emails_without_approval": true,
+    "never_access_external_browser_without_permission": true,
+    "verification_payload_required_for_completed_actions": true,
+    "audit_log_required_for_sensitive_actions": true,
+    "memory_payload_must_be_sanitized": true
+  },
+  "default_decision": {
+    "unknown_action": "review_required",
+    "unknown_agent": "review_required",
+    "unknown_role": "deny",
+    "missing_user_id_when_required": "deny",
+    "missing_workspace_id_when_required": "deny",
+    "missing_subscription_when_required": "deny",
+    "missing_agent_permission": "deny",
+    "failed_security_check": "deny",
+    "failed_policy_validation": "deny",
+    "failed_context_validation": "deny"
+  },
+  "context_requirements": {
+    "all_user_scoped_actions": {
+      "required_fields": [
+        "user_id"
+      ],
+      "on_missing": "deny",
+      "reason": "User-scoped operations must identify the SaaS user to prevent data leakage."
+    },
+    "all_workspace_scoped_actions": {
+      "required_fields": [
+        "user_id",
+        "workspace_id"
+      ],
+      "on_missing": "deny",
+      "reason": "Workspace-scoped operations must identify both user and workspace to prevent cross-tenant data mixing."
+    },
+    "sensitive_actions": {
+      "required_fields": [
+        "user_id",
+        "workspace_id",
+        "request_id"
+      ],
+      "recommended_fields": [
+        "role",
+        "subscription_plan",
+        "agent_name",
+        "source_agent",
+        "ip_address",
+        "user_agent",
+        "trace_id"
+      ],
+      "on_missing_required": "deny",
+      "reason": "Sensitive actions require traceable SaaS context."
+    },
+    "system_level_actions": {
+      "required_fields": [
+        "request_id",
+        "source_agent"
+      ],
+      "recommended_fields": [
+        "trace_id",
+        "admin_user_id",
+        "workspace_id",
+        "environment"
+      ],
+      "on_missing_required": "review_required",
+      "reason": "System actions require traceability even when not tied to one workspace."
+    }
+  },
+  "roles": {
+    "owner": {
+      "description": "Workspace owner with highest normal workspace-level privileges.",
+      "inherits": [
+        "admin"
+      ],
+      "can_request_sensitive_actions": true,
+      "can_approve_sensitive_actions": true,
+      "can_manage_workspace_users": true,
+      "can_manage_agent_permissions": true,
+      "can_manage_billing": true,
+      "can_export_workspace_data": true
+    },
+    "admin": {
+      "description": "Workspace administrator.",
+      "inherits": [
+        "manager"
+      ],
+      "can_request_sensitive_actions": true,
+      "can_approve_sensitive_actions": true,
+      "can_manage_workspace_users": true,
+      "can_manage_agent_permissions": true,
+      "can_manage_billing": false,
+      "can_export_workspace_data": true
+    },
+    "manager": {
+      "description": "Team manager with operational access.",
+      "inherits": [
+        "member"
+      ],
+      "can_request_sensitive_actions": true,
+      "can_approve_sensitive_actions": false,
+      "can_manage_workspace_users": false,
+      "can_manage_agent_permissions": false,
+      "can_manage_billing": false,
+      "can_export_workspace_data": false
+    },
+    "member": {
+      "description": "Standard workspace user.",
+      "inherits": [
+        "viewer"
+      ],
+      "can_request_sensitive_actions": true,
+      "can_approve_sensitive_actions": false,
+      "can_manage_workspace_users": false,
+      "can_manage_agent_permissions": false,
+      "can_manage_billing": false,
+      "can_export_workspace_data": false
+    },
+    "viewer": {
+      "description": "Read-only user.",
+      "inherits": [],
+      "can_request_sensitive_actions": false,
+      "can_approve_sensitive_actions": false,
+      "can_manage_workspace_users": false,
+      "can_manage_agent_permissions": false,
+      "can_manage_billing": false,
+      "can_export_workspace_data": false
+    },
+    "service_account": {
+      "description": "Internal service identity for controlled automation.",
+      "inherits": [],
+      "can_request_sensitive_actions": true,
+      "can_approve_sensitive_actions": false,
+      "can_manage_workspace_users": false,
+      "can_manage_agent_permissions": false,
+      "can_manage_billing": false,
+      "can_export_workspace_data": false,
+      "requires_explicit_scope": true,
+      "requires_agent_permission": true
+    },
+    "super_admin": {
+      "description": "Platform-level administrator. Must be tightly restricted and audited.",
+      "inherits": [
+        "owner"
+      ],
+      "can_request_sensitive_actions": true,
+      "can_approve_sensitive_actions": true,
+      "can_manage_platform_policy": true,
+      "can_manage_all_workspaces": true,
+      "requires_mfa": true,
+      "requires_strong_audit": true,
+      "allowed_only_in_admin_context": true
+    }
+  },
+  "subscription_plans": {
+    "free": {
+      "description": "Limited plan for basic non-sensitive usage.",
+      "allowed_sensitivity_levels": [
+        "low"
+      ],
+      "blocked_agent_categories": [
+        "finance_execution",
+        "call_execution",
+        "external_browser_execution",
+        "bulk_message_execution",
+        "system_execution"
+      ],
+      "max_daily_sensitive_requests": 0
+    },
+    "starter": {
+      "description": "Starter SaaS plan.",
+      "allowed_sensitivity_levels": [
+        "low",
+        "medium"
+      ],
+      "blocked_agent_categories": [
+        "finance_execution",
+        "system_execution"
+      ],
+      "max_daily_sensitive_requests": 25
+    },
+    "professional": {
+      "description": "Professional plan for normal business automation.",
+      "allowed_sensitivity_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "blocked_agent_categories": [
+        "unrestricted_system_execution",
+        "unapproved_finance_execution"
+      ],
+      "max_daily_sensitive_requests": 250
+    },
+    "business": {
+      "description": "Business plan with higher operational limits.",
+      "allowed_sensitivity_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "blocked_agent_categories": [
+        "unrestricted_system_execution",
+        "unapproved_finance_execution"
+      ],
+      "max_daily_sensitive_requests": 1000
+    },
+    "enterprise": {
+      "description": "Enterprise plan with custom approval workflows.",
+      "allowed_sensitivity_levels": [
+        "low",
+        "medium",
+        "high",
+        "critical_with_approval"
+      ],
+      "blocked_agent_categories": [
+        "unrestricted_system_execution"
+      ],
+      "max_daily_sensitive_requests": 10000,
+      "supports_custom_policy_overrides": true
+    }
+  },
+  "sensitivity_levels": {
+    "low": {
+      "description": "Safe read-only or non-sensitive operations.",
+      "security_check_required": false,
+      "audit_required": false,
+      "verification_required": true,
+      "approval_required": false
+    },
+    "medium": {
+      "description": "Actions that read user/workspace data or modify non-critical state.",
+      "security_check_required": true,
+      "audit_required": true,
+      "verification_required": true,
+      "approval_required": false
+    },
+    "high": {
+      "description": "Actions involving sensitive data, external systems, memory changes, secrets, files, messages, calls, browsing, or billing metadata.",
+      "security_check_required": true,
+      "audit_required": true,
+      "verification_required": true,
+      "approval_required": true
+    },
+    "critical": {
+      "description": "Destructive, financial, system-level, credential, policy, or irreversible actions.",
+      "security_check_required": true,
+      "audit_required": true,
+      "verification_required": true,
+      "approval_required": true,
+      "mfa_recommended": true,
+      "manual_review_recommended": true
+    },
+    "blocked": {
+      "description": "Actions that are never allowed under the default policy.",
+      "security_check_required": true,
+      "audit_required": true,
+      "verification_required": true,
+      "approval_required": false,
+      "always_deny": true
+    }
+  },
+  "agent_categories": {
+    "master": {
+      "agent_names": [
+        "MasterAgent"
+      ],
+      "default_sensitivity": "high",
+      "requires_security_check": true,
+      "requires_routing_validation": true
+    },
+    "voice": {
+      "agent_names": [
+        "VoiceAgent"
+      ],
+      "default_sensitivity": "medium",
+      "requires_security_check": true,
+      "notes": "Voice input/output can expose personal or sensitive data."
+    },
+    "system": {
+      "agent_names": [
+        "SystemAgent"
+      ],
+      "default_sensitivity": "critical",
+      "requires_security_check": true,
+      "requires_approval": true,
+      "notes": "System actions may affect files, processes, shell commands, or local resources."
+    },
+    "browser": {
+      "agent_names": [
+        "BrowserAgent"
+      ],
+      "default_sensitivity": "high",
+      "requires_security_check": true,
+      "requires_approval": true,
+      "notes": "External browsing, login, form submission, downloads, and scraping require control."
+    },
+    "code": {
+      "agent_names": [
+        "CodeAgent"
+      ],
+      "default_sensitivity": "high",
+      "requires_security_check": true,
+      "requires_approval_for_execution": true
+    },
+    "memory": {
+      "agent_names": [
+        "MemoryAgent"
+      ],
+      "default_sensitivity": "high",
+      "requires_security_check": true,
+      "requires_sanitization": true,
+      "requires_workspace_isolation": true
+    },
+    "security": {
+      "agent_names": [
+        "SecurityAgent"
+      ],
+      "default_sensitivity": "critical",
+      "requires_security_check": true,
+      "requires_strong_audit": true
+    },
+    "verification": {
+      "agent_names": [
+        "VerificationAgent"
+      ],
+      "default_sensitivity": "medium",
+      "requires_security_check": false,
+      "notes": "Verification should not leak sensitive payloads."
+    },
+    "visual": {
+      "agent_names": [
+        "VisualAgent"
+      ],
+      "default_sensitivity": "medium",
+      "requires_security_check": true,
+      "notes": "Image/file analysis may expose private data."
+    },
+    "workflow": {
+      "agent_names": [
+        "WorkflowAgent"
+      ],
+      "default_sensitivity": "high",
+      "requires_security_check": true,
+      "requires_approval_for_external_actions": true
+    },
+    "hologram": {
+      "agent_names": [
+        "HologramAgent"
+      ],
+      "default_sensitivity": "medium",
+      "requires_security_check": true
+    },
+    "call": {
+      "agent_names": [
+        "CallAgent"
+      ],
+      "default_sensitivity": "critical",
+      "requires_security_check": true,
+      "requires_approval": true,
+      "notes": "Outbound calls, recordings, transcripts, and contact usage are sensitive."
+    },
+    "business": {
+      "agent_names": [
+        "BusinessAgent"
+      ],
+      "default_sensitivity": "medium",
+      "requires_security_check": true
+    },
+    "finance": {
+      "agent_names": [
+        "FinanceAgent"
+      ],
+      "default_sensitivity": "critical",
+      "requires_security_check": true,
+      "requires_approval": true,
+      "notes": "Payments, trading, invoices, billing, refunds, and financial advice must be controlled."
+    },
+    "creator": {
+      "agent_names": [
+        "CreatorAgent"
+      ],
+      "default_sensitivity": "medium",
+      "requires_security_check": true
+    }
+  },
+  "allowed_actions": {
+    "description": "Actions generally allowed by default when context validation passes.",
+    "read_only_status": [
+      "health_check",
+      "status",
+      "capabilities",
+      "describe_agent",
+      "list_public_tools",
+      "list_allowed_actions",
+      "validate_payload",
+      "prepare_verification_payload",
+      "prepare_memory_payload",
+      "format_response",
+      "summarize_non_sensitive_text",
+      "classify_intent",
+      "route_task_preview",
+      "estimate_task_sensitivity"
+    ],
+    "safe_workspace_read": [
+      "read_own_profile",
+      "read_own_workspace_settings",
+      "read_own_task_history_summary",
+      "read_own_agent_permissions",
+      "read_own_subscription_status",
+      "read_dashboard_summary",
+      "read_non_sensitive_audit_summary"
+    ],
+    "safe_generation": [
+      "generate_text",
+      "generate_outline",
+      "generate_marketing_copy",
+      "generate_code_without_execution",
+      "generate_plan",
+      "generate_checklist",
+      "generate_schema",
+      "generate_prompt",
+      "generate_document_draft",
+      "generate_ui_copy"
+    ],
+    "safe_utility": [
+      "mask_secret",
+      "hash_value",
+      "verify_hash",
+      "validate_email_format",
+      "validate_url_format",
+      "normalize_context",
+      "sanitize_payload",
+      "redact_sensitive_fields"
+    ]
+  },
+  "sensitive_actions": {
+    "description": "Actions that require Security Agent check, audit log, SaaS context, and Verification Agent payload.",
+    "memory": [
+      "read_memory",
+      "write_memory",
+      "update_memory",
+      "delete_memory",
+      "search_memory",
+      "summarize_memory",
+      "export_memory",
+      "import_memory"
+    ],
+    "files": [
+      "read_user_file",
+      "write_user_file",
+      "update_user_file",
+      "delete_user_file",
+      "move_user_file",
+      "copy_user_file",
+      "share_user_file",
+      "upload_file",
+      "download_file",
+      "scan_file",
+      "parse_file",
+      "extract_file_content",
+      "export_workspace_files"
+    ],
+    "secrets": [
+      "get_secret",
+      "require_secret",
+      "set_runtime_secret",
+      "delete_runtime_secret",
+      "load_secret_file",
+      "read_secret_metadata",
+      "rotate_secret",
+      "encrypt_data",
+      "decrypt_data",
+      "encrypt_text",
+      "decrypt_text",
+      "encrypt_bytes",
+      "decrypt_bytes",
+      "encrypt_json",
+      "decrypt_json",
+      "generate_encryption_key"
+    ],
+    "external_integrations": [
+      "connect_integration",
+      "disconnect_integration",
+      "read_integration_data",
+      "write_integration_data",
+      "sync_integration_data",
+      "send_webhook",
+      "receive_webhook",
+      "create_api_token",
+      "revoke_api_token"
+    ],
+    "communications": [
+      "draft_email",
+      "send_email",
+      "reply_email",
+      "forward_email",
+      "delete_email",
+      "archive_email",
+      "label_email",
+      "send_sms",
+      "send_whatsapp",
+      "send_slack_message",
+      "send_discord_message",
+      "send_team_message",
+      "make_call",
+      "record_call",
+      "transcribe_call",
+      "schedule_call",
+      "delete_call_recording"
+    ],
+    "browser": [
+      "open_browser",
+      "navigate_url",
+      "submit_form",
+      "click_button",
+      "login_to_site",
+      "download_from_web",
+      "upload_to_web",
+      "scrape_website",
+      "purchase_online",
+      "accept_terms",
+      "change_account_settings"
+    ],
+    "code": [
+      "execute_code",
+      "run_shell_command",
+      "install_package",
+      "modify_source_file",
+      "delete_source_file",
+      "commit_code",
+      "push_code",
+      "deploy_code",
+      "run_migration",
+      "modify_environment"
+    ],
+    "workflow": [
+      "start_workflow",
+      "pause_workflow",
+      "resume_workflow",
+      "cancel_workflow",
+      "schedule_workflow",
+      "trigger_external_workflow",
+      "bulk_update_tasks",
+      "bulk_delete_tasks"
+    ],
+    "dashboard": [
+      "change_dashboard_settings",
+      "export_dashboard_data",
+      "delete_dashboard_data",
+      "view_sensitive_analytics",
+      "share_dashboard_report"
+    ],
+    "users_and_permissions": [
+      "invite_user",
+      "remove_user",
+      "change_user_role",
+      "change_agent_permission",
+      "change_workspace_permission",
+      "disable_user",
+      "enable_user",
+      "transfer_workspace_owner"
+    ],
+    "billing_and_finance": [
+      "view_billing_details",
+      "change_subscription",
+      "cancel_subscription",
+      "create_invoice",
+      "send_invoice",
+      "refund_payment",
+      "charge_payment_method",
+      "update_payment_method",
+      "create_financial_report",
+      "execute_trade",
+      "send_money",
+      "transfer_funds"
+    ]
+  },
+  "approval_required_actions": {
+    "description": "Actions that must not execute without explicit approval from the user, workspace admin, or policy-approved authority.",
+    "always_require_approval": [
+      "delete_memory",
+      "export_memory",
+      "delete_user_file",
+      "share_user_file",
+      "export_workspace_files",
+      "get_secret",
+      "require_secret",
+      "decrypt_data",
+      "decrypt_text",
+      "decrypt_bytes",
+      "decrypt_json",
+      "generate_encryption_key",
+      "send_email",
+      "reply_email",
+      "forward_email",
+      "delete_email",
+      "send_sms",
+      "send_whatsapp",
+      "make_call",
+      "record_call",
+      "delete_call_recording",
+      "submit_form",
+      "login_to_site",
+      "download_from_web",
+      "upload_to_web",
+      "purchase_online",
+      "accept_terms",
+      "execute_code",
+      "run_shell_command",
+      "install_package",
+      "delete_source_file",
+      "commit_code",
+      "push_code",
+      "deploy_code",
+      "run_migration",
+      "modify_environment",
+      "trigger_external_workflow",
+      "bulk_delete_tasks",
+      "remove_user",
+      "change_user_role",
+      "change_agent_permission",
+      "change_workspace_permission",
+      "transfer_workspace_owner",
+      "change_subscription",
+      "cancel_subscription",
+      "refund_payment",
+      "charge_payment_method",
+      "update_payment_method",
+      "execute_trade",
+      "send_money",
+      "transfer_funds"
+    ],
+    "approval_context_required": [
+      "approval_id",
+      "approved_by",
+      "approval_timestamp",
+      "approval_reason",
+      "action_summary",
+      "risk_level"
+    ],
+    "approval_expiry_seconds": 900,
+    "approval_reuse_allowed": false
+  },
+  "blocked_actions": {
+    "description": "Actions blocked by default. No normal role should execute these under this global policy.",
+    "security_bypass": [
+      "bypass_security_agent",
+      "disable_security_agent",
+      "disable_audit_logging",
+      "disable_verification_agent",
+      "disable_workspace_isolation",
+      "disable_user_isolation",
+      "ignore_policy",
+      "override_policy_without_admin",
+      "read_raw_audit_logs_without_permission",
+      "tamper_audit_logs",
+      "tamper_verification_payload"
+    ],
+    "credential_abuse": [
+      "print_secret",
+      "log_secret",
+      "hardcode_secret",
+      "export_all_secrets",
+      "dump_environment_variables",
+      "dump_credentials",
+      "exfiltrate_token",
+      "share_api_key",
+      "share_private_key",
+      "decrypt_without_context",
+      "decrypt_other_workspace_data",
+      "decrypt_other_user_data"
+    ],
+    "data_leakage": [
+      "read_other_user_memory",
+      "read_other_workspace_memory",
+      "mix_workspace_memory",
+      "mix_user_files",
+      "export_other_workspace_data",
+      "send_workspace_data_to_unapproved_external_service",
+      "copy_data_between_workspaces_without_approval",
+      "train_on_private_user_data_without_permission"
+    ],
+    "destructive_system": [
+      "format_disk",
+      "delete_system_files",
+      "wipe_workspace",
+      "wipe_database",
+      "drop_database",
+      "delete_all_users",
+      "delete_all_workspaces",
+      "kill_security_process",
+      "modify_os_security_settings",
+      "disable_firewall",
+      "disable_mfa"
+    ],
+    "malicious_or_abusive": [
+      "create_malware",
+      "deploy_malware",
+      "phishing",
+      "credential_harvesting",
+      "spam_users",
+      "mass_unapproved_messaging",
+      "evade_law_enforcement",
+      "evade_platform_detection",
+      "exploit_vulnerability_without_authorization",
+      "perform_ddos",
+      "unauthorized_scanning",
+      "unauthorized_login_attempts"
+    ],
+    "financially_unsafe": [
+      "execute_trade_without_approval",
+      "send_money_without_approval",
+      "charge_card_without_approval",
+      "refund_without_approval",
+      "change_billing_without_permission",
+      "create_fake_invoice",
+      "misrepresent_financial_data"
+    ],
+    "communications_unsafe": [
+      "make_call_without_approval",
+      "record_call_without_disclosure",
+      "send_email_without_approval",
+      "send_sms_without_approval",
+      "impersonate_user_without_permission",
+      "send_sensitive_data_to_unverified_recipient"
+    ]
+  },
+  "action_rules": [
+    {
+      "rule_id": "RULE-0001",
+      "name": "Require user and workspace for scoped actions",
+      "match": {
+        "scoped": true
+      },
+      "decision": "require_context",
+      "required_fields": [
+        "user_id",
+        "workspace_id"
+      ],
+      "severity": "critical"
+    },
+    {
+      "rule_id": "RULE-0002",
+      "name": "Block cross-workspace data access",
+      "match": {
+        "action_tags": [
+          "workspace_data"
+        ],
+        "target_workspace_differs_from_context": true
+      },
+      "decision": "deny",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "RULE-0003",
+      "name": "Block cross-user private data access",
+      "match": {
+        "action_tags": [
+          "user_private_data"
+        ],
+        "target_user_differs_from_context": true
+      },
+      "decision": "deny",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "RULE-0004",
+      "name": "Require approval for destructive actions",
+      "match": {
+        "action_tags": [
+          "destructive"
+        ]
+      },
+      "decision": "approval_required",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "RULE-0005",
+      "name": "Require approval for external communications",
+      "match": {
+        "action_tags": [
+          "external_communication"
+        ]
+      },
+      "decision": "approval_required",
+      "severity": "high"
+    },
+    {
+      "rule_id": "RULE-0006",
+      "name": "Require approval for financial actions",
+      "match": {
+        "action_tags": [
+          "financial_execution"
+        ]
+      },
+      "decision": "approval_required",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "RULE-0007",
+      "name": "Require approval for code execution",
+      "match": {
+        "action_tags": [
+          "code_execution"
+        ]
+      },
+      "decision": "approval_required",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "RULE-0008",
+      "name": "Require approval for browser form submission",
+      "match": {
+        "action_tags": [
+          "browser_form_submission"
+        ]
+      },
+      "decision": "approval_required",
+      "severity": "high"
+    },
+    {
+      "rule_id": "RULE-0009",
+      "name": "Never allow raw secret logging",
+      "match": {
+        "action_tags": [
+          "secret_logging"
+        ]
+      },
+      "decision": "deny",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "RULE-0010",
+      "name": "Require sanitized memory payload",
+      "match": {
+        "action_tags": [
+          "memory_write"
+        ]
+      },
+      "decision": "require_sanitization",
+      "severity": "high"
+    },
+    {
+      "rule_id": "RULE-0011",
+      "name": "Verification payload required",
+      "match": {
+        "action_completed": true
+      },
+      "decision": "require_verification_payload",
+      "severity": "medium"
+    },
+    {
+      "rule_id": "RULE-0012",
+      "name": "Audit required for sensitive actions",
+      "match": {
+        "sensitivity": [
+          "medium",
+          "high",
+          "critical",
+          "blocked"
+        ]
+      },
+      "decision": "require_audit_log",
+      "severity": "high"
+    },
+    {
+      "rule_id": "RULE-0013",
+      "name": "Deny unknown critical actions by default",
+      "match": {
+        "action_known": false,
+        "estimated_sensitivity": [
+          "high",
+          "critical"
+        ]
+      },
+      "decision": "review_required",
+      "severity": "high"
+    },
+    {
+      "rule_id": "RULE-0014",
+      "name": "Deny blocked actions",
+      "match": {
+        "action_in_blocked_list": true
+      },
+      "decision": "deny",
+      "severity": "critical"
+    },
+    {
+      "rule_id": "RULE-0015",
+      "name": "Subscription must allow requested sensitivity",
+      "match": {
+        "subscription_enforced": true
+      },
+      "decision": "require_subscription_permission",
+      "severity": "high"
+    }
+  ],
+  "agent_permission_defaults": {
+    "MasterAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "route_task_preview",
+        "classify_intent",
+        "delegate_task",
+        "prepare_verification_payload"
+      ],
+      "blocked_actions": [
+        "execute_direct_destructive_action",
+        "bypass_security_agent"
+      ]
+    },
+    "SecurityAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "evaluate_policy",
+        "approve_or_deny_action",
+        "sanitize_payload",
+        "redact_sensitive_fields",
+        "classify_sensitivity",
+        "log_security_event"
+      ],
+      "blocked_actions": [
+        "disable_audit_logging",
+        "ignore_policy"
+      ]
+    },
+    "VerificationAgent": {
+      "enabled": true,
+      "requires_security_check": false,
+      "allowed_actions": [
+        "verify_action_result",
+        "prepare_verification_report",
+        "validate_result_shape"
+      ],
+      "blocked_actions": [
+        "modify_action_result_without_trace",
+        "hide_failed_verification"
+      ]
+    },
+    "MemoryAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "read_memory",
+        "write_sanitized_memory",
+        "search_workspace_memory",
+        "delete_memory_with_approval"
+      ],
+      "blocked_actions": [
+        "write_raw_secret_to_memory",
+        "read_other_workspace_memory",
+        "mix_workspace_memory"
+      ]
+    },
+    "SystemAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "read_safe_system_status",
+        "inspect_allowed_directory",
+        "prepare_command_plan"
+      ],
+      "blocked_actions": [
+        "format_disk",
+        "delete_system_files",
+        "disable_firewall",
+        "run_unapproved_shell_command"
+      ]
+    },
+    "BrowserAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "open_public_url_preview",
+        "read_public_page",
+        "summarize_public_content"
+      ],
+      "blocked_actions": [
+        "login_without_approval",
+        "submit_form_without_approval",
+        "purchase_without_approval",
+        "download_untrusted_file_without_scan"
+      ]
+    },
+    "CodeAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "generate_code",
+        "review_code",
+        "explain_code",
+        "prepare_patch"
+      ],
+      "blocked_actions": [
+        "execute_code_without_approval",
+        "install_package_without_approval",
+        "deploy_without_approval"
+      ]
+    },
+    "FinanceAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "summarize_financial_data",
+        "prepare_financial_report",
+        "draft_invoice"
+      ],
+      "blocked_actions": [
+        "execute_trade_without_approval",
+        "send_money_without_approval",
+        "charge_payment_method_without_approval"
+      ]
+    },
+    "CallAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "draft_call_script",
+        "summarize_call_transcript",
+        "schedule_call_with_approval"
+      ],
+      "blocked_actions": [
+        "make_call_without_approval",
+        "record_call_without_disclosure",
+        "delete_call_recording_without_approval"
+      ]
+    },
+    "WorkflowAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "create_workflow_draft",
+        "preview_workflow",
+        "run_internal_safe_workflow"
+      ],
+      "blocked_actions": [
+        "trigger_external_workflow_without_approval",
+        "bulk_delete_tasks_without_approval"
+      ]
+    },
+    "VoiceAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "transcribe_audio",
+        "speak_response",
+        "detect_language"
+      ],
+      "blocked_actions": [
+        "store_voice_recording_without_permission",
+        "send_voice_data_to_unapproved_service"
+      ]
+    },
+    "VisualAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "analyze_image",
+        "describe_image",
+        "extract_safe_visual_context"
+      ],
+      "blocked_actions": [
+        "store_private_image_without_permission",
+        "share_private_image_without_approval"
+      ]
+    },
+    "BusinessAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "generate_strategy",
+        "analyze_business_notes",
+        "prepare_business_report"
+      ],
+      "blocked_actions": [
+        "share_confidential_strategy_without_approval"
+      ]
+    },
+    "CreatorAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "generate_content",
+        "draft_social_post",
+        "prepare_campaign_copy"
+      ],
+      "blocked_actions": [
+        "post_publicly_without_approval",
+        "use_private_brand_assets_without_context"
+      ]
+    },
+    "HologramAgent": {
+      "enabled": true,
+      "requires_security_check": true,
+      "allowed_actions": [
+        "generate_hologram_script",
+        "prepare_visual_interaction_plan"
+      ],
+      "blocked_actions": [
+        "record_user_without_permission"
+      ]
+    }
+  },
+  "audit_policy": {
+    "enabled": true,
+    "audit_sensitive_actions": true,
+    "audit_failed_actions": true,
+    "audit_denied_actions": true,
+    "audit_policy_overrides": true,
+    "audit_secret_access_metadata_only": true,
+    "never_audit_raw_secret_values": true,
+    "never_audit_raw_plaintext": true,
+    "never_audit_payment_card_full_number": true,
+    "never_audit_private_key": true,
+    "required_audit_fields": [
+      "timestamp",
+      "request_id",
+      "action",
+      "agent_name",
+      "user_id",
+      "workspace_id",
+      "decision",
+      "sensitivity",
+      "reason"
+    ],
+    "recommended_audit_fields": [
+      "trace_id",
+      "role",
+      "subscription_plan",
+      "ip_address",
+      "user_agent",
+      "approval_id",
+      "verification_payload_id"
+    ],
+    "retention_days_default": 365,
+    "retention_days_security_events": 730,
+    "retention_days_billing_events": 2555
+  },
+  "verification_policy": {
+    "enabled": true,
+    "required_for_completed_actions": true,
+    "required_for_failed_sensitive_actions": true,
+    "payload_must_exclude_raw_secrets": true,
+    "payload_must_exclude_raw_plaintext": true,
+    "payload_must_include": [
+      "action",
+      "agent_name",
+      "success",
+      "timestamp",
+      "user_id",
+      "workspace_id",
+      "safe_summary"
+    ],
+    "payload_recommended_fields": [
+      "request_id",
+      "trace_id",
+      "duration_ms",
+      "policy_decision",
+      "approval_id",
+      "audit_event_id"
+    ]
+  },
+  "memory_policy": {
+    "enabled": true,
+    "memory_agent_compatible_payload_required": true,
+    "write_only_sanitized_context": true,
+    "never_store_raw_secrets": true,
+    "never_store_raw_tokens": true,
+    "never_store_private_keys": true,
+    "never_store_full_payment_details": true,
+    "never_store_unredacted_credentials": true,
+    "workspace_isolation_required": true,
+    "user_isolation_required": true,
+    "allowed_memory_categories": [
+      "safe_user_preference",
+      "safe_workspace_setting",
+      "sanitized_task_summary",
+      "sanitized_agent_event",
+      "non_sensitive_project_context",
+      "approved_long_term_context"
+    ],
+    "blocked_memory_categories": [
+      "raw_secret",
+      "raw_password",
+      "raw_token",
+      "private_key",
+      "full_payment_card",
+      "unredacted_auth_header",
+      "other_workspace_data",
+      "other_user_private_data"
+    ]
+  },
+  "data_classification": {
+    "public": {
+      "description": "Public information safe to show and process.",
+      "default_sensitivity": "low",
+      "security_check_required": false
+    },
+    "internal": {
+      "description": "Internal workspace data.",
+      "default_sensitivity": "medium",
+      "security_check_required": true
+    },
+    "confidential": {
+      "description": "Sensitive business, client, workspace, or operational data.",
+      "default_sensitivity": "high",
+      "security_check_required": true,
+      "approval_required_for_export": true
+    },
+    "restricted": {
+      "description": "Secrets, credentials, financial execution data, private keys, auth tokens, and highly sensitive content.",
+      "default_sensitivity": "critical",
+      "security_check_required": true,
+      "approval_required": true,
+      "export_blocked_by_default": true
+    }
+  },
+  "redaction_policy": {
+    "enabled": true,
+    "mask_secret_values": true,
+    "mask_tokens": true,
+    "mask_passwords": true,
+    "mask_private_keys": true,
+    "mask_payment_cards": true,
+    "mask_auth_headers": true,
+    "mask_cookie_headers": true,
+    "mask_session_ids": true,
+    "default_mask": "***REDACTED***",
+    "partial_mask_allowed_for_metadata": true,
+    "sensitive_field_name_patterns": [
+      "secret",
+      "token",
+      "password",
+      "passwd",
+      "pwd",
+      "private_key",
+      "api_key",
+      "access_key",
+      "auth",
+      "authorization",
+      "cookie",
+      "session",
+      "credential",
+      "payment",
+      "card_number",
+      "cvv",
+      "ssn",
+      "otp",
+      "mfa",
+      "bearer"
+    ]
+  },
+  "rate_limits": {
+    "enabled": true,
+    "default_per_user_per_minute": 60,
+    "default_per_workspace_per_minute": 300,
+    "sensitive_actions_per_user_per_minute": 10,
+    "critical_actions_per_user_per_minute": 3,
+    "secret_access_per_user_per_minute": 5,
+    "decrypt_actions_per_user_per_minute": 5,
+    "external_communication_per_user_per_minute": 5,
+    "browser_actions_per_user_per_minute": 20,
+    "code_execution_per_user_per_minute": 3,
+    "financial_actions_per_user_per_minute": 2,
+    "on_limit_exceeded": "deny_and_audit"
+  },
+  "approval_policy": {
+    "enabled": true,
+    "approval_required_for_high_risk": true,
+    "approval_required_for_critical": true,
+    "approval_required_for_destructive": true,
+    "approval_required_for_external_send": true,
+    "approval_required_for_financial_execution": true,
+    "approval_required_for_decrypt": true,
+    "approval_required_for_secret_read": true,
+    "approval_required_for_role_change": true,
+    "approval_required_for_subscription_change": true,
+    "approval_required_for_policy_change": true,
+    "approval_validity_seconds": 900,
+    "approval_must_match_action": true,
+    "approval_must_match_user": true,
+    "approval_must_match_workspace": true,
+    "approval_must_match_payload_hash": true,
+    "approval_replay_blocked": true
+  },
+  "policy_override_rules": {
+    "enabled": true,
+    "workspace_policy_overrides_allowed": true,
+    "user_policy_overrides_allowed": false,
+    "enterprise_custom_policy_allowed": true,
+    "override_cannot_allow_blocked_actions": true,
+    "override_cannot_disable_audit_for_sensitive_actions": true,
+    "override_cannot_disable_workspace_isolation": true,
+    "override_cannot_disable_security_agent": true,
+    "override_requires_owner_or_super_admin": true,
+    "override_requires_audit": true
+  },
+  "result_shape_policy": {
+    "required_result_fields": [
+      "success",
+      "message",
+      "data",
+      "error",
+      "metadata"
+    ],
+    "success_type": "boolean",
+    "message_type": "string",
+    "data_type": "object",
+    "metadata_type": "object",
+    "error_nullable": true,
+    "sensitive_values_allowed_in_result": false,
+    "exception_trace_allowed_in_user_response": false,
+    "internal_trace_allowed_in_audit": true
+  },
+  "router_policy": {
+    "master_agent_must_route_sensitive_actions_to_security_agent": true,
+    "agent_router_must_validate_agent_permission": true,
+    "agent_loader_must_validate_agent_registry_entry": true,
+    "unknown_agent_requires_review": true,
+    "disabled_agent_denied": true,
+    "agent_permission_denied_if_missing": true,
+    "route_to_verification_after_completion": true,
+    "route_to_memory_only_with_sanitized_payload": true
+  },
+  "security_agent_decision_values": {
+    "allow": {
+      "description": "Action may proceed."
+    },
+    "deny": {
+      "description": "Action must not proceed."
+    },
+    "approval_required": {
+      "description": "Action may proceed only after valid approval."
+    },
+    "review_required": {
+      "description": "Action requires manual or higher-level policy review."
+    },
+    "sanitize_then_allow": {
+      "description": "Payload must be sanitized before execution."
+    },
+    "allow_read_only": {
+      "description": "Only read-only version of action is allowed."
+    }
+  },
+  "safe_defaults_for_future_agents": {
+    "new_agent_default_enabled": false,
+    "new_agent_default_decision": "review_required",
+    "new_agent_requires_registry_entry": true,
+    "new_agent_requires_permission_map": true,
+    "new_agent_requires_security_review": true,
+    "new_agent_requires_audit_for_sensitive_actions": true,
+    "new_agent_requires_verification_payload": true,
+    "new_agent_cannot_access_memory_by_default": true,
+    "new_agent_cannot_access_files_by_default": true,
+    "new_agent_cannot_access_secrets_by_default": true,
+    "new_agent_cannot_execute_external_actions_by_default": true
+  },
+  "dashboard_api_policy": {
+    "safe_to_display": [
+      "policy_name",
+      "policy_id",
+      "version",
+      "status",
+      "sensitivity_levels",
+      "allowed_actions",
+      "approval_required_actions",
+      "agent_permission_defaults",
+      "rate_limits",
+      "audit_policy",
+      "verification_policy"
+    ],
+    "hide_from_non_admin_dashboard": [
+      "blocked_actions",
+      "policy_override_rules",
+      "security_agent_decision_values"
+    ],
+    "never_display_values_matching_redaction_policy": true,
+    "admin_only_sections": [
+      "blocked_actions",
+      "policy_override_rules",
+      "safe_defaults_for_future_agents"
+    ]
+  },
+  "testing_expectations": {
+    "policy_file_must_be_valid_json": true,
+    "must_not_contain_secrets": true,
+    "must_include_allowed_actions": true,
+    "must_include_sensitive_actions": true,
+    "must_include_blocked_actions": true,
+    "must_include_approval_required_actions": true,
+    "must_include_context_requirements": true,
+    "must_include_audit_policy": true,
+    "must_include_verification_policy": true,
+    "must_include_memory_policy": true,
+    "must_include_agent_permission_defaults": true,
+    "must_deny_unknown_sensitive_actions": true,
+    "must_require_user_workspace_for_scoped_actions": true
+  }
+}

@@ -1,0 +1,435 @@
+# ============================================================
+# William / Jarvis Multi-Agent AI SaaS System
+# Project Root Dependency File
+# File: requirements.txt
+# Brand: Gronotix
+# Purpose:
+#   Python dependency list for:
+#   - Core backend API
+#   - Master Agent + 14 agent modules
+#   - SaaS users/workspaces/roles/subscriptions
+#   - Dashboard analytics
+#   - Agent registry / routing / task history
+#   - Security, verification, memory, audit logs
+#   - Voice, browser, workflow, call, finance, creator agents
+#   - Testing, linting, monitoring, and optional integrations
+#
+# Notes:
+#   - No secrets are stored here.
+#   - Version ranges are production-safe and not overly restrictive.
+#   - Optional heavy packages are included but grouped clearly.
+#   - Install with:
+#       pip install -r requirements.txt
+# ============================================================
+
+
+# ============================================================
+# 1. Core Python Backend / API
+# Used by:
+# - main.py
+# - Dashboard API
+# - Master Agent API
+# - Agent Router
+# - SaaS backend routes
+# ============================================================
+
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+starlette>=0.37.0,<1.0.0
+pydantic>=2.8.0,<3.0.0
+pydantic-settings>=2.4.0,<3.0.0
+python-multipart>=0.0.9,<1.0.0
+orjson>=3.10.0,<4.0.0
+
+
+# ============================================================
+# 2. Environment / Configuration
+# Used by:
+# - .env.example
+# - app settings
+# - SaaS tenant configuration
+# - API keys loaded safely from environment
+# ============================================================
+
+python-dotenv>=1.0.1,<2.0.0
+PyYAML>=6.0.1,<7.0.0
+toml>=0.10.2,<1.0.0
+
+
+# ============================================================
+# 3. Database / ORM / Migrations
+# Used by:
+# - Users
+# - Workspaces
+# - Roles
+# - Subscriptions
+# - Agent registry
+# - Task history
+# - Audit logs
+# - Memory metadata
+# - Dashboard analytics
+# ============================================================
+
+SQLAlchemy>=2.0.30,<3.0.0
+alembic>=1.13.2,<2.0.0
+psycopg2-binary>=2.9.9,<3.0.0
+asyncpg>=0.29.0,<1.0.0
+aiosqlite>=0.20.0,<1.0.0
+
+
+# ============================================================
+# 4. Authentication / Authorization / SaaS Security
+# Used by:
+# - Login
+# - JWT auth
+# - Workspace isolation
+# - Role-based permissions
+# - Agent permission checks
+# - Security Agent approvals
+# ============================================================
+
+python-jose[cryptography]>=3.3.0,<4.0.0
+passlib[bcrypt]>=1.7.4,<2.0.0
+bcrypt>=4.1.3,<5.0.0
+PyJWT>=2.8.0,<3.0.0
+cryptography>=42.0.0,<45.0.0
+authlib>=1.3.1,<2.0.0
+itsdangerous>=2.2.0,<3.0.0
+
+
+# ============================================================
+# 5. HTTP Clients / External API Communication
+# Used by:
+# - Browser Agent
+# - Business Agent
+# - Finance Agent
+# - Creator Agent
+# - Plugin integrations
+# - SaaS webhooks
+# ============================================================
+
+requests>=2.32.0,<3.0.0
+httpx>=0.27.0,<1.0.0
+aiohttp>=3.9.5,<4.0.0
+tenacity>=8.4.0,<9.0.0
+backoff>=2.2.1,<3.0.0
+
+
+# ============================================================
+# 6. Async Jobs / Background Tasks / Workflow Agent
+# Used by:
+# - Long-running agent jobs
+# - Workflow execution
+# - Scheduled automations
+# - Queue-based task processing
+# ============================================================
+
+celery>=5.4.0,<6.0.0
+redis>=5.0.7,<6.0.0
+rq>=1.16.2,<2.0.0
+APScheduler>=3.10.4,<4.0.0
+
+
+# ============================================================
+# 7. AI / LLM / Agent Intelligence
+# Used by:
+# - Master Agent
+# - Agent Router
+# - Code Agent
+# - Creator Agent
+# - Business Agent
+# - Memory Agent
+# ============================================================
+
+openai>=1.40.0,<2.0.0
+anthropic>=0.34.0,<1.0.0
+tiktoken>=0.7.0,<1.0.0
+numpy>=1.26.4,<3.0.0
+scipy>=1.13.1,<2.0.0
+
+
+# ============================================================
+# 8. Agent Framework / Tooling / Structured Execution
+# Used by:
+# - BaseAgent compatibility
+# - Agent registry
+# - Agent loader
+# - Agent router
+# - Tool execution
+# - Structured JSON outputs
+# ============================================================
+
+jsonschema>=4.23.0,<5.0.0
+json5>=0.9.25,<1.0.0
+typing-extensions>=4.12.2,<5.0.0
+rich>=13.7.1,<14.0.0
+loguru>=0.7.2,<1.0.0
+
+
+# ============================================================
+# 9. Memory Agent / Vector Search / Knowledge Storage
+# Used by:
+# - User-specific memory
+# - Workspace-specific memory
+# - Agent context retrieval
+# - Semantic search
+# - Long-term knowledge layer
+# ============================================================
+
+chromadb>=0.5.5,<1.0.0
+faiss-cpu>=1.8.0.post1,<2.0.0
+sentence-transformers>=3.0.1,<4.0.0
+scikit-learn>=1.5.1,<2.0.0
+
+
+# ============================================================
+# 10. File Processing / Documents / Data Extraction
+# Used by:
+# - Visual Agent
+# - Creator Agent
+# - Business Agent
+# - Workflow Agent
+# - Dashboard uploads
+# ============================================================
+
+pandas>=2.2.2,<3.0.0
+openpyxl>=3.1.5,<4.0.0
+python-docx>=1.1.2,<2.0.0
+pypdf>=4.3.1,<5.0.0
+pdfplumber>=0.11.3,<1.0.0
+Pillow>=10.4.0,<12.0.0
+beautifulsoup4>=4.12.3,<5.0.0
+lxml>=5.2.2,<6.0.0
+markdown>=3.6,<4.0.0
+
+
+# ============================================================
+# 11. Browser Agent / Web Automation
+# Used by:
+# - Browser Agent
+# - Research workflows
+# - Dashboard-controlled browsing
+# - Future web task automation
+# ============================================================
+
+playwright>=1.45.0,<2.0.0
+selenium>=4.23.0,<5.0.0
+webdriver-manager>=4.0.2,<5.0.0
+fake-useragent>=1.5.1,<2.0.0
+
+
+# ============================================================
+# 12. System Agent / OS Automation
+# Used by:
+# - System Agent
+# - Local device control
+# - Safe command execution
+# - Monitoring local resources
+# ============================================================
+
+psutil>=6.0.0,<7.0.0
+pyautogui>=0.9.54,<1.0.0
+watchdog>=4.0.1,<5.0.0
+platformdirs>=4.2.2,<5.0.0
+
+
+# ============================================================
+# 13. Voice Agent / Speech / Audio
+# Used by:
+# - Voice Agent
+# - Wake word pipeline
+# - STT
+# - TTS
+# - Interruption handling
+# ============================================================
+
+SpeechRecognition>=3.10.4,<4.0.0
+pyttsx3>=2.90,<3.0.0
+pydub>=0.25.1,<1.0.0
+sounddevice>=0.4.7,<1.0.0
+soundfile>=0.12.1,<1.0.0
+webrtcvad>=2.0.10,<3.0.0
+
+
+# ============================================================
+# 14. Call Agent / Communication Integrations
+# Used by:
+# - Call Agent
+# - SMS/voice integrations
+# - Future phone workflows
+# ============================================================
+
+twilio>=9.2.3,<10.0.0
+
+
+# ============================================================
+# 15. Email / Notification Integrations
+# Used by:
+# - Workflow Agent
+# - Business Agent
+# - Verification Agent
+# - Alerting and approvals
+# ============================================================
+
+emails>=0.6,<1.0.0
+Jinja2>=3.1.4,<4.0.0
+
+
+# ============================================================
+# 16. Finance Agent
+# Used by:
+# - Finance Agent
+# - Financial data parsing
+# - Reports
+# - Future billing analytics
+# ============================================================
+
+yfinance>=0.2.41,<1.0.0
+stripe>=10.0.0,<12.0.0
+
+
+# ============================================================
+# 17. Dashboard Analytics / Reporting
+# Used by:
+# - Admin dashboard
+# - Workspace dashboards
+# - User analytics
+# - Agent performance tracking
+# - Audit reporting
+# ============================================================
+
+plotly>=5.23.0,<6.0.0
+matplotlib>=3.9.1,<4.0.0
+tabulate>=0.9.0,<1.0.0
+
+
+# ============================================================
+# 18. Logging / Monitoring / Observability
+# Used by:
+# - Audit logs
+# - Agent events
+# - System health
+# - Production monitoring
+# ============================================================
+
+structlog>=24.4.0,<25.0.0
+sentry-sdk[fastapi]>=2.12.0,<3.0.0
+prometheus-client>=0.20.0,<1.0.0
+
+
+# ============================================================
+# 19. Validation / Sanitization / Safety
+# Used by:
+# - Security Agent
+# - API input validation
+# - Safe task execution
+# - User/workspace isolation checks
+# ============================================================
+
+email-validator>=2.2.0,<3.0.0
+bleach>=6.1.0,<7.0.0
+validators>=0.33.0,<1.0.0
+phonenumbers>=8.13.43,<9.0.0
+
+
+# ============================================================
+# 20. Testing / Quality / Developer Tools
+# Used by:
+# - Unit tests
+# - Integration tests
+# - Agent tests
+# - API route tests
+# - SaaS isolation tests
+# ============================================================
+
+pytest>=8.3.2,<9.0.0
+pytest-asyncio>=0.23.8,<1.0.0
+pytest-cov>=5.0.0,<6.0.0
+pytest-mock>=3.14.0,<4.0.0
+httpx>=0.27.0,<1.0.0
+faker>=26.0.0,<27.0.0
+freezegun>=1.5.1,<2.0.0
+
+
+# ============================================================
+# 21. Code Quality / Formatting / Static Analysis
+# Used by:
+# - Production code checks
+# - CI/CD
+# - Developer workflow
+# ============================================================
+
+black>=24.4.2,<25.0.0
+ruff>=0.5.5,<1.0.0
+mypy>=1.11.0,<2.0.0
+isort>=5.13.2,<6.0.0
+pre-commit>=3.7.1,<4.0.0
+
+
+# ============================================================
+# 22. Deployment / Production Server
+# Used by:
+# - Production hosting
+# - Docker deployment
+# - Reverse proxy setups
+# ============================================================
+
+gunicorn>=22.0.0,<23.0.0; sys_platform != "win32"
+uvloop>=0.19.0,<1.0.0; sys_platform != "win32"
+httptools>=0.6.1,<1.0.0
+
+
+# ============================================================
+# 23. Optional Cloud / Storage Integrations
+# Used by:
+# - Future SaaS uploads
+# - Workspace file storage
+# - Agent-generated files
+# ============================================================
+
+boto3>=1.34.150,<2.0.0
+google-api-python-client>=2.139.0,<3.0.0
+google-auth>=2.32.0,<3.0.0
+google-auth-oauthlib>=1.2.1,<2.0.0
+
+
+# ============================================================
+# 24. Optional Computer Vision / Visual Agent
+# Used by:
+# - Visual Agent
+# - Image processing
+# - Screenshot analysis
+# - Future OCR workflows
+# ============================================================
+
+opencv-python>=4.10.0.84,<5.0.0
+pytesseract>=0.3.10,<1.0.0
+
+
+# ============================================================
+# 25. Optional Realtime / WebSocket Support
+# Used by:
+# - Live dashboard status
+# - Agent streaming events
+# - Voice/call session updates
+# ============================================================
+
+websockets>=12.0,<13.0
+python-socketio>=5.11.3,<6.0.0
+
+
+# ============================================================
+# 26. Utility Helpers
+# Used by:
+# - IDs
+# - Dates
+# - Slugs
+# - Safe filenames
+# - General backend utilities
+# ============================================================
+
+python-slugify>=8.0.4,<9.0.0
+shortuuid>=1.0.13,<2.0.0
+dateparser>=1.2.0,<2.0.0
+pytz>=2024.1
+tzdata>=2024.1
