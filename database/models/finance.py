@@ -52,15 +52,12 @@ except Exception as exc:  # pragma: no cover
     raise RuntimeError("SQLAlchemy JSON support is required for finance.py") from exc
 
 try:
-    from database.base import Base
-except Exception:
-    try:
-        from database.models.base import Base
-    except Exception:
-        from sqlalchemy.orm import DeclarativeBase
+    from database.db import Base
+except Exception:  # pragma: no cover
+    from sqlalchemy.orm import DeclarativeBase
 
-        class Base(DeclarativeBase):
-            """Fallback SQLAlchemy base so this model imports before project Base exists."""
+    class Base(DeclarativeBase):
+        """Fallback SQLAlchemy base so this model imports before project Base exists."""
 
 
 JsonColumn = JSONB if JSONB is not None and os.getenv("WILLIAM_DB_DIALECT", "").lower() == "postgresql" else JSON
@@ -1485,7 +1482,7 @@ class FinanceExpense(Base, FinanceMixin):
     __table_args__ = (
         UniqueConstraint("workspace_id", "expense_uid", name="uq_finance_expenses_workspace_uid"),
         Index("ix_finance_expenses_scope_status", "workspace_id", "user_id", "status"),
-        Index("ix_finance_expenses_category", "workspace_id", "category", "status"),
+        Index("ix_finance_expenses_workspace_category_status", "workspace_id", "category", "status"),
     )
 
     @classmethod
@@ -1866,7 +1863,7 @@ class FinanceSubscription(Base, FinanceMixin):
     __table_args__ = (
         UniqueConstraint("workspace_id", "subscription_uid", name="uq_finance_subscriptions_workspace_uid"),
         Index("ix_finance_subscriptions_scope_status", "workspace_id", "user_id", "status"),
-        Index("ix_finance_subscriptions_provider", "workspace_id", "provider", "provider_subscription_id"),
+        Index("ix_finance_subscriptions_provider_sub_id", "workspace_id", "provider", "provider_subscription_id"),
     )
 
     @classmethod
@@ -2068,7 +2065,7 @@ class FinancePayment(Base, FinanceMixin):
     __table_args__ = (
         UniqueConstraint("workspace_id", "payment_uid", name="uq_finance_payments_workspace_uid"),
         Index("ix_finance_payments_scope_status", "workspace_id", "user_id", "status"),
-        Index("ix_finance_payments_provider", "workspace_id", "provider", "provider_payment_id"),
+        Index("ix_finance_payments_provider_pay_id", "workspace_id", "provider", "provider_payment_id"),
     )
 
     @classmethod

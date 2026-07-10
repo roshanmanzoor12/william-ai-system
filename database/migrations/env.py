@@ -95,6 +95,7 @@ def _load_project_base_metadata() -> MetaData:
     Load SQLAlchemy Base.metadata from the most likely project locations.
     """
     base_import_paths = (
+        "database.db",
         "database.base",
         "database.models.base",
         "base",
@@ -122,33 +123,22 @@ target_metadata = _load_project_base_metadata()
 # --------------------------------------------------------------------------------------
 
 MODEL_MODULES: tuple[str, ...] = (
-    # Core database model pack files. Import failures are logged but not fatal because
-    # the user is generating the system file-by-file.
+    # Every real model module under database/models/. Kept as an explicit
+    # list (not a directory scan) so a broken/renamed file fails loudly via
+    # the warning log below rather than silently vanishing from migrations.
     "database.models.user",
     "database.models.workspace",
-    "database.models.role",
-    "database.models.permission",
+    "database.models.role_permission",
     "database.models.subscription",
-    "database.models.task",
-    "database.models.agent",
+    "database.models.agent_registry",
+    "database.models.agent_task",
     "database.models.agent_event",
+    "database.models.agent",
     "database.models.memory",
     "database.models.security",
-    "database.models.verification",
     "database.models.workflow",
     "database.models.business",
     "database.models.finance",
-    "database.models.analytics",
-    "database.models.file",
-    "database.models.audit",
-    "database.models.creator",
-    "database.models.voice",
-    "database.models.system",
-    "database.models.browser",
-    "database.models.code",
-    "database.models.visual",
-    "database.models.hologram",
-    "database.models.call",
 )
 
 

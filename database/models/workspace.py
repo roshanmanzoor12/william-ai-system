@@ -510,8 +510,11 @@ class Workspace(Base):
         lazy="selectin",
     )
 
-    users = relationship("UserModel", back_populates="workspace", lazy="dynamic")
-    agents = relationship("AgentModel", back_populates="workspace", lazy="dynamic")
+    # Membership (who belongs to this workspace, with what role) is modeled
+    # through WorkspaceMembership.user_id below -- a user can belong to more
+    # than one workspace, so this is intentionally not a direct 1:N
+    # relationship to a single "owning" User row. Query memberships to get
+    # workspace members, and database.models.user.User.get_by_id per member.
 
     __table_args__ = (
         Index("ix_workspaces_owner_status", "owner_user_id", "status"),

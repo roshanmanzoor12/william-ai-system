@@ -401,12 +401,12 @@ class AgentRegistry(Base):
         self.required_permissions_json = _safe_json_dumps(_normalize_list(value))
 
     @property
-    def metadata(self) -> Dict[str, Any]:
+    def extra_metadata(self) -> Dict[str, Any]:
         data = _safe_json_loads(self.metadata_json, {})
         return data if isinstance(data, dict) else {}
 
-    @metadata.setter
-    def metadata(self, value: Optional[Union[str, Dict[str, Any]]]) -> None:
+    @extra_metadata.setter
+    def extra_metadata(self, value: Optional[Union[str, Dict[str, Any]]]) -> None:
         self.metadata_json = _safe_json_dumps(_mask_sensitive_metadata(_normalize_dict(value)))
 
     # -----------------------------------------------------------------
@@ -444,9 +444,9 @@ class AgentRegistry(Base):
         self.status = AGENT_STATUS_DISABLED
         self.disabled_at = _utc_now()
         if reason:
-            meta = self.metadata
+            meta = self.extra_metadata
             meta["disabled_reason"] = str(reason)[:1000]
-            self.metadata = meta
+            self.extra_metadata = meta
         self.updated_at = _utc_now()
 
     def soft_delete(self, reason: Optional[str] = None) -> None:
@@ -454,9 +454,9 @@ class AgentRegistry(Base):
         self.deleted_at = _utc_now()
         self.status = AGENT_STATUS_DISABLED
         if reason:
-            meta = self.metadata
+            meta = self.extra_metadata
             meta["delete_reason"] = str(reason)[:1000]
-            self.metadata = meta
+            self.extra_metadata = meta
         self.updated_at = _utc_now()
 
     def to_dict(self, include_internal: bool = False) -> Dict[str, Any]:
@@ -495,7 +495,7 @@ class AgentRegistry(Base):
                 {
                     "module_path": self.module_path,
                     "class_name": self.class_name,
-                    "metadata": self.metadata,
+                    "metadata": self.extra_metadata,
                     "last_error": self.last_error,
                 }
             )
@@ -1053,7 +1053,7 @@ class AgentRegistryService:
             agent.required_roles = required_roles or []
             agent.required_permissions = required_permissions or []
             agent.minimum_plan = str(minimum_plan or "free").strip().lower()
-            agent.metadata = metadata or {}
+            agent.extra_metadata = metadata or {}
             agent.is_enabled = bool(is_enabled)
             agent.is_core_agent = bool(is_core_agent)
             agent.is_public = bool(is_public)
@@ -1359,9 +1359,9 @@ class AgentRegistryService:
             agent.mark_heartbeat()
 
             if health_metadata:
-                meta = agent.metadata
+                meta = agent.extra_metadata
                 meta["last_health"] = _mask_sensitive_metadata(health_metadata)
-                agent.metadata = meta
+                agent.extra_metadata = meta
 
             db.commit()
             db.refresh(agent)

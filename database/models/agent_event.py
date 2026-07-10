@@ -55,15 +55,12 @@ except Exception as exc:  # pragma: no cover
     ) from exc
 
 try:
-    from database.base import Base
-except Exception:
-    try:
-        from database.models.base import Base
-    except Exception:
-        from sqlalchemy.orm import DeclarativeBase
+    from database.db import Base
+except Exception:  # pragma: no cover
+    from sqlalchemy.orm import DeclarativeBase
 
-        class Base(DeclarativeBase):
-            """Fallback SQLAlchemy base so this model can import before project base exists."""
+    class Base(DeclarativeBase):
+        """Fallback SQLAlchemy base so this model can import before project base exists."""
 
 
 JsonColumn = JSONB if JSONB is not None and os.getenv("WILLIAM_DB_DIALECT", "").lower() == "postgresql" else JSON

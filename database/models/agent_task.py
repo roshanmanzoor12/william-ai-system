@@ -478,12 +478,12 @@ class AgentTask(Base):
         self.error_json = _safe_json_dumps(_mask_sensitive_metadata(_normalize_dict(value)))
 
     @property
-    def metadata(self) -> Dict[str, Any]:
+    def extra_metadata(self) -> Dict[str, Any]:
         data = _safe_json_loads(self.metadata_json, {})
         return data if isinstance(data, dict) else {}
 
-    @metadata.setter
-    def metadata(self, value: Optional[Union[str, Dict[str, Any]]]) -> None:
+    @extra_metadata.setter
+    def extra_metadata(self, value: Optional[Union[str, Dict[str, Any]]]) -> None:
         self.metadata_json = _safe_json_dumps(_mask_sensitive_metadata(_normalize_dict(value)))
 
     @property
@@ -642,7 +642,7 @@ class AgentTask(Base):
                     "input_data": self.input_data,
                     "output_data": self.output_data,
                     "error_data": self.error_data,
-                    "metadata": self.metadata,
+                    "metadata": self.extra_metadata,
                     "required_permissions": self.required_permissions,
                     "security_approved_by": self.security_approved_by,
                     "security_approved_at": self.security_approved_at.isoformat() if self.security_approved_at else None,
@@ -1207,7 +1207,7 @@ class AgentTaskService:
             )
 
             task.input_data = input_data or {}
-            task.metadata = metadata or {}
+            task.extra_metadata = metadata or {}
             task.required_permissions = required_perms
 
             memory_payload = self._memory_payload(
@@ -1618,9 +1618,9 @@ class AgentTaskService:
             task.set_status(TASK_STATUS_CANCELLED, reason or "Task cancelled.")
             task.clear_worker_lock()
 
-            meta = task.metadata
+            meta = task.extra_metadata
             meta["cancel_reason"] = reason or ""
-            task.metadata = meta
+            task.extra_metadata = meta
 
             db.commit()
             db.refresh(task)
@@ -2023,9 +2023,9 @@ class AgentTaskService:
             task.set_status(TASK_STATUS_CANCELLED, reason or "Task deleted.")
             task.clear_worker_lock()
 
-            meta = task.metadata
+            meta = task.extra_metadata
             meta["delete_reason"] = reason or ""
-            task.metadata = meta
+            task.extra_metadata = meta
 
             for subtask in task.subtasks:
                 if subtask.deleted_at is None:

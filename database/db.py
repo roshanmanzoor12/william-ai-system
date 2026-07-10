@@ -60,6 +60,53 @@ Base = declarative_base()
 
 
 # ---------------------------------------------------------------------
+# SaaS scope helpers
+# ---------------------------------------------------------------------
+# Shared by database/models/workspace.py, subscription.py, and
+# role_permission.py, each of which previously carried an identical
+# private fallback copy of these two names and imported them from here
+# alongside Base in a single `from database.db import Base, DbScope,
+# validate_scope_id` statement. Because this module never actually
+# defined DbScope/validate_scope_id, that import always raised
+# ImportError -- which meant those three files silently fell back to a
+# bare `class Base: pass` stub instead of the real declarative Base,
+# so Workspace/WorkspaceMembership/WorkspaceInvitation,
+# SubscriptionPlan/WorkspaceSubscription/UsageLimits/UsageTracking/
+# AgentAccess/Invoice/BillingEvent, and Role/Permission/
+# RolePermissionLink/UserRoleMapping were never real SQLAlchemy models
+# (no __tablename__ registration, unusable with Base.metadata / a real
+# session). Defining the real versions here fixes the import for all
+# three consumers at the source.
+
+SCOPE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-:.@]+$")
+
+
+class DbScope:
+    """A validated (user_id, workspace_id) pair for SaaS-isolated queries."""
+
+    def __init__(self, user_id: str, workspace_id: str) -> None:
+        self.user_id = validate_scope_id(user_id, "user_id") if user_id else user_id
+        self.workspace_id = (
+            validate_scope_id(workspace_id, "workspace_id") if workspace_id else workspace_id
+        )
+
+    def as_filter_kwargs(self) -> Dict[str, str]:
+        return {"user_id": self.user_id, "workspace_id": self.workspace_id}
+
+
+def validate_scope_id(value: str, field_name: str) -> str:
+    """Validate a user_id/workspace_id-shaped identifier before it touches a query."""
+    cleaned = str(value).strip()
+    if not cleaned:
+        raise ValueError(f"{field_name} is required.")
+    if len(cleaned) > 140:
+        raise ValueError(f"{field_name} is too long.")
+    if not SCOPE_ID_PATTERN.match(cleaned):
+        raise ValueError(f"{field_name} contains unsafe characters.")
+    return cleaned
+
+
+# ---------------------------------------------------------------------
 # Utility Types
 # ---------------------------------------------------------------------
 

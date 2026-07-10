@@ -42,14 +42,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
 try:
-    from database.core.base import Base
-except Exception:
-    try:
-        from database.base import Base
-    except Exception:
-        from sqlalchemy.orm import declarative_base
+    from database.db import Base
+except Exception:  # pragma: no cover
+    from sqlalchemy.orm import declarative_base
 
-        Base = declarative_base()
+    Base = declarative_base()
 
 
 def utc_now() -> datetime:

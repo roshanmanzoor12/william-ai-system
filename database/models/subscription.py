@@ -737,7 +737,7 @@ class WorkspaceSubscription(Base):
     __table_args__ = (
         Index("ix_workspace_subscriptions_workspace_status", "workspace_id", "status"),
         Index("ix_workspace_subscriptions_workspace_plan", "workspace_id", "plan_key"),
-        Index("ix_workspace_subscriptions_provider", "provider", "provider_subscription_id"),
+        Index("ix_workspace_subscriptions_provider_sub_id", "provider", "provider_subscription_id"),
     )
 
     def __repr__(self) -> str:

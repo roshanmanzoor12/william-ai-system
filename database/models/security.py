@@ -385,14 +385,6 @@ class AuditLogModel(Base):
     def extra_metadata(self, value: Optional[Union[str, Dict[str, Any]]]) -> None:
         self.metadata_json = _safe_json_dumps(_mask_sensitive_metadata(_normalize_dict(value)))
 
-    @property
-    def metadata(self) -> Dict[str, Any]:
-        return self.extra_metadata
-
-    @metadata.setter
-    def metadata(self, value: Optional[Union[str, Dict[str, Any]]]) -> None:
-        self.extra_metadata = value
-
     def to_dict(self, include_internal: bool = True) -> Dict[str, Any]:
         data = {
             "id": self.id,
@@ -648,12 +640,12 @@ class PermissionEventModel(Base):
     )
 
     @property
-    def metadata(self) -> Dict[str, Any]:
+    def extra_metadata(self) -> Dict[str, Any]:
         data = _safe_json_loads(self.metadata_json, {})
         return data if isinstance(data, dict) else {}
 
-    @metadata.setter
-    def metadata(self, value: Optional[Union[str, Dict[str, Any]]]) -> None:
+    @extra_metadata.setter
+    def extra_metadata(self, value: Optional[Union[str, Dict[str, Any]]]) -> None:
         self.metadata_json = _safe_json_dumps(_mask_sensitive_metadata(_normalize_dict(value)))
 
     def to_dict(self, include_internal: bool = True) -> Dict[str, Any]:
@@ -672,7 +664,7 @@ class PermissionEventModel(Base):
         }
 
         if include_internal:
-            data["metadata"] = self.metadata
+            data["metadata"] = self.extra_metadata
 
         return data
 
@@ -1467,7 +1459,7 @@ class Security:
                 reason=_normalize_text(reason),
                 timestamp=_utc_now(),
             )
-            event.metadata = metadata or {}
+            event.extra_metadata = metadata or {}
 
             db.add(event)
             db.commit()

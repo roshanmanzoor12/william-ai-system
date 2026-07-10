@@ -1637,15 +1637,10 @@ class DefaultPlans:
         resolved: Dict[str, type] = {}
 
         candidate_paths: Tuple[Tuple[str, str], ...] = (
-            ("database.models.subscription", "Plan"),
             ("database.models.subscription", "SubscriptionPlan"),
-            ("database.models.security", "Permission"),
-            ("database.models.security", "Role"),
-            ("database.models.security", "Agent"),
-            ("database.models.access", "Permission"),
-            ("database.models.access", "Role"),
-            ("database.models.agent", "Agent"),
-            ("database.models.agents", "Agent"),
+            ("database.models.role_permission", "Permission"),
+            ("database.models.role_permission", "Role"),
+            ("database.models.agent_registry", "AgentRegistry"),
         )
 
         for module_path, class_name in candidate_paths:
@@ -1663,10 +1658,9 @@ class DefaultPlans:
     def _canonical_model_name(cls, class_name: str) -> str:
         mapping = {
             "SubscriptionPlan": "Plan",
-            "Plan": "Plan",
             "Permission": "Permission",
             "Role": "Role",
-            "Agent": "Agent",
+            "AgentRegistry": "Agent",
         }
         return mapping.get(class_name, class_name)
 

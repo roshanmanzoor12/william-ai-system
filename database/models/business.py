@@ -51,17 +51,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
 try:
-    from database.core.base import Base
-except Exception:
-    try:
-        from database.base import Base
-    except Exception:
-        try:
-            from database.db import Base
-        except Exception:
-            from sqlalchemy.orm import declarative_base
+    from database.db import Base
+except Exception:  # pragma: no cover
+    from sqlalchemy.orm import declarative_base
 
-            Base = declarative_base()
+    Base = declarative_base()
 
 
 def utc_now() -> datetime:
@@ -1773,10 +1767,12 @@ class Campaign(Base, BusinessMixin):
 
 class Invoice(Base, BusinessMixin):
     """
-    Customer invoice.
+    Customer invoice (CRM/business-side, issued by a workspace to its own
+    clients -- distinct from database.models.subscription.Invoice, which is
+    the platform billing this workspace for its subscription plan).
     """
 
-    __tablename__ = "invoices"
+    __tablename__ = "business_invoices"
 
     entity_type = BusinessEntityType.INVOICE
 
