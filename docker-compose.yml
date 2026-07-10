@@ -241,7 +241,22 @@ services:
   # - Write safe action reports for Verification Agent.
   # - Never execute cross-workspace memory/file/task access.
   # ----------------------------------------------------------
+  # NOT started by default `docker-compose up` (see profiles below).
+  #
+  # BLOCKER: there is no backend async-job worker entrypoint in this
+  # repository. celery/rq/redis are declared in requirements.txt but
+  # nothing imports them (confirmed by repo-wide grep). The code under
+  # apps/worker_nodes/ is a *device-side* client (Windows/Mac/Android)
+  # that polls the API from an end-user's machine -- it is not a
+  # queue-consuming backend service and was never meant to run here.
+  #
+  # To make this service real, a maintainer needs to decide on and build
+  # an actual task queue (e.g. a Celery app bound to the `redis` service
+  # below, with real task modules), then set `command` accordingly and
+  # remove the `worker` profile gate. Until then this stays disabled
+  # rather than pointing at a fabricated entrypoint.
   worker:
+    profiles: ["worker"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -295,21 +310,13 @@ services:
 
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
-    # The worker command is intentionally flexible.
-    # It tries known worker entrypoints safely.
-    # Adjust this when your final worker module is locked.
+    # See the BLOCKER comment above the `worker:` key -- no real
+    # entrypoint exists yet. Fails fast and loud instead of silently
+    # probing for module paths that were never implemented.
     command: >
       sh -c "
-      if python -c 'import apps.worker.main' >/dev/null 2>&1; then
-        exec python -m apps.worker.main;
-      elif python -c 'import worker' >/dev/null 2>&1; then
-        exec python -m worker;
-      elif python -c 'import apps.api.worker' >/dev/null 2>&1; then
-        exec python -m apps.api.worker;
-      else
-        echo 'No worker entrypoint found. Expected apps.worker.main, worker, or apps.api.worker.' >&2;
-        exit 1;
-      fi
+      echo 'BLOCKED: no backend worker entrypoint is implemented yet (see docker-compose.yml comments on the worker service). Not starting.' >&2;
+      exit 1
       "
 
     volumes:
@@ -362,8 +369,8 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       NEXT_TELEMETRY_DISABLED: "1"
 
-      # Browser-facing API URL
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      # Browser-facing API URL (must include /api/v1 -- see apps/dashboard/src/lib/api.ts)
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
 
       # Server-side internal API URL
       API_INTERNAL_URL: http://api:8000
@@ -387,19 +394,9 @@ services:
 
     command: >
       sh -c "
-      if [ -f package.json ]; then
-        npm install &&
-        npm run build &&
-        npm run start -- -p 3000;
-      elif [ -f ../../package.json ]; then
-        cd ../.. &&
-        npm install &&
-        npm run build --workspace=apps/dashboard &&
-        npm run start --workspace=apps/dashboard -- -p 3000;
-      else
-        echo 'No dashboard package.json found. Expected apps/dashboard/package.json or root package.json.' >&2;
-        exit 1;
-      fi
+      npm install &&
+      npm run build &&
+      npm run start -- -p 3000
       "
 
     networks:
