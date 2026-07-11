@@ -27,6 +27,7 @@ Core responsibilities:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
@@ -43,16 +44,6 @@ from pydantic import BaseModel, Field, field_validator
 # =============================================================================
 # Optional future project integrations
 # =============================================================================
-
-try:
-    from apps.api.dependencies.auth import get_current_user as project_get_current_user  # type: ignore
-except Exception:
-    project_get_current_user = None
-
-try:
-    from apps.api.dependencies.workspace import get_current_workspace as project_get_current_workspace  # type: ignore
-except Exception:
-    project_get_current_workspace = None
 
 try:
     from apps.api.routes.security import audit_log as project_audit_log  # type: ignore
@@ -83,6 +74,20 @@ except Exception:
 # =============================================================================
 # Router
 # =============================================================================
+
+
+# Real, JWT-verified auth -- apps/api/routes/auth.py is a core module (not a
+# "future" one), so this import should always succeed; the fallback exists
+# only for a genuinely broken install, matching the same defensive pattern
+# apps/api/routes/tasks.py already uses for the same dependency.
+try:
+    from apps.api.routes.auth import AuthContext as RealAuthContext, get_current_auth_context  # type: ignore
+except Exception as real_auth_import_exc:
+    RealAuthContext = None
+    get_current_auth_context = None
+    logging.getLogger(__name__).warning(
+        "Real auth import fallback enabled in %s: %s", __name__, real_auth_import_exc
+    )
 
 router = APIRouter(tags=["Billing"])
 # No self-prefix -- apps/api/main.py's OPTIONAL_ROUTERS already applies
@@ -1512,113 +1517,45 @@ billing_service = Billing()
 # Dependencies
 # =============================================================================
 
-async def get_actor_context(
-    request: Request,
-    x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
-    x_workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-Id"),
-    x_user_role: Optional[str] = Header(default=None, alias="X-User-Role"),
-    x_subscription_plan: Optional[str] = Header(default=None, alias="X-Subscription-Plan"),
-    x_subscription_active: Optional[str] = Header(default="true", alias="X-Subscription-Active"),
-    x_request_id: Optional[str] = Header(default=None, alias="X-Request-Id"),
-) -> ActorContext:
-    """
-    Import-safe auth/workspace adapter.
+if get_current_auth_context is not None:
 
-    Production can replace header fallback with:
-    - apps.api.dependencies.auth.get_current_user
-    - apps.api.dependencies.workspace.get_current_workspace
+    async def get_actor_context(
+        request: Request,
+        context: "RealAuthContext" = Depends(get_current_auth_context),
+    ) -> ActorContext:
+        """
+        Real, JWT-verified auth/workspace context, matching every other
+        router's get_current_auth_context dependency (apps/api/routes/
+        auth.py). Previously this read X-User-Id/X-Workspace-Id/X-User-Role
+        headers directly with no signature verification at all -- any
+        caller could claim to be any user or workspace. role/plan are
+        passed through parse_role()/parse_plan() below, which already
+        default safely (MEMBER/FREE) for any of the real backend's role/
+        plan values this router's narrower local enums don't recognize.
+        """
+        return ActorContext(
+            user_id=context.user_id,
+            workspace_id=context.workspace_id,
+            role=parse_role(context.role),
+            plan=parse_plan(context.plan),
+            subscription_active=True,
+            request_id=context.request_id,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("User-Agent"),
+        )
 
-    Until then, use headers:
-    - X-User-Id
-    - X-Workspace-Id
-    - X-User-Role
-    - X-Subscription-Plan
-    - X-Subscription-Active
-    """
-
-    current_user: Optional[Any] = None
-    current_workspace: Optional[Any] = None
-
-    if callable(project_get_current_user):
-        try:
-            maybe_user = project_get_current_user()
-            if hasattr(maybe_user, "__await__"):
-                current_user = await maybe_user
-            else:
-                current_user = maybe_user
-        except Exception:
-            current_user = None
-
-    if callable(project_get_current_workspace):
-        try:
-            maybe_workspace = project_get_current_workspace()
-            if hasattr(maybe_workspace, "__await__"):
-                current_workspace = await maybe_workspace
-            else:
-                current_workspace = maybe_workspace
-        except Exception:
-            current_workspace = None
-
-    resolved_user_id = (
-        getattr(current_user, "user_id", None)
-        or getattr(current_user, "id", None)
-        or (current_user.get("user_id") if isinstance(current_user, dict) else None)
-        or (current_user.get("id") if isinstance(current_user, dict) else None)
-        or x_user_id
-    )
-
-    resolved_workspace_id = (
-        getattr(current_workspace, "workspace_id", None)
-        or getattr(current_workspace, "id", None)
-        or (current_workspace.get("workspace_id") if isinstance(current_workspace, dict) else None)
-        or (current_workspace.get("id") if isinstance(current_workspace, dict) else None)
-        or x_workspace_id
-    )
-
-    user_id = normalize_id(str(resolved_user_id) if resolved_user_id is not None else None, "user_id")
-    workspace_id = normalize_id(str(resolved_workspace_id) if resolved_workspace_id is not None else None, "workspace_id")
-
-    role_value = (
-        getattr(current_user, "role", None)
-        or (current_user.get("role") if isinstance(current_user, dict) else None)
-        or x_user_role
-    )
-
-    plan_value = (
-        getattr(current_user, "plan", None)
-        or getattr(current_user, "subscription_plan", None)
-        or (current_user.get("plan") if isinstance(current_user, dict) else None)
-        or (current_user.get("subscription_plan") if isinstance(current_user, dict) else None)
-        or x_subscription_plan
-    )
-
-    subscription_active_raw = getattr(current_user, "subscription_active", None) if current_user is not None else None
-
-    if subscription_active_raw is None and isinstance(current_user, dict):
-        subscription_active_raw = current_user.get("subscription_active")
-
-    if subscription_active_raw is None:
-        subscription_active_raw = x_subscription_active
-
-    subscription_active = str(subscription_active_raw).strip().lower() not in {
-        "false",
-        "0",
-        "no",
-        "inactive",
-        "cancelled",
-        "canceled",
-    }
-
-    return ActorContext(
-        user_id=user_id,
-        workspace_id=workspace_id,
-        role=parse_role(str(role_value) if role_value is not None else None),
-        plan=parse_plan(str(plan_value) if plan_value is not None else None),
-        subscription_active=subscription_active,
-        request_id=x_request_id or str(uuid.uuid4()),
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("User-Agent"),
-    )
+else:
+    # Only reachable if apps.api.routes.auth itself failed to import (a
+    # broken install) -- fail closed instead of falling back to trusting
+    # caller-supplied identity headers.
+    async def get_actor_context(request: Request) -> ActorContext:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "AUTH_MODULE_UNAVAILABLE",
+                "message": "Authentication is not available.",
+            },
+        )
 
 
 def get_billing_service() -> Billing:
