@@ -17,9 +17,27 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation";
 import { SessionData, UserPlan, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
 
-type WorkflowStatus = "draft" | "active" | "paused" | "blocked" | "completed";
-type TemplateCategory = "crm" | "security" | "memory" | "marketing" | "finance" | "creator";
-type NodeType = "trigger" | "agent" | "security" | "memory" | "verification" | "action";
+// Matches apps/api/routes/workflows.py's real WorkflowStatus (template
+// status) and WorkflowStepType enums exactly (confirmed by reading the
+// source). The old WorkflowStatus/TemplateCategory/NodeType vocabulary
+// ("blocked"/"completed" status, a "category" field, plan-gating on
+// templates) had no backend equivalent at all -- templates only have
+// name/description/status/steps/trigger_types/tags; there is no
+// category, required-plan, sensitivity flag, time estimate, or usage
+// count anywhere in WorkflowTemplateRecord.
+type WorkflowStatus = "draft" | "active" | "paused" | "archived";
+type WorkflowStepType =
+  | "master_agent"
+  | "agent"
+  | "tool"
+  | "http_request"
+  | "webhook_response"
+  | "memory_save"
+  | "security_approval"
+  | "condition"
+  | "delay"
+  | "notification";
+type NodeType = "agent" | "security" | "memory" | "action";
 
 type ApiResponse<T> = {
   success: boolean;
@@ -28,12 +46,26 @@ type ApiResponse<T> = {
   audit_event_id?: string;
 };
 
+type WorkflowStep = {
+  id: string;
+  name: string;
+  step_type: WorkflowStepType;
+  agent_name: string | null;
+  tool_name: string | null;
+  requires_security_approval: boolean;
+  risk_level: "low" | "medium" | "high" | "critical";
+};
+
+// Presentation-only node used to draw the canvas preview -- derived from
+// a real WorkflowStep via stepToNode() below, never a separate data
+// source. x/y are a deterministic left-to-right layout computed from the
+// step's position in the list, not data returned by the backend (which
+// has no visual-position concept at all).
 type WorkflowNode = {
   id: string;
   type: NodeType;
   title: string;
   agent: string;
-  description: string;
   sensitive: boolean;
   x: number;
   y: number;
@@ -43,31 +75,77 @@ type WorkflowTemplate = {
   id: string;
   user_id: string;
   workspace_id: string;
-  title: string;
-  category: TemplateCategory;
-  description: string;
-  required_plan: UserPlan;
-  sensitive: boolean;
-  nodes: WorkflowNode[];
-  estimated_minutes: number;
-  usage_units: number;
+  name: string;
+  description: string | null;
+  status: WorkflowStatus;
+  steps: WorkflowStep[];
+  trigger_types: string[];
+  tags: string[];
+  created_at: string;
+  updated_at: string;
 };
 
-type WorkflowRecord = {
+function stepToNode(step: WorkflowStep, index: number): WorkflowNode {
+  const typeMap: Record<WorkflowStepType, NodeType> = {
+    master_agent: "agent",
+    agent: "agent",
+    tool: "action",
+    http_request: "action",
+    webhook_response: "action",
+    memory_save: "memory",
+    security_approval: "security",
+    condition: "action",
+    delay: "action",
+    notification: "action",
+  };
+
+  return {
+    id: step.id,
+    type: typeMap[step.step_type],
+    title: step.name,
+    agent: step.agent_name || step.tool_name || step.step_type,
+    sensitive: step.requires_security_approval,
+    x: 8 + index * 242,
+    y: 42,
+  };
+}
+
+function templateIsSensitive(template: WorkflowTemplate): boolean {
+  return template.steps.some((step) => step.requires_security_approval);
+}
+
+// Matches apps/api/routes/workflows.py's real WorkflowRunRecord exactly
+// (confirmed by reading the source). The old WorkflowRecord conflated "a
+// workflow" (a persistent thing with a cumulative run count and success
+// rate) with what the backend actually models -- there is no such
+// persistent "workflow" object, only templates (reusable recipes) and
+// individual runs (one execution each). `runs`/`success_rate` had no
+// backend source at all; a single run has neither concept.
+type WorkflowRunStatus = "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled";
+
+type WorkflowRun = {
   id: string;
   user_id: string;
   workspace_id: string;
-  name: string;
-  status: WorkflowStatus;
-  template_id?: string;
-  nodes: WorkflowNode[];
-  runs: number;
-  success_rate: number;
-  last_run_at: string;
-  security_review_required: boolean;
-  memory_payload_ready: boolean;
-  verification_payload_ready: boolean;
-  audit_event_id?: string;
+  template_id: string;
+  trigger_type: string;
+  status: WorkflowRunStatus;
+  current_step_index: number;
+  approval_id: string | null;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
+  queued: "Queued",
+  running: "Running",
+  waiting_approval: "Security Review",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
 };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
@@ -76,8 +154,7 @@ const STATUS_LABELS: Record<WorkflowStatus, string> = {
   draft: "Draft",
   active: "Active",
   paused: "Paused",
-  blocked: "Blocked",
-  completed: "Completed",
+  archived: "Archived",
 };
 
 function cx(...classes: Array<string | false | null | undefined>): string {
@@ -117,175 +194,26 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("en").format(value);
 }
 
-function makeNode(
-  id: string,
-  type: NodeType,
-  title: string,
-  agent: string,
-  description: string,
-  sensitive: boolean,
-  x: number,
-  y: number,
-): WorkflowNode {
-  return { id, type, title, agent, description, sensitive, x, y };
-}
-
-function buildDemoTemplates(session: SessionData): WorkflowTemplate[] {
-  return [
-    {
-      id: "TPL-CRM-001",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Lead Form to CRM",
-      category: "crm",
-      description: "Capture website leads, enrich context, route to CRM, and prepare verification payload.",
-      required_plan: "pro",
-      sensitive: false,
-      estimated_minutes: 4,
-      usage_units: 18,
-      nodes: [
-        makeNode("node-1", "trigger", "Form Submitted", "Browser Agent", "Website lead form trigger.", false, 8, 42),
-        makeNode("node-2", "memory", "Save Context", "Memory Agent", "Store lead source and campaign context.", false, 250, 42),
-        makeNode("node-3", "action", "Create CRM Lead", "Business Agent", "Create tenant-scoped CRM record.", false, 492, 42),
-        makeNode("node-4", "verification", "Confirm Payload", "Verification Agent", "Prepare completion confirmation.", false, 734, 42),
-      ],
-    },
-    {
-      id: "TPL-SEC-002",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Sensitive Action Approval",
-      category: "security",
-      description: "Route risky tasks to Security Agent before file, billing, permission, or external actions.",
-      required_plan: "business",
-      sensitive: true,
-      estimated_minutes: 6,
-      usage_units: 24,
-      nodes: [
-        makeNode("node-1", "trigger", "Sensitive Task", "Master Agent", "Detect state-changing action.", true, 8, 42),
-        makeNode("node-2", "security", "Security Review", "Security Agent", "Approve or reject the action.", true, 250, 42),
-        makeNode("node-3", "action", "Execute Safely", "System Agent", "Run only after approval.", true, 492, 42),
-        makeNode("node-4", "verification", "Verify Result", "Verification Agent", "Prepare safe confirmation.", false, 734, 42),
-      ],
-    },
-    {
-      id: "TPL-MEM-003",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Memory Enrichment",
-      category: "memory",
-      description: "Summarize useful task context and save it with user/workspace isolation.",
-      required_plan: "pro",
-      sensitive: false,
-      estimated_minutes: 3,
-      usage_units: 12,
-      nodes: [
-        makeNode("node-1", "trigger", "Task Completed", "Master Agent", "Completed task trigger.", false, 8, 42),
-        makeNode("node-2", "memory", "Extract Useful Context", "Memory Agent", "Normalize safe memory context.", false, 250, 42),
-        makeNode("node-3", "verification", "Attach Verification", "Verification Agent", "Link verification payload.", false, 492, 42),
-      ],
-    },
-    {
-      id: "TPL-MKT-004",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Marketing Campaign Builder",
-      category: "marketing",
-      description: "Generate campaign content, check compliance, and send draft to approval.",
-      required_plan: "business",
-      sensitive: true,
-      estimated_minutes: 8,
-      usage_units: 30,
-      nodes: [
-        makeNode("node-1", "trigger", "Campaign Request", "Creator Agent", "User campaign request.", false, 8, 42),
-        makeNode("node-2", "agent", "Generate Assets", "Creator Agent", "Generate campaign copy.", false, 250, 42),
-        makeNode("node-3", "security", "Policy Review", "Security Agent", "Approve external campaign action.", true, 492, 42),
-        makeNode("node-4", "verification", "Ready for Launch", "Verification Agent", "Confirm all outputs.", false, 734, 42),
-      ],
-    },
-  ];
-}
-
-function buildDemoWorkflows(session: SessionData, templates: WorkflowTemplate[]): WorkflowRecord[] {
-  return [
-    {
-      id: "WF-000076",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Lead form to CRM production flow",
-      status: "active",
-      template_id: templates[0]?.id,
-      nodes: templates[0]?.nodes || [],
-      runs: 162,
-      success_rate: 96,
-      last_run_at: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-      security_review_required: false,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      audit_event_id: "audit_wf_000076",
-    },
-    {
-      id: "WF-000075",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Security approval chain",
-      status: "active",
-      template_id: templates[1]?.id,
-      nodes: templates[1]?.nodes || [],
-      runs: 88,
-      success_rate: 94,
-      last_run_at: new Date(Date.now() - 1000 * 60 * 38).toISOString(),
-      security_review_required: true,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      audit_event_id: "audit_wf_000075",
-    },
-    {
-      id: "WF-000074",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Memory enrichment for completed tasks",
-      status: "paused",
-      template_id: templates[2]?.id,
-      nodes: templates[2]?.nodes || [],
-      runs: 119,
-      success_rate: 87,
-      last_run_at: new Date(Date.now() - 1000 * 60 * 90).toISOString(),
-      security_review_required: false,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      audit_event_id: "audit_wf_000074",
-    },
-    {
-      id: "WF-000073",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Marketing campaign approval",
-      status: "blocked",
-      template_id: templates[3]?.id,
-      nodes: templates[3]?.nodes || [],
-      runs: 39,
-      success_rate: 68,
-      last_run_at: new Date(Date.now() - 1000 * 60 * 210).toISOString(),
-      security_review_required: true,
-      memory_payload_ready: true,
-      verification_payload_ready: false,
-      audit_event_id: "audit_wf_000073",
-    },
-  ];
-}
-
+// apps/api/routes/workflows.py returns {ok, message, templates|runs|
+// webhooks|data, ...} -- a different envelope from every other router's
+// {success, data, error} (confirmed by reading WorkflowResponse/
+// WorkflowTemplateSearchResponse/WorkflowRunSearchResponse directly).
+// `dataKey` names which top-level key on the real response holds the
+// payload this call cares about; defaults to "data" for the single-item
+// endpoints (POST /run, POST /templates, etc., which nest the record one
+// level deeper under data.template / data.run).
 async function dashboardFetch<T>(
   path: string,
   options: RequestInit & {
     accessToken: string;
     audit_action?: string;
+    dataKey?: "templates" | "runs" | "webhooks" | "data";
   },
 ): Promise<ApiResponse<T>> {
   if (!API_BASE_URL) {
     return {
       success: false,
-      error: "API base URL is not configured. Using local safe demo workflow data.",
+      error: "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
     };
   }
 
@@ -301,16 +229,26 @@ async function dashboardFetch<T>(
       credentials: "include",
     });
 
-    const json = (await response.json().catch(() => ({}))) as ApiResponse<T>;
+    const raw = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      error?: { message?: string } | string;
+      templates?: unknown;
+      runs?: unknown;
+      webhooks?: unknown;
+      data?: unknown;
+    };
 
-    if (!response.ok) {
+    if (!response.ok || raw.ok === false) {
+      const rawError = typeof raw.error === "string" ? raw.error : raw.error?.message;
       return {
         success: false,
-        error: safeError(json.error || `Request failed with status ${response.status}`),
+        error: safeError(rawError || raw.message || `Request failed with status ${response.status}`),
       };
     }
 
-    return json;
+    const key = options.dataKey || "data";
+    return { success: true, data: raw[key] as T };
   } catch (error) {
     return {
       success: false,
@@ -451,12 +389,19 @@ function StatusPill({ status }: { status: WorkflowStatus }) {
   );
 }
 
-function CategoryIcon({ category }: { category: TemplateCategory }) {
-  if (category === "crm") return <Icon name="crm" size={16} />;
-  if (category === "security") return <Icon name="shield" size={16} />;
-  if (category === "memory") return <Icon name="memory" size={16} />;
-  if (category === "marketing") return <Icon name="spark" size={16} />;
-  if (category === "finance") return <Icon name="bolt" size={16} />;
+function RunStatusPill({ status }: { status: WorkflowRunStatus }) {
+  return (
+    <span className={cx("statusPill", `status-${status}`)}>
+      <span />
+      {RUN_STATUS_LABELS[status]}
+    </span>
+  );
+}
+
+function TemplateStatusIcon({ status }: { status: WorkflowStatus }) {
+  if (status === "active") return <Icon name="spark" size={16} />;
+  if (status === "paused") return <Icon name="pause" size={16} />;
+  if (status === "archived") return <Icon name="doc" size={16} />;
   return <Icon name="template" size={16} />;
 }
 
@@ -487,11 +432,9 @@ function WorkflowCanvas({ nodes }: { nodes: WorkflowNode[] }) {
             style={{ left: node.x, top: node.y }}
           >
             <div className="nodeIcon">
-              {node.type === "trigger" ? <Icon name="bolt" size={16} /> : null}
               {node.type === "agent" ? <Icon name="spark" size={16} /> : null}
               {node.type === "security" ? <Icon name="shield" size={16} /> : null}
               {node.type === "memory" ? <Icon name="memory" size={16} /> : null}
-              {node.type === "verification" ? <Icon name="verify" size={16} /> : null}
               {node.type === "action" ? <Icon name="workflow" size={16} /> : null}
             </div>
             <div>
@@ -510,9 +453,9 @@ export default function Page() {
   const [session, setSession] = useState<SessionData | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
-  const [workflows, setWorkflows] = useState<WorkflowRecord[]>([]);
+  const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
-  const [selectedCategory, setSelectedCategory] = useState<TemplateCategory | "all">("all");
+  const [selectedStatus, setSelectedStatus] = useState<WorkflowStatus | "all">("all");
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -540,31 +483,30 @@ export default function Page() {
   }, [selectedTemplateId, templates]);
 
   const stats = useMemo(() => {
-    const total = workflows.length;
-    const active = workflows.filter((workflow) => workflow.status === "active").length;
-    const blocked = workflows.filter((workflow) => workflow.status === "blocked").length;
-    const runs = workflows.reduce((sum, workflow) => sum + workflow.runs, 0);
-    const successRate = total
-      ? Math.round(workflows.reduce((sum, workflow) => sum + workflow.success_rate, 0) / total)
-      : 0;
+    const total = runs.length;
+    const running = runs.filter((run) => run.status === "running").length;
+    const waitingApproval = runs.filter((run) => run.status === "waiting_approval").length;
+    const completed = runs.filter((run) => run.status === "completed").length;
+    const failed = runs.filter((run) => run.status === "failed" || run.status === "cancelled").length;
+    const finished = completed + failed;
+    const successRate = finished ? Math.round((completed / finished) * 100) : null;
 
-    return { total, active, blocked, runs, successRate };
-  }, [workflows]);
+    return { total, running, waitingApproval, completed, failed, successRate };
+  }, [runs]);
 
   const filteredTemplates = useMemo(() => {
     const q = search.trim().toLowerCase();
 
     return templates.filter((template) => {
-      const categoryMatch = selectedCategory === "all" || template.category === selectedCategory;
+      const statusMatch = selectedStatus === "all" || template.status === selectedStatus;
       const searchMatch =
         !q ||
-        template.title.toLowerCase().includes(q) ||
-        template.description.toLowerCase().includes(q) ||
-        template.category.toLowerCase().includes(q);
+        template.name.toLowerCase().includes(q) ||
+        (template.description || "").toLowerCase().includes(q);
 
-      return categoryMatch && searchMatch;
+      return statusMatch && searchMatch;
     });
-  }, [templates, selectedCategory, search]);
+  }, [templates, selectedStatus, search]);
 
   const loadWorkflows = useCallback(async () => {
     if (!session) return;
@@ -572,42 +514,36 @@ export default function Page() {
     setIsLoading(true);
     setError(null);
 
-    const [templateResponse, workflowResponse] = await Promise.all([
-      dashboardFetch<WorkflowTemplate[]>("/api/workflows/templates", {
+    const [templateResponse, runResponse] = await Promise.all([
+      dashboardFetch<WorkflowTemplate[]>("/workflows/templates", {
         method: "GET",
         accessToken: session.accessToken,
         audit_action: "workflow_templates_read",
+        dataKey: "templates",
       }),
-      dashboardFetch<WorkflowRecord[]>("/api/workflows", {
+      dashboardFetch<WorkflowRun[]>("/workflows/runs", {
         method: "GET",
         accessToken: session.accessToken,
         audit_action: "workflow_history_read",
+        dataKey: "runs",
       }),
     ]);
 
-    const demoTemplates = buildDemoTemplates(session);
-
     if (templateResponse.success && Array.isArray(templateResponse.data)) {
-      const isolatedTemplates = templateResponse.data.filter(
-        (item) => item.user_id === session.user_id && item.workspace_id === session.workspace_id,
-      );
-      setTemplates(isolatedTemplates.length ? isolatedTemplates : demoTemplates);
+      setTemplates(templateResponse.data);
+      setSelectedTemplateId((current) => current || templateResponse.data![0]?.id || "");
     } else {
-      setTemplates(demoTemplates);
-      if (templateResponse.error && API_BASE_URL) setError(templateResponse.error);
+      setTemplates([]);
+      if (templateResponse.error) setError(templateResponse.error);
     }
 
-    if (workflowResponse.success && Array.isArray(workflowResponse.data)) {
-      const isolatedWorkflows = workflowResponse.data.filter(
-        (item) => item.user_id === session.user_id && item.workspace_id === session.workspace_id,
-      );
-      setWorkflows(isolatedWorkflows);
+    if (runResponse.success && Array.isArray(runResponse.data)) {
+      setRuns(runResponse.data);
     } else {
-      setWorkflows(buildDemoWorkflows(session, demoTemplates));
-      if (workflowResponse.error && API_BASE_URL) setError(workflowResponse.error);
+      setRuns([]);
+      if (runResponse.error) setError(runResponse.error);
     }
 
-    setSelectedTemplateId((current) => current || demoTemplates[0]?.id || "");
     setIsLoading(false);
   }, [session]);
 
@@ -621,17 +557,12 @@ export default function Page() {
     if (!session) return;
 
     if (!canCreateWorkflow) {
-      setError("Your current role or plan cannot create workflows.");
+      setError("Your current role or plan cannot run workflows.");
       return;
     }
 
-    if (template.sensitive && !canUseSensitiveWorkflow) {
+    if (templateIsSensitive(template) && !canUseSensitiveWorkflow) {
       setError("Sensitive workflow templates require admin access and Business plan or higher.");
-      return;
-    }
-
-    if (!hasMinPlan(session.plan, template.required_plan)) {
-      setError(`This template requires the ${template.required_plan} plan or higher.`);
       return;
     }
 
@@ -639,101 +570,58 @@ export default function Page() {
     setError(null);
 
     const payload = {
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
       template_id: template.id,
-      name: `${template.title} workflow`,
-      nodes: template.nodes,
-      security_agent_required: template.sensitive,
-      memory_agent_compatible: true,
-      prepare_verification_payload: true,
-      audit_action: "workflow_created_from_template",
+      trigger_type: "manual",
+      input_data: {},
+      metadata: { source: "dashboard_workflows_page" },
+      dry_run: false,
     };
 
-    const response = await dashboardFetch<WorkflowRecord>("/api/workflows", {
+    // POST /workflows/run nests the created record one level deeper, under
+    // data.run (see WorkflowResponse(data={"run": run.visible_dict()})).
+    const response = await dashboardFetch<{ run: WorkflowRun }>("/workflows/run", {
       method: "POST",
       accessToken: session.accessToken,
       audit_action: "workflow_create",
       body: JSON.stringify(payload),
+      dataKey: "data",
     });
 
     if (response.success && response.data) {
-      if (response.data.user_id === session.user_id && response.data.workspace_id === session.workspace_id) {
-        setWorkflows((current) => [response.data as WorkflowRecord, ...current]);
-      }
-    } else {
-      const demoWorkflow: WorkflowRecord = {
-        id: `WF-${String(Math.floor(Math.random() * 900000) + 100000)}`,
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
-        name: `${template.title} workflow`,
-        status: template.sensitive ? "draft" : "active",
-        template_id: template.id,
-        nodes: template.nodes,
-        runs: 0,
-        success_rate: 100,
-        last_run_at: nowIso(),
-        security_review_required: template.sensitive,
-        memory_payload_ready: true,
-        verification_payload_ready: false,
-        audit_event_id: `audit_${Date.now()}`,
-      };
-
-      setWorkflows((current) => [demoWorkflow, ...current]);
+      setRuns((current) => [response.data!.run, ...current]);
+    } else if (response.error) {
+      setError(response.error);
     }
 
     setIsCreating(false);
   };
 
-  const toggleWorkflowStatus = async (workflow: WorkflowRecord) => {
+  const toggleTemplateStatus = async (template: WorkflowTemplate) => {
     if (!session) return;
 
-    if (!canPublishWorkflow) {
-      setError("Only admins or owners can publish, pause, or resume workflows.");
+    if (!canCreateWorkflow) {
+      setError("Your current role or plan cannot change template status.");
       return;
     }
 
-    const nextStatus: WorkflowStatus = workflow.status === "active" ? "paused" : "active";
+    const nextStatus: WorkflowStatus = template.status === "active" ? "paused" : "active";
 
-    const response = await dashboardFetch<WorkflowRecord>(`/api/workflows/${encodeURIComponent(workflow.id)}/status`, {
-      method: "PATCH",
-      accessToken: session.accessToken,
-      audit_action: "workflow_status_change",
-      body: JSON.stringify({
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
-        workflow_id: workflow.id,
-        status: nextStatus,
-        security_agent_required: workflow.security_review_required,
-        prepare_verification_payload: true,
-      }),
-    });
+    const response = await dashboardFetch<{ template: WorkflowTemplate }>(
+      `/workflows/templates/${encodeURIComponent(template.id)}`,
+      {
+        method: "PATCH",
+        accessToken: session.accessToken,
+        audit_action: "workflow_template_status_change",
+        body: JSON.stringify({ status: nextStatus }),
+        dataKey: "data",
+      },
+    );
 
     if (response.success && response.data) {
-      setWorkflows((current) =>
-        current.map((item) =>
-          item.id === workflow.id &&
-          response.data?.user_id === session.user_id &&
-          response.data?.workspace_id === session.workspace_id
-            ? response.data
-            : item,
-        ),
-      );
-      return;
+      setTemplates((current) => current.map((item) => (item.id === template.id ? response.data!.template : item)));
+    } else if (response.error) {
+      setError(response.error);
     }
-
-    setWorkflows((current) =>
-      current.map((item) =>
-        item.id === workflow.id
-          ? {
-              ...item,
-              status: nextStatus,
-              last_run_at: nowIso(),
-              verification_payload_ready: nextStatus === "active",
-            }
-          : item,
-      ),
-    );
   };
 
   if (checkingSession || !session) {
@@ -788,9 +676,9 @@ export default function Page() {
               <div className="balanceCard">
                 <div className="cardTop">
                   <div>
-                    <p>Total Workflows</p>
+                    <p>Total Runs</p>
                     <h2>{formatNumber(stats.total)}</h2>
-                    <span className="greenText">↑ {stats.active} active automations</span>
+                    <span className="greenText">↑ {stats.running} running now</span>
                   </div>
                   <button className="currencyBtn">Live</button>
                 </div>
@@ -812,18 +700,18 @@ export default function Page() {
                 <div className="miniWallets">
                   <div>
                     <Icon name="workflow" />
-                    <strong>{formatNumber(stats.runs)}</strong>
-                    <span>Total Runs</span>
+                    <strong>{formatNumber(stats.completed)}</strong>
+                    <span>Completed</span>
                   </div>
                   <div>
                     <Icon name="verify" />
-                    <strong>{stats.successRate}%</strong>
+                    <strong>{stats.successRate === null ? "N/A" : `${stats.successRate}%`}</strong>
                     <span>Success</span>
                   </div>
                   <div>
                     <Icon name="shield" />
-                    <strong>{stats.blocked}</strong>
-                    <span>Blocked</span>
+                    <strong>{stats.waitingApproval}</strong>
+                    <span>Awaiting Approval</span>
                   </div>
                 </div>
               </div>
@@ -838,54 +726,56 @@ export default function Page() {
 
                 <div className="metricCard">
                   <div className="metricIcon"><Icon name="memory" /></div>
-                  <span>Memory Ready</span>
-                  <strong>{workflows.filter((item) => item.memory_payload_ready).length}</strong>
-                  <p>Context compatible</p>
+                  <span>Queued</span>
+                  <strong>{runs.filter((run) => run.status === "queued").length}</strong>
+                  <p>Waiting to start</p>
                 </div>
 
                 <div className="metricCard">
                   <div className="metricIcon"><Icon name="shield" /></div>
                   <span>Security Routed</span>
-                  <strong>{workflows.filter((item) => item.security_review_required).length}</strong>
+                  <strong>{runs.filter((run) => run.approval_id !== null).length}</strong>
                   <p>Approval required</p>
                 </div>
 
                 <div className="metricCard">
                   <div className="metricIcon"><Icon name="verify" /></div>
-                  <span>Verified</span>
-                  <strong>{workflows.filter((item) => item.verification_payload_ready).length}</strong>
-                  <p>Payload prepared</p>
+                  <span>Failed</span>
+                  <strong>{stats.failed}</strong>
+                  <p>Needs review</p>
                 </div>
               </div>
 
               <div className="chartCard">
                 <div className="cardTop">
                   <div>
-                    <h3>Workflow Performance</h3>
-                    <p>Runs and success rate by automation</p>
+                    <h3>Run Status</h3>
+                    <p>Real run counts by status</p>
                   </div>
                   <div className="legend">
-                    <span><i className="orangeDot" /> Runs</span>
-                    <span><i className="darkDot" /> Success</span>
+                    <span><i className="orangeDot" /> Count</span>
                   </div>
                 </div>
 
+                {runs.length === 0 ? (
+                  <p className="emptyNote">No workflow runs yet -- use a template above to start one.</p>
+                ) : (
                 <div className="barChart">
-                  {workflows.map((workflow) => {
-                    const runHeight = Math.max(34, Math.min(145, workflow.runs));
-                    const successHeight = Math.max(24, Math.min(118, workflow.success_rate));
+                  {(Object.keys(RUN_STATUS_LABELS) as WorkflowRunStatus[]).map((statusKey) => {
+                    const count = runs.filter((run) => run.status === statusKey).length;
+                    const barHeight = Math.max(8, Math.min(145, count * 24));
 
                     return (
-                      <div className="barGroup" key={workflow.id}>
+                      <div className="barGroup" key={statusKey}>
                         <div className="bars">
-                          <span className="bar barOrange" style={{ height: runHeight }} />
-                          <span className="bar barDark" style={{ height: successHeight }} />
+                          <span className="bar barOrange" style={{ height: barHeight }} />
                         </div>
-                        <span className="barLabel">{workflow.id.replace("WF-", "")}</span>
+                        <span className="barLabel">{RUN_STATUS_LABELS[statusKey]}</span>
                       </div>
                     );
                   })}
                 </div>
+                )}
               </div>
             </section>
 
@@ -908,7 +798,7 @@ export default function Page() {
                 </div>
 
                 {selectedTemplate ? (
-                  <WorkflowCanvas nodes={selectedTemplate.nodes} />
+                  <WorkflowCanvas nodes={selectedTemplate.steps.map(stepToNode)} />
                 ) : (
                   <div className="emptyBuilder">
                     <Icon name="workflow" size={34} />
@@ -927,7 +817,7 @@ export default function Page() {
                 <div className="contractCards">
                   <div className="contract dark">
                     <span>Security Agent</span>
-                    <strong>{selectedTemplate?.sensitive ? "Required before publish" : "Not required"}</strong>
+                    <strong>{selectedTemplate && templateIsSensitive(selectedTemplate) ? "Required before publish" : "Not required"}</strong>
                     <small>Sensitive action gate</small>
                   </div>
 
@@ -973,16 +863,14 @@ export default function Page() {
                   </label>
 
                   <select
-                    value={selectedCategory}
-                    onChange={(event) => setSelectedCategory(event.target.value as TemplateCategory | "all")}
+                    value={selectedStatus}
+                    onChange={(event) => setSelectedStatus(event.target.value as WorkflowStatus | "all")}
                   >
-                    <option value="all">All Categories</option>
-                    <option value="crm">CRM</option>
-                    <option value="security">Security</option>
-                    <option value="memory">Memory</option>
-                    <option value="marketing">Marketing</option>
-                    <option value="finance">Finance</option>
-                    <option value="creator">Creator</option>
+                    <option value="all">All Statuses</option>
+                    <option value="draft">Draft</option>
+                    <option value="active">Active</option>
+                    <option value="paused">Paused</option>
+                    <option value="archived">Archived</option>
                   </select>
 
                   <button className="filterBtn"><Icon name="filter" size={16} /> Filter</button>
@@ -993,44 +881,52 @@ export default function Page() {
                 <div className="emptyBuilder">
                   <Icon name="template" size={34} />
                   <strong>No templates found</strong>
-                  <p>Clear filters or create a new workflow from scratch.</p>
+                  <p>{templates.length === 0 ? "Create a workflow template to get started." : "Clear filters to see your existing templates."}</p>
                 </div>
               ) : (
                 <div className="templateGrid">
                   {filteredTemplates.map((template) => {
-                    const locked = !hasMinPlan(session.plan, template.required_plan);
+                    const sensitive = templateIsSensitive(template);
 
                     return (
                       <article
                         key={template.id}
-                        className={cx("templateCard", selectedTemplate?.id === template.id && "selected", locked && "locked")}
+                        className={cx("templateCard", selectedTemplate?.id === template.id && "selected")}
                         onClick={() => setSelectedTemplateId(template.id)}
                       >
                         <div className="templateTop">
-                          <span className="templateIcon"><CategoryIcon category={template.category} /></span>
-                          <button className="moreBtn" aria-label={`More actions for ${template.title}`}>
+                          <span className="templateIcon"><TemplateStatusIcon status={template.status} /></span>
+                          <button
+                            className="moreBtn"
+                            aria-label={`Toggle status for ${template.name}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void toggleTemplateStatus(template);
+                            }}
+                            disabled={!canCreateWorkflow}
+                          >
                             <Icon name="more" size={18} />
                           </button>
                         </div>
 
-                        <h3>{template.title}</h3>
-                        <p>{template.description}</p>
+                        <h3>{template.name}</h3>
+                        <p>{template.description || "No description."}</p>
 
                         <div className="templateMeta">
-                          <span>{template.estimated_minutes} min</span>
-                          <span>{template.usage_units} units</span>
-                          <span>{template.required_plan}</span>
+                          <span>{template.steps.length} steps</span>
+                          <span>{STATUS_LABELS[template.status]}</span>
+                          {sensitive ? <span>Security-reviewed</span> : null}
                         </div>
 
                         <button
                           className="templateBtn"
-                          disabled={locked || (template.sensitive && !canUseSensitiveWorkflow)}
+                          disabled={!canCreateWorkflow || (sensitive && !canUseSensitiveWorkflow) || isCreating}
                           onClick={(event) => {
                             event.stopPropagation();
                             createWorkflowFromTemplate(template);
                           }}
                         >
-                          {locked ? "Plan Locked" : template.sensitive && !canUseSensitiveWorkflow ? "Admin Only" : "Use Template"}
+                          {sensitive && !canUseSensitiveWorkflow ? "Admin Only" : "Use Template"}
                         </button>
                       </article>
                     );
@@ -1042,76 +938,60 @@ export default function Page() {
             <section className="tableCard">
               <div className="tableHeader">
                 <div>
-                  <h2>Workflow History</h2>
-                  <p>Live workflow records filtered by current user and workspace only.</p>
+                  <h2>Run History</h2>
+                  <p>Live run records scoped to the current user and workspace only.</p>
                 </div>
-                <button className="filterBtn"><Icon name="workflow" size={16} /> Manage</button>
+                <button className="filterBtn" onClick={() => loadWorkflows()}><Icon name="workflow" size={16} /> Refresh</button>
               </div>
 
-              {workflows.length === 0 ? (
+              {runs.length === 0 ? (
                 <div className="emptyBuilder">
                   <Icon name="doc" size={34} />
-                  <strong>No workflows yet</strong>
-                  <p>Create one from a template and make the agent squad actually useful.</p>
+                  <strong>No runs yet</strong>
+                  <p>Use a template above to start your first workflow run.</p>
                 </div>
               ) : (
                 <div className="tableWrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Workflow ID</th>
-                        <th>Name</th>
+                        <th>Run ID</th>
+                        <th>Template</th>
                         <th>Status</th>
-                        <th>Runs</th>
-                        <th>Success</th>
-                        <th>Contracts</th>
-                        <th>Last Run</th>
-                        <th />
+                        <th>Trigger</th>
+                        <th>Security</th>
+                        <th>Started</th>
+                        <th>Completed</th>
                       </tr>
                     </thead>
 
                     <tbody>
-                      {workflows.map((workflow) => (
-                        <tr key={workflow.id}>
-                          <td><strong className="mono">{workflow.id}</strong></td>
-                          <td>
-                            <div className="activityCell">
-                              <span className={cx("agentIcon", workflow.security_review_required && "sensitive")}>
-                                {workflow.security_review_required ? <Icon name="shield" size={15} /> : <Icon name="workflow" size={15} />}
-                              </span>
-                              <div>
-                                <strong>{workflow.name}</strong>
-                                <small>{workflow.template_id || "Custom workflow"}</small>
+                      {runs.map((run) => {
+                        const template = templates.find((item) => item.id === run.template_id);
+                        const sensitive = run.approval_id !== null;
+
+                        return (
+                          <tr key={run.id}>
+                            <td><strong className="mono">{run.id}</strong></td>
+                            <td>
+                              <div className="activityCell">
+                                <span className={cx("agentIcon", sensitive && "sensitive")}>
+                                  {sensitive ? <Icon name="shield" size={15} /> : <Icon name="workflow" size={15} />}
+                                </span>
+                                <div>
+                                  <strong>{template?.name || run.template_id}</strong>
+                                  {run.error ? <small>{run.error}</small> : null}
+                                </div>
                               </div>
-                            </div>
-                          </td>
-                          <td><StatusPill status={workflow.status} /></td>
-                          <td>{formatNumber(workflow.runs)}</td>
-                          <td>
-                            <div className="rowProgress">
-                              <span style={{ width: `${workflow.success_rate}%` }} />
-                            </div>
-                            <small>{workflow.success_rate}%</small>
-                          </td>
-                          <td>
-                            <div className="contractMini">
-                              {workflow.security_review_required ? <Icon name="shield" size={15} /> : null}
-                              {workflow.memory_payload_ready ? <Icon name="memory" size={15} /> : null}
-                              {workflow.verification_payload_ready ? <Icon name="verify" size={15} /> : null}
-                            </div>
-                          </td>
-                          <td>
-                            <span>{formatDateTime(workflow.last_run_at)}</span>
-                            <small>{workflow.audit_event_id || "audit pending"}</small>
-                          </td>
-                          <td>
-                            <button className="approveBtn" onClick={() => toggleWorkflowStatus(workflow)} disabled={!canPublishWorkflow}>
-                              {workflow.status === "active" ? <Icon name="pause" size={14} /> : <Icon name="play" size={14} />}
-                              {workflow.status === "active" ? "Pause" : "Run"}
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                            <td><RunStatusPill status={run.status} /></td>
+                            <td>{run.trigger_type}</td>
+                            <td>{sensitive ? <Icon name="shield" size={15} /> : "—"}</td>
+                            <td>{run.started_at ? formatDateTime(run.started_at) : "Not started"}</td>
+                            <td>{run.completed_at ? formatDateTime(run.completed_at) : "—"}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -2049,11 +1929,16 @@ export default function Page() {
         }
 
         .status-paused,
-        .status-draft {
+        .status-draft,
+        .status-queued,
+        .status-running,
+        .status-waiting_approval {
           color: #a57900;
         }
 
-        .status-blocked {
+        .status-archived,
+        .status-failed,
+        .status-cancelled {
           color: #d93025;
         }
 
@@ -2109,6 +1994,15 @@ export default function Page() {
         .emptyBuilder p,
         .stateBox p {
           margin: 0;
+        }
+
+        .emptyNote {
+          margin: 0;
+          padding: 20px 18px;
+          color: #8a8a83;
+          font-size: 13px;
+          line-height: 1.6;
+          text-align: center;
         }
 
         .loader {
