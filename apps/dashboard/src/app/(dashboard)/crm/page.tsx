@@ -133,164 +133,6 @@ function formatDateTime(value: string): string {
   }
 }
 
-function buildDemoLeads(session: SessionData): LeadRecord[] {
-  const base = Date.now();
-
-  return [
-    {
-      id: "LEAD-000076",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "John Miller",
-      company: "North Western Billing",
-      email: "john@example.com",
-      phone: "+1 206 555 0188",
-      source: "Website",
-      status: "proposal",
-      value: 3200,
-      score: 91,
-      assigned_agent: "Business Agent",
-      sensitive: false,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      security_review_required: false,
-      created_at: new Date(base - 1000 * 60 * 60 * 2).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 22).toISOString(),
-      audit_event_id: "audit_crm_000076",
-    },
-    {
-      id: "LEAD-000075",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Amanda Carter",
-      company: "Carter Dental Group",
-      email: "amanda@example.com",
-      phone: "+1 425 555 0112",
-      source: "Google Ads",
-      status: "qualified",
-      value: 1800,
-      score: 84,
-      assigned_agent: "Call Agent",
-      sensitive: true,
-      memory_payload_ready: true,
-      verification_payload_ready: false,
-      security_review_required: true,
-      created_at: new Date(base - 1000 * 60 * 60 * 5).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 48).toISOString(),
-      audit_event_id: "audit_crm_000075",
-    },
-    {
-      id: "LEAD-000074",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Michael Brooks",
-      company: "Brooks Home Services",
-      email: "michael@example.com",
-      phone: "+1 305 555 0144",
-      source: "Workflow",
-      status: "new",
-      value: 950,
-      score: 67,
-      assigned_agent: "Workflow Agent",
-      sensitive: false,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      security_review_required: false,
-      created_at: new Date(base - 1000 * 60 * 60 * 8).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 60 * 2).toISOString(),
-      audit_event_id: "audit_crm_000074",
-    },
-    {
-      id: "LEAD-000073",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Sarah Kim",
-      company: "Kim Chiropractic",
-      email: "sarah@example.com",
-      phone: "+1 312 555 0199",
-      source: "Call Agent",
-      status: "won",
-      value: 2400,
-      score: 96,
-      assigned_agent: "Master Agent",
-      sensitive: true,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      security_review_required: true,
-      created_at: new Date(base - 1000 * 60 * 60 * 20).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 60 * 4).toISOString(),
-      audit_event_id: "audit_crm_000073",
-    },
-    {
-      id: "LEAD-000072",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Robert Stone",
-      company: "Stone Roofing Co.",
-      email: "robert@example.com",
-      phone: "+1 571 555 0133",
-      source: "Referral",
-      status: "lost",
-      value: 1200,
-      score: 38,
-      assigned_agent: "Business Agent",
-      sensitive: false,
-      memory_payload_ready: false,
-      verification_payload_ready: false,
-      security_review_required: false,
-      created_at: new Date(base - 1000 * 60 * 60 * 28).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 60 * 7).toISOString(),
-      audit_event_id: "audit_crm_000072",
-    },
-  ];
-}
-
-function buildDemoClients(session: SessionData): ClientRecord[] {
-  const base = Date.now();
-
-  return [
-    {
-      id: "CLIENT-001",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "John Miller",
-      company: "North Western Billing",
-      plan: "Growth Retainer",
-      revenue: 2700,
-      health: "excellent",
-      active_workflows: 4,
-      open_tasks: 3,
-      last_contact_at: new Date(base - 1000 * 60 * 60 * 3).toISOString(),
-    },
-    {
-      id: "CLIENT-002",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "Sarah Kim",
-      company: "Kim Chiropractic",
-      plan: "SEO + Ads",
-      revenue: 1800,
-      health: "good",
-      active_workflows: 3,
-      open_tasks: 5,
-      last_contact_at: new Date(base - 1000 * 60 * 60 * 9).toISOString(),
-    },
-    {
-      id: "CLIENT-003",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      name: "David Ross",
-      company: "Ross Legal Group",
-      plan: "Automation Setup",
-      revenue: 950,
-      health: "watch",
-      active_workflows: 1,
-      open_tasks: 7,
-      last_contact_at: new Date(base - 1000 * 60 * 60 * 30).toISOString(),
-    },
-  ];
-}
-
 async function dashboardFetch<T>(
   path: string,
   options: RequestInit & {
@@ -550,13 +392,19 @@ export default function Page() {
     setIsLoading(true);
     setError(null);
 
+    // There is no CRM router anywhere in apps/api/routes/ -- no
+    // "/crm/leads", "/crm/clients", or any lead/client concept exists in
+    // the backend at all (confirmed by listing the routes directory).
+    // These calls will always 404 today; leads/clients stay empty rather
+    // than falling back to fabricated demo rows. If a real CRM backend is
+    // added later at these same paths, this starts working automatically.
     const [leadResponse, clientResponse] = await Promise.all([
-      dashboardFetch<LeadRecord[]>("/api/crm/leads", {
+      dashboardFetch<LeadRecord[]>("/crm/leads", {
         method: "GET",
         accessToken: session.accessToken,
         audit_action: "crm_leads_read",
       }),
-      dashboardFetch<ClientRecord[]>("/api/crm/clients", {
+      dashboardFetch<ClientRecord[]>("/crm/clients", {
         method: "GET",
         accessToken: session.accessToken,
         audit_action: "crm_clients_read",
@@ -564,25 +412,19 @@ export default function Page() {
     ]);
 
     if (leadResponse.success && Array.isArray(leadResponse.data)) {
-      setLeads(
-        leadResponse.data.filter(
-          (lead) => lead.user_id === session.user_id && lead.workspace_id === session.workspace_id,
-        ),
-      );
+      setLeads(leadResponse.data);
     } else {
-      setLeads(buildDemoLeads(session));
-      if (leadResponse.error && API_BASE_URL) setError(leadResponse.error);
+      setLeads([]);
     }
 
     if (clientResponse.success && Array.isArray(clientResponse.data)) {
-      setClients(
-        clientResponse.data.filter(
-          (client) => client.user_id === session.user_id && client.workspace_id === session.workspace_id,
-        ),
-      );
+      setClients(clientResponse.data);
     } else {
-      setClients(buildDemoClients(session));
-      if (clientResponse.error && API_BASE_URL) setError(clientResponse.error);
+      setClients([]);
+    }
+
+    if (!leadResponse.success || !clientResponse.success) {
+      setError("CRM is not connected to a backend yet -- no CRM API exists in this deployment.");
     }
 
     setIsLoading(false);
@@ -606,19 +448,17 @@ export default function Page() {
     setError(null);
 
     const payload = {
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
       name: "New AI Qualified Lead",
       company: "Digital Promotix Prospect",
       source: "Workflow",
       status: "new",
-      memory_agent_compatible: true,
-      prepare_verification_payload: true,
-      security_agent_required: false,
-      audit_action: "crm_lead_created_from_dashboard",
     };
 
-    const response = await dashboardFetch<LeadRecord>("/api/crm/leads", {
+    // No CRM router exists in the backend (see loadCrm's note above) --
+    // this will always fail today. Left wired to the real path rather
+    // than faking a created lead, so it starts working the moment a real
+    // CRM backend is added, instead of silently lying in the meantime.
+    const response = await dashboardFetch<LeadRecord>("/crm/leads", {
       method: "POST",
       accessToken: session.accessToken,
       audit_action: "crm_lead_create",
@@ -626,33 +466,9 @@ export default function Page() {
     });
 
     if (response.success && response.data) {
-      if (response.data.user_id === session.user_id && response.data.workspace_id === session.workspace_id) {
-        setLeads((current) => [response.data as LeadRecord, ...current]);
-      }
+      setLeads((current) => [response.data as LeadRecord, ...current]);
     } else {
-      const demoLead: LeadRecord = {
-        id: `LEAD-${String(Math.floor(Math.random() * 900000) + 100000)}`,
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
-        name: "New AI Qualified Lead",
-        company: "Digital Promotix Prospect",
-        email: "lead@example.com",
-        phone: "+1 555 0100",
-        source: "Workflow",
-        status: "new",
-        value: 1500,
-        score: 72,
-        assigned_agent: "Business Agent",
-        sensitive: false,
-        memory_payload_ready: true,
-        verification_payload_ready: false,
-        security_review_required: false,
-        created_at: nowIso(),
-        updated_at: nowIso(),
-        audit_event_id: `audit_${Date.now()}`,
-      };
-
-      setLeads((current) => [demoLead, ...current]);
+      setError("CRM is not connected to a backend yet -- no CRM API exists in this deployment.");
     }
 
     setIsCreatingLead(false);
@@ -889,6 +705,9 @@ export default function Page() {
                   <button className="smallSoft">+ Add client</button>
                 </div>
 
+                {clients.length === 0 ? (
+                  <p className="emptyNote">No CRM backend is connected in this deployment yet.</p>
+                ) : (
                 <div className="clientGrid">
                   {clients.map((client) => (
                     <article className="clientCard" key={client.id}>
@@ -918,6 +737,7 @@ export default function Page() {
                     </article>
                   ))}
                 </div>
+                )}
               </div>
 
               <div className="contractCard">
@@ -975,8 +795,12 @@ export default function Page() {
               {filteredLeads.length === 0 ? (
                 <div className="emptyBox">
                   <Icon name="lead" size={34} />
-                  <strong>No leads found</strong>
-                  <p>Create a lead or clear filters. Pipeline looking too clean right now.</p>
+                  <strong>{leads.length === 0 ? "CRM not connected" : "No leads match your filters"}</strong>
+                  <p>
+                    {leads.length === 0
+                      ? "There is no CRM backend in this deployment yet -- leads and clients aren't available."
+                      : "Clear filters to see your existing leads."}
+                  </p>
                 </div>
               ) : (
                 <div className="tableWrap">
@@ -2052,6 +1876,15 @@ export default function Page() {
         .emptyBox p,
         .stateBox p {
           margin: 0;
+        }
+
+        .emptyNote {
+          margin: 0;
+          padding: 20px 18px;
+          color: #8a8a83;
+          font-size: 13px;
+          line-height: 1.6;
+          text-align: center;
         }
 
         .loader {
