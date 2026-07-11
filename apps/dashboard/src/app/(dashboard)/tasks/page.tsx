@@ -14,9 +14,9 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { SessionData, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
 
-type Role = "owner" | "admin" | "operator" | "viewer";
-type Plan = "free" | "pro" | "business" | "enterprise";
 type TaskStatus = "queued" | "running" | "waiting_security" | "completed" | "failed" | "rejected";
 type TaskPriority = "low" | "normal" | "high" | "critical";
 type AgentName =
@@ -52,15 +52,6 @@ type TaskRecord = {
   audit_event_id?: string;
 };
 
-type DashboardSession = {
-  user_id: string;
-  workspace_id: string;
-  role: Role;
-  plan: Plan;
-  display_name: string;
-  email: string;
-};
-
 type ApiResponse<T> = {
   success: boolean;
   data?: T;
@@ -80,15 +71,6 @@ type TaskStats = {
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
-const DEFAULT_SESSION: DashboardSession = {
-  user_id: "demo_user_digital_promotix",
-  workspace_id: "demo_workspace_william",
-  role: "owner",
-  plan: "enterprise",
-  display_name: "Sajibur Rahman",
-  email: "sajibur.rahman@example.com",
-};
-
 const STATUS_LABELS: Record<TaskStatus, string> = {
   queued: "Queued",
   running: "Running",
@@ -106,20 +88,6 @@ const PRIORITY_LABELS: Record<TaskPriority, string> = {
 };
 
 const SENSITIVE_ACTIONS = new Set(["delete", "export", "security", "permission", "billing", "execute"]);
-
-const PLAN_ORDER: Record<Plan, number> = {
-  free: 1,
-  pro: 2,
-  business: 3,
-  enterprise: 4,
-};
-
-const ROLE_POWER: Record<Role, number> = {
-  viewer: 1,
-  operator: 2,
-  admin: 3,
-  owner: 4,
-};
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -164,7 +132,7 @@ function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
 }
 
-function buildDemoTasks(session: DashboardSession): TaskRecord[] {
+function buildDemoTasks(session: SessionData): TaskRecord[] {
   const base = Date.now();
 
   return [
@@ -294,8 +262,7 @@ function buildDemoTasks(session: DashboardSession): TaskRecord[] {
 async function dashboardFetch<T>(
   path: string,
   options: RequestInit & {
-    user_id: string;
-    workspace_id: string;
+    accessToken: string;
     audit_action?: string;
   },
 ): Promise<ApiResponse<T>> {
@@ -308,8 +275,7 @@ async function dashboardFetch<T>(
 
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
-  headers.set("X-User-Id", options.user_id);
-  headers.set("X-Workspace-Id", options.workspace_id);
+  headers.set("Authorization", `Bearer ${options.accessToken}`);
   headers.set("X-Audit-Action", options.audit_action || "dashboard_task_read");
 
   try {
@@ -637,7 +603,9 @@ function PriorityPill({ priority }: { priority: TaskPriority }) {
 }
 
 export default function Page() {
-  const [session] = useState<DashboardSession>(DEFAULT_SESSION);
+  const router = useRouter();
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<TaskStatus | "all">("all");
   const [search, setSearch] = useState("");
@@ -647,9 +615,21 @@ export default function Page() {
   const [liveEnabled, setLiveEnabled] = useState(true);
   const mounted = useRef(false);
 
-  const canCreateTask = ROLE_POWER[session.role] >= ROLE_POWER.operator && PLAN_ORDER[session.plan] >= PLAN_ORDER.pro;
-  const canApproveSecurity = ROLE_POWER[session.role] >= ROLE_POWER.admin;
-  const canExport = ROLE_POWER[session.role] >= ROLE_POWER.admin && PLAN_ORDER[session.plan] >= PLAN_ORDER.business;
+  useEffect(() => {
+    const activeSession = readSession();
+
+    if (!activeSession) {
+      router.replace("/login");
+      return;
+    }
+
+    setSession(activeSession);
+    setCheckingSession(false);
+  }, [router]);
+
+  const canCreateTask = Boolean(session) && hasMinRole(session!.role, "manager") && hasMinPlan(session!.plan, "pro");
+  const canApproveSecurity = Boolean(session) && hasMinRole(session!.role, "admin");
+  const canExport = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "business");
 
   const stats: TaskStats = useMemo(() => {
     const total = tasks.length;
@@ -682,13 +662,14 @@ export default function Page() {
   }, [tasks]);
 
   const loadTasks = useCallback(async () => {
+    if (!session) return;
+
     setIsLoading(true);
     setError(null);
 
     const response = await dashboardFetch<TaskRecord[]>("/api/tasks", {
       method: "GET",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
+      accessToken: session.accessToken,
       audit_action: "task_history_read",
     });
 
@@ -735,6 +716,8 @@ export default function Page() {
   }, [liveEnabled]);
 
   const createTask = async () => {
+    if (!session) return;
+
     if (!canCreateTask) {
       setError("Your current role or plan cannot create agent tasks.");
       return;
@@ -760,8 +743,7 @@ export default function Page() {
 
     const response = await dashboardFetch<TaskRecord>("/api/tasks", {
       method: "POST",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
+      accessToken: session.accessToken,
       audit_action: "task_create",
       body: JSON.stringify(payload),
     });
@@ -799,6 +781,8 @@ export default function Page() {
   };
 
   const approveSecurityTask = async (task: TaskRecord) => {
+    if (!session) return;
+
     if (!canApproveSecurity) {
       setError("Only admins or owners can approve sensitive Security Agent tasks.");
       return;
@@ -808,8 +792,7 @@ export default function Page() {
 
     const response = await dashboardFetch<TaskRecord>(`/api/security/tasks/${encodeURIComponent(task.id)}/approve`, {
       method: "POST",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
+      accessToken: session.accessToken,
       audit_action: "security_task_approve",
       body: JSON.stringify({
         user_id: session.user_id,
@@ -847,6 +830,8 @@ export default function Page() {
   };
 
   const exportTasks = () => {
+    if (!session) return;
+
     if (!canExport) {
       setError("Task export requires admin access and Business plan or higher.");
       return;
@@ -868,11 +853,19 @@ export default function Page() {
     URL.revokeObjectURL(url);
   };
 
+  if (checkingSession || !session) {
+    return (
+      <div className="dashboardPanel">
+        <p>Checking secure session...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="dashboardPanel">
         <div className="heroLine">
           <div>
-            <h1>Good morning, {session.display_name.split(" ")[0]}</h1>
+            <h1>Good morning, {session.name.split(" ")[0]}</h1>
             <p>Track agent tasks, live progress, security reviews, memory context, and verification status.</p>
           </div>
 

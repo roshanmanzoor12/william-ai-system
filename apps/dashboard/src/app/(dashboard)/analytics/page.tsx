@@ -16,19 +16,10 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { SessionData, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
 
-type Role = "owner" | "admin" | "operator" | "viewer";
-type Plan = "free" | "pro" | "business" | "enterprise";
 type RangeKey = "7d" | "30d" | "90d" | "12m";
-
-type DashboardSession = {
-  user_id: string;
-  workspace_id: string;
-  role: Role;
-  plan: Plan;
-  display_name: string;
-  email: string;
-};
 
 type ApiResponse<T> = {
   success: boolean;
@@ -95,29 +86,6 @@ type AnalyticsData = {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
-const DEFAULT_SESSION: DashboardSession = {
-  user_id: "demo_user_digital_promotix",
-  workspace_id: "demo_workspace_william",
-  role: "owner",
-  plan: "enterprise",
-  display_name: "Sajibur Rahman",
-  email: "sajibur.rahman@example.com",
-};
-
-const ROLE_POWER: Record<Role, number> = {
-  viewer: 1,
-  operator: 2,
-  admin: 3,
-  owner: 4,
-};
-
-const PLAN_POWER: Record<Plan, number> = {
-  free: 1,
-  pro: 2,
-  business: 3,
-  enterprise: 4,
-};
-
 const RANGE_LABELS: Record<RangeKey, string> = {
   "7d": "7 Days",
   "30d": "30 Days",
@@ -162,7 +130,7 @@ function formatDate(value: string): string {
   }
 }
 
-function buildDemoAnalytics(session: DashboardSession, range: RangeKey): AnalyticsData {
+function buildDemoAnalytics(session: SessionData, range: RangeKey): AnalyticsData {
   const multiplier = range === "7d" ? 1 : range === "30d" ? 3 : range === "90d" ? 7 : 12;
   const labels =
     range === "12m"
@@ -228,8 +196,7 @@ function buildDemoAnalytics(session: DashboardSession, range: RangeKey): Analyti
 async function dashboardFetch<T>(
   path: string,
   options: RequestInit & {
-    user_id: string;
-    workspace_id: string;
+    accessToken: string;
     audit_action?: string;
   },
 ): Promise<ApiResponse<T>> {
@@ -242,8 +209,7 @@ async function dashboardFetch<T>(
 
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
-  headers.set("X-User-Id", options.user_id);
-  headers.set("X-Workspace-Id", options.workspace_id);
+  headers.set("Authorization", `Bearer ${options.accessToken}`);
   headers.set("X-Audit-Action", options.audit_action || "dashboard_analytics_read");
 
   try {
@@ -449,7 +415,9 @@ function StatusBadge({ status }: { status: WorkflowMetric["status"] }) {
 }
 
 export default function Page() {
-  const [session] = useState<DashboardSession>(DEFAULT_SESSION);
+  const router = useRouter();
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [range, setRange] = useState<RangeKey>("30d");
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -457,10 +425,22 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(false);
 
-  const canViewAdvancedAnalytics = ROLE_POWER[session.role] >= ROLE_POWER.operator && PLAN_POWER[session.plan] >= PLAN_POWER.pro;
-  const canExportAnalytics = ROLE_POWER[session.role] >= ROLE_POWER.admin && PLAN_POWER[session.plan] >= PLAN_POWER.business;
-  const canViewBillingUsage = ROLE_POWER[session.role] >= ROLE_POWER.admin;
-  const canViewSecurityAnalytics = ROLE_POWER[session.role] >= ROLE_POWER.admin;
+  useEffect(() => {
+    const activeSession = readSession();
+
+    if (!activeSession) {
+      router.replace("/login");
+      return;
+    }
+
+    setSession(activeSession);
+    setCheckingSession(false);
+  }, [router]);
+
+  const canViewAdvancedAnalytics = Boolean(session) && hasMinRole(session!.role, "manager") && hasMinPlan(session!.plan, "pro");
+  const canExportAnalytics = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "business");
+  const canViewBillingUsage = Boolean(session) && hasMinRole(session!.role, "admin");
+  const canViewSecurityAnalytics = Boolean(session) && hasMinRole(session!.role, "admin");
 
   const usagePercent = useMemo(() => {
     if (!analytics) return 0;
@@ -479,15 +459,25 @@ export default function Page() {
 
   const loadAnalytics = useCallback(
     async (nextRange: RangeKey = range, mode: "initial" | "refresh" = "initial") => {
+      if (!session) return;
+
       if (mode === "initial") setIsLoading(true);
       if (mode === "refresh") setIsRefreshing(true);
 
       setError(null);
 
+      // NOTE: this still calls the page's original "/api/analytics" path,
+      // which apps/api/main.py never mounts (the real router is
+      // apps.api.routes.analytics at "/analytics/summary", with a response
+      // shape that doesn't match this page's AnalyticsData contract at
+      // all). Reconciling the real endpoint + shape is Phase 10's job
+      // ("replace mock dashboard data with real data"); this pass only
+      // fixes the auth transport so the request carries real credentials
+      // instead of spoofable headers, and gracefully falls back to the
+      // clearly-a-fallback demo data below either way.
       const response = await dashboardFetch<AnalyticsData>(`/api/analytics?range=${encodeURIComponent(nextRange)}`, {
         method: "GET",
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
+        accessToken: session.accessToken,
         audit_action: "analytics_dashboard_read",
       });
 
@@ -510,10 +500,10 @@ export default function Page() {
   );
 
   useEffect(() => {
-    if (mounted.current) return;
+    if (!session || mounted.current) return;
     mounted.current = true;
     void loadAnalytics(range, "initial");
-  }, [loadAnalytics, range]);
+  }, [loadAnalytics, range, session]);
 
   const changeRange = (nextRange: RangeKey) => {
     setRange(nextRange);
@@ -521,7 +511,7 @@ export default function Page() {
   };
 
   const exportAnalytics = () => {
-    if (!canExportAnalytics || !analytics) {
+    if (!canExportAnalytics || !analytics || !session) {
       setError("Analytics export requires admin access and Business plan or higher.");
       return;
     }
@@ -547,11 +537,19 @@ export default function Page() {
     URL.revokeObjectURL(url);
   };
 
+  if (checkingSession || !session) {
+    return (
+      <div className="dashboardPanel">
+        <p>Checking secure session...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="dashboardPanel">
         <div className="heroLine">
           <div>
-            <h1>Analytics, {session.display_name.split(" ")[0]}</h1>
+            <h1>Analytics, {session.name.split(" ")[0]}</h1>
             <p>Monitor usage, tasks, leads, workflows, security reviews, memory writes, and verification readiness.</p>
           </div>
 

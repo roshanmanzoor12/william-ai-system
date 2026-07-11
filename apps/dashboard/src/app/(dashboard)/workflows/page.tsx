@@ -14,21 +14,12 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { SessionData, UserPlan, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
 
-type Role = "owner" | "admin" | "operator" | "viewer";
-type Plan = "free" | "pro" | "business" | "enterprise";
 type WorkflowStatus = "draft" | "active" | "paused" | "blocked" | "completed";
 type TemplateCategory = "crm" | "security" | "memory" | "marketing" | "finance" | "creator";
 type NodeType = "trigger" | "agent" | "security" | "memory" | "verification" | "action";
-
-type DashboardSession = {
-  user_id: string;
-  workspace_id: string;
-  role: Role;
-  plan: Plan;
-  display_name: string;
-  email: string;
-};
 
 type ApiResponse<T> = {
   success: boolean;
@@ -55,7 +46,7 @@ type WorkflowTemplate = {
   title: string;
   category: TemplateCategory;
   description: string;
-  required_plan: Plan;
+  required_plan: UserPlan;
   sensitive: boolean;
   nodes: WorkflowNode[];
   estimated_minutes: number;
@@ -80,29 +71,6 @@ type WorkflowRecord = {
 };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
-
-const DEFAULT_SESSION: DashboardSession = {
-  user_id: "demo_user_digital_promotix",
-  workspace_id: "demo_workspace_william",
-  role: "owner",
-  plan: "enterprise",
-  display_name: "Sajibur Rahman",
-  email: "sajibur.rahman@example.com",
-};
-
-const ROLE_POWER: Record<Role, number> = {
-  viewer: 1,
-  operator: 2,
-  admin: 3,
-  owner: 4,
-};
-
-const PLAN_POWER: Record<Plan, number> = {
-  free: 1,
-  pro: 2,
-  business: 3,
-  enterprise: 4,
-};
 
 const STATUS_LABELS: Record<WorkflowStatus, string> = {
   draft: "Draft",
@@ -162,7 +130,7 @@ function makeNode(
   return { id, type, title, agent, description, sensitive, x, y };
 }
 
-function buildDemoTemplates(session: DashboardSession): WorkflowTemplate[] {
+function buildDemoTemplates(session: SessionData): WorkflowTemplate[] {
   return [
     {
       id: "TPL-CRM-001",
@@ -238,7 +206,7 @@ function buildDemoTemplates(session: DashboardSession): WorkflowTemplate[] {
   ];
 }
 
-function buildDemoWorkflows(session: DashboardSession, templates: WorkflowTemplate[]): WorkflowRecord[] {
+function buildDemoWorkflows(session: SessionData, templates: WorkflowTemplate[]): WorkflowRecord[] {
   return [
     {
       id: "WF-000076",
@@ -310,8 +278,7 @@ function buildDemoWorkflows(session: DashboardSession, templates: WorkflowTempla
 async function dashboardFetch<T>(
   path: string,
   options: RequestInit & {
-    user_id: string;
-    workspace_id: string;
+    accessToken: string;
     audit_action?: string;
   },
 ): Promise<ApiResponse<T>> {
@@ -324,8 +291,7 @@ async function dashboardFetch<T>(
 
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
-  headers.set("X-User-Id", options.user_id);
-  headers.set("X-Workspace-Id", options.workspace_id);
+  headers.set("Authorization", `Bearer ${options.accessToken}`);
   headers.set("X-Audit-Action", options.audit_action || "workflow_dashboard_read");
 
   try {
@@ -540,7 +506,9 @@ function WorkflowCanvas({ nodes }: { nodes: WorkflowNode[] }) {
 }
 
 export default function Page() {
-  const [session] = useState<DashboardSession>(DEFAULT_SESSION);
+  const router = useRouter();
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowRecord[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
@@ -551,9 +519,21 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(false);
 
-  const canCreateWorkflow = ROLE_POWER[session.role] >= ROLE_POWER.operator && PLAN_POWER[session.plan] >= PLAN_POWER.pro;
-  const canUseSensitiveWorkflow = ROLE_POWER[session.role] >= ROLE_POWER.admin && PLAN_POWER[session.plan] >= PLAN_POWER.business;
-  const canPublishWorkflow = ROLE_POWER[session.role] >= ROLE_POWER.admin && PLAN_POWER[session.plan] >= PLAN_POWER.pro;
+  useEffect(() => {
+    const activeSession = readSession();
+
+    if (!activeSession) {
+      router.replace("/login");
+      return;
+    }
+
+    setSession(activeSession);
+    setCheckingSession(false);
+  }, [router]);
+
+  const canCreateWorkflow = Boolean(session) && hasMinRole(session!.role, "manager") && hasMinPlan(session!.plan, "pro");
+  const canUseSensitiveWorkflow = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "business");
+  const canPublishWorkflow = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "pro");
 
   const selectedTemplate = useMemo(() => {
     return templates.find((template) => template.id === selectedTemplateId) || templates[0];
@@ -587,20 +567,20 @@ export default function Page() {
   }, [templates, selectedCategory, search]);
 
   const loadWorkflows = useCallback(async () => {
+    if (!session) return;
+
     setIsLoading(true);
     setError(null);
 
     const [templateResponse, workflowResponse] = await Promise.all([
       dashboardFetch<WorkflowTemplate[]>("/api/workflows/templates", {
         method: "GET",
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
+        accessToken: session.accessToken,
         audit_action: "workflow_templates_read",
       }),
       dashboardFetch<WorkflowRecord[]>("/api/workflows", {
         method: "GET",
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
+        accessToken: session.accessToken,
         audit_action: "workflow_history_read",
       }),
     ]);
@@ -638,6 +618,8 @@ export default function Page() {
   }, [loadWorkflows]);
 
   const createWorkflowFromTemplate = async (template: WorkflowTemplate) => {
+    if (!session) return;
+
     if (!canCreateWorkflow) {
       setError("Your current role or plan cannot create workflows.");
       return;
@@ -648,7 +630,7 @@ export default function Page() {
       return;
     }
 
-    if (PLAN_POWER[session.plan] < PLAN_POWER[template.required_plan]) {
+    if (!hasMinPlan(session.plan, template.required_plan)) {
       setError(`This template requires the ${template.required_plan} plan or higher.`);
       return;
     }
@@ -670,8 +652,7 @@ export default function Page() {
 
     const response = await dashboardFetch<WorkflowRecord>("/api/workflows", {
       method: "POST",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
+      accessToken: session.accessToken,
       audit_action: "workflow_create",
       body: JSON.stringify(payload),
     });
@@ -705,6 +686,8 @@ export default function Page() {
   };
 
   const toggleWorkflowStatus = async (workflow: WorkflowRecord) => {
+    if (!session) return;
+
     if (!canPublishWorkflow) {
       setError("Only admins or owners can publish, pause, or resume workflows.");
       return;
@@ -714,8 +697,7 @@ export default function Page() {
 
     const response = await dashboardFetch<WorkflowRecord>(`/api/workflows/${encodeURIComponent(workflow.id)}/status`, {
       method: "PATCH",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
+      accessToken: session.accessToken,
       audit_action: "workflow_status_change",
       body: JSON.stringify({
         user_id: session.user_id,
@@ -754,11 +736,19 @@ export default function Page() {
     );
   };
 
+  if (checkingSession || !session) {
+    return (
+      <div className="dashboardPanel">
+        <p>Checking secure session...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="dashboardPanel">
         <div className="heroLine">
           <div>
-            <h1>Workflows, {session.display_name.split(" ")[0]}</h1>
+            <h1>Workflows, {session.name.split(" ")[0]}</h1>
             <p>Build agent automations, load templates, route sensitive actions, save memory context, and verify completions.</p>
           </div>
 
@@ -1008,7 +998,7 @@ export default function Page() {
               ) : (
                 <div className="templateGrid">
                   {filteredTemplates.map((template) => {
-                    const locked = PLAN_POWER[session.plan] < PLAN_POWER[template.required_plan];
+                    const locked = !hasMinPlan(session.plan, template.required_plan);
 
                     return (
                       <article

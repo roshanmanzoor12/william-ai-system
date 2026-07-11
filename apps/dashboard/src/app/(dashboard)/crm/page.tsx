@@ -14,21 +14,12 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { SessionData, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
 
-type Role = "owner" | "admin" | "operator" | "viewer";
-type Plan = "free" | "pro" | "business" | "enterprise";
 type LeadStatus = "new" | "qualified" | "proposal" | "won" | "lost";
 type LeadSource = "Website" | "Google Ads" | "Call Agent" | "Workflow" | "Referral";
 type ClientHealth = "excellent" | "good" | "watch" | "risk";
-
-type DashboardSession = {
-  user_id: string;
-  workspace_id: string;
-  role: Role;
-  plan: Plan;
-  display_name: string;
-  email: string;
-};
 
 type ApiResponse<T> = {
   success: boolean;
@@ -81,29 +72,6 @@ type PipelineStage = {
 };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
-
-const DEFAULT_SESSION: DashboardSession = {
-  user_id: "demo_user_digital_promotix",
-  workspace_id: "demo_workspace_william",
-  role: "owner",
-  plan: "enterprise",
-  display_name: "Sajibur Rahman",
-  email: "sajibur.rahman@example.com",
-};
-
-const ROLE_POWER: Record<Role, number> = {
-  viewer: 1,
-  operator: 2,
-  admin: 3,
-  owner: 4,
-};
-
-const PLAN_POWER: Record<Plan, number> = {
-  free: 1,
-  pro: 2,
-  business: 3,
-  enterprise: 4,
-};
 
 const STATUS_LABELS: Record<LeadStatus, string> = {
   new: "New",
@@ -165,7 +133,7 @@ function formatDateTime(value: string): string {
   }
 }
 
-function buildDemoLeads(session: DashboardSession): LeadRecord[] {
+function buildDemoLeads(session: SessionData): LeadRecord[] {
   const base = Date.now();
 
   return [
@@ -277,7 +245,7 @@ function buildDemoLeads(session: DashboardSession): LeadRecord[] {
   ];
 }
 
-function buildDemoClients(session: DashboardSession): ClientRecord[] {
+function buildDemoClients(session: SessionData): ClientRecord[] {
   const base = Date.now();
 
   return [
@@ -326,8 +294,7 @@ function buildDemoClients(session: DashboardSession): ClientRecord[] {
 async function dashboardFetch<T>(
   path: string,
   options: RequestInit & {
-    user_id: string;
-    workspace_id: string;
+    accessToken: string;
     audit_action?: string;
   },
 ): Promise<ApiResponse<T>> {
@@ -340,8 +307,7 @@ async function dashboardFetch<T>(
 
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
-  headers.set("X-User-Id", options.user_id);
-  headers.set("X-Workspace-Id", options.workspace_id);
+  headers.set("Authorization", `Bearer ${options.accessToken}`);
   headers.set("X-Audit-Action", options.audit_action || "crm_dashboard_read");
 
   try {
@@ -509,7 +475,9 @@ function HealthPill({ health }: { health: ClientHealth }) {
 }
 
 export default function Page() {
-  const [session] = useState<DashboardSession>(DEFAULT_SESSION);
+  const router = useRouter();
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [leads, setLeads] = useState<LeadRecord[]>([]);
   const [clients, setClients] = useState<ClientRecord[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<LeadStatus | "all">("all");
@@ -519,9 +487,21 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(false);
 
-  const canCreateLead = ROLE_POWER[session.role] >= ROLE_POWER.operator && PLAN_POWER[session.plan] >= PLAN_POWER.pro;
-  const canExportCrm = ROLE_POWER[session.role] >= ROLE_POWER.admin && PLAN_POWER[session.plan] >= PLAN_POWER.business;
-  const canViewSensitiveLead = ROLE_POWER[session.role] >= ROLE_POWER.admin;
+  useEffect(() => {
+    const activeSession = readSession();
+
+    if (!activeSession) {
+      router.replace("/login");
+      return;
+    }
+
+    setSession(activeSession);
+    setCheckingSession(false);
+  }, [router]);
+
+  const canCreateLead = Boolean(session) && hasMinRole(session!.role, "manager") && hasMinPlan(session!.plan, "pro");
+  const canExportCrm = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "business");
+  const canViewSensitiveLead = Boolean(session) && hasMinRole(session!.role, "admin");
 
   const stats = useMemo(() => {
     const totalLeads = leads.length;
@@ -565,20 +545,20 @@ export default function Page() {
   }, [leads, selectedStatus, search]);
 
   const loadCrm = useCallback(async () => {
+    if (!session) return;
+
     setIsLoading(true);
     setError(null);
 
     const [leadResponse, clientResponse] = await Promise.all([
       dashboardFetch<LeadRecord[]>("/api/crm/leads", {
         method: "GET",
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
+        accessToken: session.accessToken,
         audit_action: "crm_leads_read",
       }),
       dashboardFetch<ClientRecord[]>("/api/crm/clients", {
         method: "GET",
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
+        accessToken: session.accessToken,
         audit_action: "crm_clients_read",
       }),
     ]);
@@ -615,6 +595,8 @@ export default function Page() {
   }, [loadCrm]);
 
   const createLead = async () => {
+    if (!session) return;
+
     if (!canCreateLead) {
       setError("Your current role or plan cannot create CRM leads.");
       return;
@@ -638,8 +620,7 @@ export default function Page() {
 
     const response = await dashboardFetch<LeadRecord>("/api/crm/leads", {
       method: "POST",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
+      accessToken: session.accessToken,
       audit_action: "crm_lead_create",
       body: JSON.stringify(payload),
     });
@@ -678,6 +659,8 @@ export default function Page() {
   };
 
   const exportCrm = () => {
+    if (!session) return;
+
     if (!canExportCrm) {
       setError("CRM export requires admin access and Business plan or higher.");
       return;
@@ -704,11 +687,19 @@ export default function Page() {
     URL.revokeObjectURL(url);
   };
 
+  if (checkingSession || !session) {
+    return (
+      <div className="dashboardPanel">
+        <p>Checking secure session...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="dashboardPanel">
         <div className="heroLine">
           <div>
-            <h1>CRM, {session.display_name.split(" ")[0]}</h1>
+            <h1>CRM, {session.name.split(" ")[0]}</h1>
             <p>Manage leads, clients, pipeline value, memory context, security reviews, and verification-ready sales actions.</p>
           </div>
 
