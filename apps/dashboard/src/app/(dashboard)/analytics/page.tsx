@@ -60,24 +60,31 @@ type WorkflowMetric = {
   avg_duration_seconds: number;
 };
 
+// Fields typed `number | null` have no source in the real backend --
+// apps/api/routes/analytics.py's /summary endpoint only returns task
+// counts (by status), a total agent-event count, and a 7-day audit-event
+// count. There is no usage-metering, lead-pipeline, or workflow-analytics
+// endpoint anywhere in the backend. `null` renders as an honest "Not
+// available" via formatNumber/formatPercent below, instead of a
+// fabricated number.
 type AnalyticsData = {
   user_id: string;
   workspace_id: string;
   generated_at: string;
-  usage_units: number;
-  usage_limit: number;
+  usage_units: number | null;
+  usage_limit: number | null;
   total_tasks: number;
   completed_tasks: number;
   failed_tasks: number;
   active_tasks: number;
-  total_leads: number;
-  qualified_leads: number;
-  workflow_runs: number;
-  workflow_success_rate: number;
-  memory_writes: number;
-  security_reviews: number;
-  verification_ready: number;
-  audit_events: number;
+  total_leads: number | null;
+  qualified_leads: number | null;
+  workflow_runs: number | null;
+  workflow_success_rate: number | null;
+  memory_writes: number | null;
+  security_reviews: number | null;
+  verification_ready: number | null;
+  audit_events: number | null;
   series: AnalyticsPoint[];
   agents: AgentMetric[];
   leads: LeadMetric[];
@@ -109,11 +116,13 @@ function safeError(error: unknown): string {
   return message;
 }
 
-function formatNumber(value: number): string {
+function formatNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "Not available";
   return new Intl.NumberFormat("en").format(value);
 }
 
-function formatPercent(value: number): string {
+function formatPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "Not available";
   return `${Math.round(value)}%`;
 }
 
@@ -130,66 +139,53 @@ function formatDate(value: string): string {
   }
 }
 
-function buildDemoAnalytics(session: SessionData, range: RangeKey): AnalyticsData {
-  const multiplier = range === "7d" ? 1 : range === "30d" ? 3 : range === "90d" ? 7 : 12;
-  const labels =
-    range === "12m"
-      ? ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"]
-      : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Now"];
+// apps/api/routes/analytics.py's real GET /analytics/summary response
+// shape (confirmed by reading the source, not guessed).
+type RealAnalyticsSummary = {
+  workspace_id: string;
+  tasks: { total: number; by_status: Record<string, number> };
+  agent_events: { total: number };
+  audit: { last_7_days_total: number; by_status: Record<string, number> };
+  generated_at: string;
+};
 
-  const series = labels.map((label, index) => ({
-    label,
-    tasks: Math.round((18 + index * 4 + (index % 2) * 7) * multiplier),
-    leads: Math.round((7 + index * 2 + (index % 3) * 4) * multiplier),
-    workflows: Math.round((5 + index * 3 + (index % 2) * 2) * multiplier),
-    usage: Math.round((42 + index * 8 + (index % 3) * 11) * multiplier),
-  }));
-
-  const totalTasks = series.reduce((sum, point) => sum + point.tasks, 0);
-  const totalLeads = series.reduce((sum, point) => sum + point.leads, 0);
-  const workflowRuns = series.reduce((sum, point) => sum + point.workflows, 0);
-  const usageUnits = series.reduce((sum, point) => sum + point.usage, 0);
+/**
+ * Maps the real backend response onto AnalyticsData, leaving every field
+ * with no real source (`number | null` in the type above) as `null` and
+ * every table/chart array with no real source empty, rather than
+ * fabricating plausible-looking numbers. Task counts come from
+ * database/models/agent_task.py's real status values (pending, queued,
+ * assigned, running, waiting_approval, paused, completed, failed,
+ * cancelled, retrying).
+ */
+function buildAnalyticsFromReal(real: RealAnalyticsSummary, session: SessionData): AnalyticsData {
+  const byStatus = real.tasks.by_status || {};
+  const completedTasks = byStatus.completed || 0;
+  const failedTasks = (byStatus.failed || 0) + (byStatus.cancelled || 0);
+  const activeTasks = Math.max(0, real.tasks.total - completedTasks - failedTasks);
 
   return {
     user_id: session.user_id,
-    workspace_id: session.workspace_id,
-    generated_at: new Date().toISOString(),
-    usage_units: usageUnits,
-    usage_limit: session.plan === "enterprise" ? 25000 : session.plan === "business" ? 12000 : session.plan === "pro" ? 5000 : 500,
-    total_tasks: totalTasks,
-    completed_tasks: Math.round(totalTasks * 0.82),
-    failed_tasks: Math.round(totalTasks * 0.07),
-    active_tasks: Math.round(totalTasks * 0.11),
-    total_leads: totalLeads,
-    qualified_leads: Math.round(totalLeads * 0.38),
-    workflow_runs: workflowRuns,
-    workflow_success_rate: 91,
-    memory_writes: Math.round(totalTasks * 0.74),
-    security_reviews: Math.round(totalTasks * 0.18),
-    verification_ready: Math.round(totalTasks * 0.79),
-    audit_events: Math.round(totalTasks * 1.9),
-    series,
-    agents: [
-      { agent: "Master", completed: 184, failed: 9, active: 14, usage_units: 1320 },
-      { agent: "Security", completed: 73, failed: 4, active: 8, usage_units: 760 },
-      { agent: "Memory", completed: 152, failed: 6, active: 10, usage_units: 980 },
-      { agent: "Workflow", completed: 91, failed: 11, active: 16, usage_units: 1180 },
-      { agent: "Creator", completed: 66, failed: 5, active: 7, usage_units: 840 },
-      { agent: "Browser", completed: 49, failed: 12, active: 5, usage_units: 690 },
-    ],
-    leads: [
-      { source: "Website Form", leads: 148, qualified: 62, conversion_rate: 42 },
-      { source: "Google Ads", leads: 124, qualified: 51, conversion_rate: 41 },
-      { source: "Workflow CRM", leads: 93, qualified: 39, conversion_rate: 42 },
-      { source: "Call Agent", leads: 71, qualified: 33, conversion_rate: 46 },
-    ],
-    workflows: [
-      { id: "WF-001", name: "Lead form to CRM", status: "healthy", runs: 162, success_rate: 96, avg_duration_seconds: 21 },
-      { id: "WF-002", name: "Security approval chain", status: "healthy", runs: 88, success_rate: 94, avg_duration_seconds: 34 },
-      { id: "WF-003", name: "Memory enrichment", status: "warning", runs: 119, success_rate: 87, avg_duration_seconds: 18 },
-      { id: "WF-004", name: "Verification confirmation", status: "healthy", runs: 143, success_rate: 92, avg_duration_seconds: 16 },
-      { id: "WF-005", name: "Browser research sync", status: "blocked", runs: 39, success_rate: 68, avg_duration_seconds: 57 },
-    ],
+    workspace_id: real.workspace_id,
+    generated_at: real.generated_at,
+    usage_units: null,
+    usage_limit: null,
+    total_tasks: real.tasks.total,
+    completed_tasks: completedTasks,
+    failed_tasks: failedTasks,
+    active_tasks: activeTasks,
+    total_leads: null,
+    qualified_leads: null,
+    workflow_runs: null,
+    workflow_success_rate: null,
+    memory_writes: null,
+    security_reviews: null,
+    verification_ready: null,
+    audit_events: real.audit.last_7_days_total,
+    series: [],
+    agents: [],
+    leads: [],
+    workflows: [],
   };
 }
 
@@ -203,7 +199,7 @@ async function dashboardFetch<T>(
   if (!API_BASE_URL) {
     return {
       success: false,
-      error: "API base URL is not configured. Using local safe demo analytics.",
+      error: "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
     };
   }
 
@@ -370,6 +366,12 @@ function BigBarChart({ data }: { data: AnalyticsPoint[] }) {
         </div>
       </div>
 
+      {data.length === 0 ? (
+        <p className="emptyNote">
+          Time-series usage/lead/workflow analytics are not available yet -- the backend only
+          reports point-in-time task and audit totals today.
+        </p>
+      ) : (
       <div className="barChart" aria-label="Usage analytics chart">
         {data.map((point) => {
           const usageHeight = Math.max(34, Math.round((point.usage / max) * 146));
@@ -386,11 +388,25 @@ function BigBarChart({ data }: { data: AnalyticsPoint[] }) {
           );
         })}
       </div>
+      )}
     </div>
   );
 }
 
-function DonutMeter({ value, label }: { value: number; label: string }) {
+function DonutMeter({ value, label }: { value: number | null; label: string }) {
+  if (value === null) {
+    return (
+      <div className="donutWrap">
+        <div className="donut" style={{ ["--value" as string]: "0deg" }}>
+          <div>
+            <strong>N/A</strong>
+            <span>{label}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const normalized = Math.max(0, Math.min(100, value));
 
   return (
@@ -443,7 +459,7 @@ export default function Page() {
   const canViewSecurityAnalytics = Boolean(session) && hasMinRole(session!.role, "admin");
 
   const usagePercent = useMemo(() => {
-    if (!analytics) return 0;
+    if (!analytics || analytics.usage_units === null || analytics.usage_limit === null) return null;
     return Math.min(100, Math.round((analytics.usage_units / Math.max(analytics.usage_limit, 1)) * 100));
   }, [analytics]);
 
@@ -453,7 +469,9 @@ export default function Page() {
   }, [analytics]);
 
   const leadQualificationRate = useMemo(() => {
-    if (!analytics || analytics.total_leads === 0) return 0;
+    if (!analytics || analytics.total_leads === null || analytics.qualified_leads === null || analytics.total_leads === 0) {
+      return null;
+    }
     return Math.round((analytics.qualified_leads / analytics.total_leads) * 100);
   }, [analytics]);
 
@@ -466,31 +484,22 @@ export default function Page() {
 
       setError(null);
 
-      // NOTE: this still calls the page's original "/api/analytics" path,
-      // which apps/api/main.py never mounts (the real router is
-      // apps.api.routes.analytics at "/analytics/summary", with a response
-      // shape that doesn't match this page's AnalyticsData contract at
-      // all). Reconciling the real endpoint + shape is Phase 10's job
-      // ("replace mock dashboard data with real data"); this pass only
-      // fixes the auth transport so the request carries real credentials
-      // instead of spoofable headers, and gracefully falls back to the
-      // clearly-a-fallback demo data below either way.
-      const response = await dashboardFetch<AnalyticsData>(`/api/analytics?range=${encodeURIComponent(nextRange)}`, {
+      // The real router is apps.api.routes.analytics at "/analytics/summary"
+      // (confirmed by reading the source) -- it has no range filter, only
+      // task-status counts, an agent-event total, and a fixed 7-day audit
+      // count, so `nextRange` only affects the range tabs' selected state,
+      // not what data comes back.
+      const response = await dashboardFetch<RealAnalyticsSummary>("/analytics/summary", {
         method: "GET",
         accessToken: session.accessToken,
         audit_action: "analytics_dashboard_read",
       });
 
       if (response.success && response.data) {
-        if (response.data.user_id === session.user_id && response.data.workspace_id === session.workspace_id) {
-          setAnalytics(response.data);
-        } else {
-          setError("Analytics response was blocked because tenant scope did not match current workspace.");
-          setAnalytics(buildDemoAnalytics(session, nextRange));
-        }
+        setAnalytics(buildAnalyticsFromReal(response.data, session));
       } else {
-        setAnalytics(buildDemoAnalytics(session, nextRange));
-        if (response.error && API_BASE_URL) setError(response.error);
+        setAnalytics(null);
+        if (response.error) setError(response.error);
       }
 
       setIsLoading(false);
@@ -608,13 +617,15 @@ export default function Page() {
                   <div>
                     <p>Total Usage</p>
                     <h2>{formatNumber(analytics.usage_units)}</h2>
-                    <span className="greenText">↑ {usagePercent}% of plan limit</span>
+                    <span className="greenText">
+                      {usagePercent === null ? "Usage metering not available yet" : `↑ ${usagePercent}% of plan limit`}
+                    </span>
                   </div>
                   <button className="currencyBtn">{RANGE_LABELS[range]}</button>
                 </div>
 
                 <div className="usageTrack">
-                  <span style={{ width: `${usagePercent}%` }} />
+                  <span style={{ width: `${usagePercent ?? 0}%` }} />
                 </div>
 
                 <div className="usageMeta">
@@ -653,7 +664,7 @@ export default function Page() {
                   <div className="metricIcon"><Icon name="lead" /></div>
                   <span>Qualified Leads</span>
                   <strong>{formatNumber(analytics.qualified_leads)}</strong>
-                  <p>{leadQualificationRate}% qualification</p>
+                  <p>{leadQualificationRate === null ? "Not available" : `${leadQualificationRate}% qualification`}</p>
                 </div>
 
                 <div className="metricCard">
@@ -729,6 +740,11 @@ export default function Page() {
                     <strong>Advanced analytics locked</strong>
                     <p>Upgrade to Pro and use Operator role or higher.</p>
                   </div>
+                ) : analytics.agents.length === 0 ? (
+                  <p className="emptyNote">
+                    Per-agent usage breakdowns are not available yet -- the backend only reports
+                    a total agent-event count today, not a per-agent split.
+                  </p>
                 ) : (
                   <div className="tableWrap">
                     <table>
@@ -794,15 +810,22 @@ export default function Page() {
                   </div>
 
                   <div className="leadList">
-                    {analytics.leads.map((lead) => (
-                      <div className="leadRow" key={lead.source}>
-                        <div>
-                          <strong>{lead.source}</strong>
-                          <span>{formatNumber(lead.qualified)} qualified from {formatNumber(lead.leads)}</span>
+                    {analytics.leads.length === 0 ? (
+                      <p className="emptyNote">
+                        Lead-pipeline analytics are not available yet -- there is no CRM backend
+                        router to source this from.
+                      </p>
+                    ) : (
+                      analytics.leads.map((lead) => (
+                        <div className="leadRow" key={lead.source}>
+                          <div>
+                            <strong>{lead.source}</strong>
+                            <span>{formatNumber(lead.qualified)} qualified from {formatNumber(lead.leads)}</span>
+                          </div>
+                          <b>{lead.conversion_rate}%</b>
                         </div>
-                        <b>{lead.conversion_rate}%</b>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
                 </div>
 
@@ -817,12 +840,16 @@ export default function Page() {
 
                   {canViewBillingUsage ? (
                     <div className="billingPanel">
-                      <strong>{usagePercent}%</strong>
-                      <span>{formatNumber(analytics.usage_units)} / {formatNumber(analytics.usage_limit)} units</span>
+                      <strong>{usagePercent === null ? "N/A" : `${usagePercent}%`}</strong>
+                      <span>
+                        {usagePercent === null
+                          ? "Usage metering is not available yet"
+                          : `${formatNumber(analytics.usage_units)} / ${formatNumber(analytics.usage_limit)} units`}
+                      </span>
                       <div className="usageTrack small">
-                        <span style={{ width: `${usagePercent}%` }} />
+                        <span style={{ width: `${usagePercent ?? 0}%` }} />
                       </div>
-                      <p>{formatNumber(analytics.audit_events)} audit events · generated {formatDate(analytics.generated_at)}</p>
+                      <p>{formatNumber(analytics.audit_events)} audit events (last 7 days) · generated {formatDate(analytics.generated_at)}</p>
                     </div>
                   ) : (
                     <div className="lockedMini">
@@ -844,7 +871,14 @@ export default function Page() {
               </div>
 
               <div className="workflowGrid">
-                {analytics.workflows.map((workflow) => (
+                {analytics.workflows.length === 0 ? (
+                  <p className="emptyNote">
+                    Workflow run analytics are not available yet -- apps/api/routes/workflows.py
+                    tracks individual runs, but there is no aggregate success-rate/duration
+                    reporting endpoint yet.
+                  </p>
+                ) : (
+                analytics.workflows.map((workflow) => (
                   <div className="workflowItem" key={workflow.id}>
                     <div className="workflowTop">
                       <div>
@@ -873,7 +907,8 @@ export default function Page() {
                       <span style={{ width: `${workflow.success_rate}%` }} />
                     </div>
                   </div>
-                ))}
+                ))
+                )}
               </div>
             </section>
           </>
@@ -1790,6 +1825,15 @@ export default function Page() {
           border: 0;
           margin-top: 16px;
           padding: 14px;
+        }
+
+        .emptyNote {
+          margin: 0;
+          padding: 20px 18px;
+          color: #8a8a83;
+          font-size: 13px;
+          line-height: 1.6;
+          text-align: center;
         }
 
         .workflowGrid {
