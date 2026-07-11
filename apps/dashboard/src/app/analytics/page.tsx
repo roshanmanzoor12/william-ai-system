@@ -548,59 +548,7 @@ export default function Page() {
   };
 
   return (
-    <main className="pageShell">
-      <aside className="sideRail" aria-label="Dashboard navigation">
-        <div className="brandPill">
-          <Icon name="logo" size={28} />
-          <strong>William</strong>
-        </div>
-
-        <div className="themeSwitch">
-          <button aria-label="Light mode"><Icon name="sun" size={16} /></button>
-          <button aria-label="Dark mode"><Icon name="moon" size={16} /></button>
-        </div>
-
-        <nav className="railNav">
-          <button aria-label="Overview"><Icon name="grid" /></button>
-          <button aria-label="Calendar"><Icon name="calendar" /></button>
-          <button aria-label="Messages"><Icon name="mail" /></button>
-          <button className="active" aria-label="Analytics"><Icon name="chart" /></button>
-          <button aria-label="Users"><Icon name="users" /></button>
-          <button aria-label="Agents"><Icon name="layers" /></button>
-          <button aria-label="Settings"><Icon name="settings" /></button>
-        </nav>
-
-        <div className="railBottom">
-          <button aria-label="Help"><Icon name="help" /></button>
-          <button aria-label="Logout"><Icon name="logout" /></button>
-        </div>
-      </aside>
-
-      <section className="dashboardPanel">
-        <header className="topBar">
-          <div className="navTabs">
-            <button className="active">Overview</button>
-            <button>Usage</button>
-            <button>Tasks</button>
-            <button>Leads</button>
-            <button>Workflows</button>
-            <button>Reports</button>
-          </div>
-
-          <div className="topActions">
-            <button className="circleBtn" aria-label="Search"><Icon name="search" /></button>
-            <button className="circleBtn" aria-label="Notifications"><Icon name="bell" /></button>
-            <button className="circleBtn" aria-label="Alerts"><Icon name="alert" /></button>
-            <div className="profilePill">
-              <div className="avatar">SR</div>
-              <div>
-                <strong>{session.display_name}</strong>
-                <span>{session.email}</span>
-              </div>
-            </div>
-          </div>
-        </header>
-
+    <div className="dashboardPanel">
         <div className="heroLine">
           <div>
             <h1>Analytics, {session.display_name.split(" ")[0]}</h1>
@@ -932,7 +880,6 @@ export default function Page() {
             </section>
           </>
         )}
-      </section>
 
       <style jsx>{`
         :global(*) {
@@ -1046,11 +993,7 @@ export default function Page() {
         }
 
         .dashboardPanel {
-          background: #f8f8f7;
-          border-radius: 0 26px 26px 0;
-          min-height: calc(100vh - 68px);
-          padding: 18px 18px 22px 60px;
-          box-shadow: 24px 24px 80px rgba(25, 25, 22, 0.08);
+          background: transparent;
           overflow: hidden;
         }
 
@@ -2077,6 +2020,6 @@ export default function Page() {
           }
         }
       `}</style>
-    </main>
+    </div>
   );
 }
