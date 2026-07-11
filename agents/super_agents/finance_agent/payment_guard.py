@@ -303,7 +303,7 @@ class PaymentRiskFinding:
     code: str
     message: str
     severity: PaymentRiskLevel
-    field: Optional[str] = None
+    field_name: Optional[str] = None
     details: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -653,7 +653,7 @@ class FinancePaymentGuard(BaseAgent):
                                 code="security_denied",
                                 message="Security Agent denied the payment-related request.",
                                 severity=PaymentRiskLevel.CRITICAL,
-                                field=None,
+                                field_name=None,
                                 details={"security_result": security_result.get("data", {})},
                             )
                         )
@@ -1477,7 +1477,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="unknown_action_type",
                     message="Payment action type is unknown.",
                     severity=PaymentRiskLevel.MEDIUM,
-                    field="action_type",
+                    field_name="action_type",
                 )
             )
 
@@ -1487,7 +1487,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="missing_amount",
                     message="Payment amount is missing or invalid.",
                     severity=PaymentRiskLevel.MEDIUM,
-                    field="amount",
+                    field_name="amount",
                 )
             )
         elif request.amount <= Decimal("0"):
@@ -1496,7 +1496,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="non_positive_amount",
                     message="Payment amount must be greater than zero.",
                     severity=PaymentRiskLevel.HIGH,
-                    field="amount",
+                    field_name="amount",
                     details={"amount": str(request.amount)},
                 )
             )
@@ -1507,7 +1507,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="missing_currency",
                     message="Payment currency is missing.",
                     severity=PaymentRiskLevel.MEDIUM,
-                    field="currency",
+                    field_name="currency",
                 )
             )
         elif request.currency not in self.config.allowed_currencies:
@@ -1516,7 +1516,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="unsupported_currency",
                     message=f"Currency {request.currency} is not currently allowed by FinancePaymentGuard.",
                     severity=PaymentRiskLevel.HIGH,
-                    field="currency",
+                    field_name="currency",
                     details={"currency": request.currency},
                 )
             )
@@ -1527,7 +1527,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="missing_payee",
                     message="Payee identity is missing.",
                     severity=PaymentRiskLevel.HIGH,
-                    field="payee",
+                    field_name="payee",
                 )
             )
 
@@ -1537,7 +1537,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="description_too_long",
                     message="Payment description exceeds configured safety length.",
                     severity=PaymentRiskLevel.MEDIUM,
-                    field="description",
+                    field_name="description",
                     details={"max_length": self.config.max_description_length},
                 )
             )
@@ -1548,7 +1548,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="metadata_too_large",
                     message="Payment metadata exceeds configured safety size.",
                     severity=PaymentRiskLevel.HIGH,
-                    field="metadata",
+                    field_name="metadata",
                     details={"max_size_bytes": self.config.max_metadata_size_bytes},
                 )
             )
@@ -1570,7 +1570,7 @@ class FinancePaymentGuard(BaseAgent):
                         code="critical_value_payment",
                         message="Payment amount meets or exceeds the critical value threshold.",
                         severity=PaymentRiskLevel.CRITICAL,
-                        field="amount",
+                        field_name="amount",
                         details={
                             "amount": str(request.amount),
                             "threshold": str(self.config.critical_value_threshold),
@@ -1583,7 +1583,7 @@ class FinancePaymentGuard(BaseAgent):
                         code="high_value_payment",
                         message="Payment amount meets or exceeds the high value threshold.",
                         severity=PaymentRiskLevel.HIGH,
-                        field="amount",
+                        field_name="amount",
                         details={
                             "amount": str(request.amount),
                             "threshold": str(self.config.high_value_threshold),
@@ -1603,7 +1603,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="sensitive_payment_action",
                     message=f"Action type {request.action_type} is sensitive and requires review.",
                     severity=PaymentRiskLevel.HIGH,
-                    field="action_type",
+                    field_name="action_type",
                     details={"action_type": request.action_type},
                 )
             )
@@ -1614,7 +1614,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="new_payee",
                     message="Payment is for a new payee or beneficiary.",
                     severity=PaymentRiskLevel.HIGH,
-                    field="payee",
+                    field_name="payee",
                 )
             )
 
@@ -1624,7 +1624,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="payment_method_change",
                     message="Payment method or beneficiary account appears to have changed.",
                     severity=PaymentRiskLevel.HIGH,
-                    field="payment_method",
+                    field_name="payment_method",
                 )
             )
 
@@ -1634,7 +1634,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="international_payment",
                     message="Payment appears to be international.",
                     severity=PaymentRiskLevel.HIGH,
-                    field="destination_country",
+                    field_name="destination_country",
                     details={
                         "origin_country": request.origin_country,
                         "destination_country": request.destination_country,
@@ -1648,7 +1648,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="crypto_payment",
                     message="Crypto-related payments require strict Security Agent review.",
                     severity=PaymentRiskLevel.CRITICAL,
-                    field="payment_method_type",
+                    field_name="payment_method_type",
                 )
             )
 
@@ -1671,7 +1671,7 @@ class FinancePaymentGuard(BaseAgent):
                             "FinancePaymentGuard only allows draft/safety handoff."
                         ),
                         severity=PaymentRiskLevel.CRITICAL,
-                        field="description",
+                        field_name="description",
                         details={"matched_phrase": phrase},
                     )
                 )
@@ -1687,7 +1687,7 @@ class FinancePaymentGuard(BaseAgent):
                         code=f"suspicious_pattern_{pattern_name}",
                         message=f"Suspicious payment pattern detected: {pattern_name}.",
                         severity=severity,
-                        field="description",
+                        field_name="description",
                     )
                 )
 
@@ -1697,7 +1697,7 @@ class FinancePaymentGuard(BaseAgent):
                     code="raw_payment_credentials_detected",
                     message="Raw payment credentials or secrets appear to be present in metadata.",
                     severity=PaymentRiskLevel.CRITICAL,
-                    field="metadata",
+                    field_name="metadata",
                 )
             )
 
@@ -2048,7 +2048,7 @@ class FinancePaymentGuard(BaseAgent):
             "code": finding.code,
             "message": finding.message,
             "severity": finding.severity.value,
-            "field": finding.field,
+            "field": finding.field_name,
             "details": finding.details,
         }
 

@@ -215,8 +215,13 @@ class Settings:
         )
     )
 
-    auth_required: bool = field(default_factory=lambda: parse_bool(os.getenv("WILLIAM_AUTH_REQUIRED"), False))
-    dev_auth_enabled: bool = field(default_factory=lambda: parse_bool(os.getenv("WILLIAM_DEV_AUTH_ENABLED"), True))
+    # Secure by default: a real bearer token is required unless an operator
+    # explicitly opts into the header-trust dev fallback (both were the
+    # opposite default before -- auth_required=False, dev_auth_enabled=True
+    # -- which meant every built-in route accepted a forged X-User-ID by
+    # default, in production too, unless someone remembered to flip both).
+    auth_required: bool = field(default_factory=lambda: parse_bool(os.getenv("WILLIAM_AUTH_REQUIRED"), True))
+    dev_auth_enabled: bool = field(default_factory=lambda: parse_bool(os.getenv("WILLIAM_DEV_AUTH_ENABLED"), False))
     default_user_id: str = field(default_factory=lambda: os.getenv("WILLIAM_DEFAULT_USER_ID", "demo_user"))
     default_workspace_id: str = field(default_factory=lambda: os.getenv("WILLIAM_DEFAULT_WORKSPACE_ID", "demo_workspace"))
 
@@ -657,27 +662,97 @@ async def get_request_context(
     x_user_role: Optional[str] = Header(default=None, alias="X-User-Role"),
     x_subscription_plan: Optional[str] = Header(default=None, alias="X-Subscription-Plan"),
 ) -> AppContext:
+    """
+    Previously: if SETTINGS.auth_required was False (its default) or an
+    Authorization header merely existed (never checked for validity), this
+    built directly from X-User-ID/X-Workspace-ID/X-User-Role headers --
+    identical spoofable-header trust to what apps/api/routes/auth.py's
+    real login/register/protected-route flow (Phase 4) replaced. Every
+    built-in route using this dependency (/api/v1/system/*,
+    /api/v1/agents/execute, /api/v1/agents/status,
+    /api/v1/dashboard/summary) was reachable with a forged X-User-ID.
+
+    Now: a real Authorization: Bearer token, if present, is always
+    verified through the same TOKEN_SERVICE/AUTH_STORE apps.api.routes.auth
+    already uses -- never bypassed by dev_auth_enabled. The X-User-ID-style
+    header path only remains as an explicit local-dev fallback, and only
+    when auth_required is False (i.e. the operator has explicitly opted
+    into unauthenticated local development).
+    """
     request_id = x_request_id or getattr(request.state, "request_id", None) or new_id("req")
 
-    if SETTINGS.auth_required and not authorization:
+    if authorization and authorization.lower().startswith("bearer "):
+        try:
+            from apps.api.routes.auth import AUTH_STORE, TOKEN_SERVICE
+
+            token = authorization.split(" ", 1)[1].strip()
+            payload = TOKEN_SERVICE.verify_token(token, expected_type="access")
+
+            if AUTH_STORE.is_jti_revoked(payload["jti"]):
+                raise ValueError("Token has been revoked.")
+
+            user = AUTH_STORE.get_user_by_id(payload["sub"])
+            if not user or not user.is_active:
+                raise ValueError("User account is not active.")
+
+            session = AUTH_STORE.touch_session(payload["session_id"])
+            if session.user_id != user.user_id or session.workspace_id != payload["workspace_id"]:
+                raise ValueError("Session scope mismatch.")
+
+            membership = AUTH_STORE.get_membership(user.user_id, session.workspace_id)
+            if not membership:
+                raise ValueError("Workspace access is no longer available.")
+
+            context = AppContext(
+                request_id=request_id,
+                user_id=user.user_id,
+                workspace_id=session.workspace_id,
+                role=normalize_role(membership.role),
+                plan=normalize_plan(membership.plan),
+                auth_type="bearer_token",
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+            )
+            request.state.context = context
+            return context
+
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "success": False,
+                    "message": "Invalid or expired access token.",
+                    "error": {"code": "INVALID_TOKEN", "details": str(exc)},
+                    "metadata": {"request_id": request_id, "timestamp": utc_now()},
+                },
+            ) from exc
+
+    if SETTINGS.auth_required:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "success": False,
-                "message": "Authorization header is required.",
+                "message": "A Bearer access token is required.",
                 "error": {"code": "AUTH_REQUIRED"},
                 "metadata": {"request_id": request_id, "timestamp": utc_now()},
             },
         )
 
-    if SETTINGS.dev_auth_enabled:
-        user_id = normalize_identifier(x_user_id or SETTINGS.default_user_id, "user_id")
-        workspace_id = normalize_identifier(x_workspace_id or SETTINGS.default_workspace_id, "workspace_id")
-        auth_type = "dev_header"
-    else:
-        user_id = normalize_identifier(x_user_id, "user_id")
-        workspace_id = normalize_identifier(x_workspace_id, "workspace_id")
-        auth_type = "external_auth_required"
+    if not SETTINGS.dev_auth_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "message": "A Bearer access token is required.",
+                "error": {"code": "AUTH_REQUIRED"},
+                "metadata": {"request_id": request_id, "timestamp": utc_now()},
+            },
+        )
+
+    user_id = normalize_identifier(x_user_id or SETTINGS.default_user_id, "user_id")
+    workspace_id = normalize_identifier(x_workspace_id or SETTINGS.default_workspace_id, "workspace_id")
 
     context = AppContext(
         request_id=request_id,
@@ -685,7 +760,7 @@ async def get_request_context(
         workspace_id=workspace_id,
         role=normalize_role(x_user_role),
         plan=normalize_plan(x_subscription_plan),
-        auth_type=auth_type,
+        auth_type="dev_header",
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
     )

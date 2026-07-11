@@ -715,7 +715,7 @@ class AgentManifest(BaseAgent):
                 description="Central orchestrator that routes user tasks across all William/Jarvis agents.",
                 category=AgentCategory.CORE,
                 status=AgentStatus.ACTIVE,
-                module_path="agents.master_agent",
+                module_path="core.master_agent",
                 class_name="MasterAgent",
                 capabilities=[
                     AgentCapability(
@@ -905,7 +905,7 @@ class AgentManifest(BaseAgent):
                 description="Future-facing agent for avatar, AR, hologram, visual presence, and spatial interfaces.",
                 category=AgentCategory.EXPERIMENTAL,
                 status=AgentStatus.PLANNED,
-                module_path="agents.hologram_agent.hologram_agent",
+                module_path="agents.super_agents.hologram_agent.hologram_agent",
                 class_name="HologramAgent",
                 capabilities=[
                     AgentCapability("avatar_presence", "Manage avatar or hologram-style user interface behavior.", True, False, AgentRiskLevel.LOW, ["hologram.avatar"], ["avatar"]),
@@ -921,7 +921,7 @@ class AgentManifest(BaseAgent):
                 description="Handles safe call workflows, call planning, call summaries, and future voice-call automation.",
                 category=AgentCategory.COMMUNICATION,
                 status=AgentStatus.PLANNED,
-                module_path="agents.call_agent.call_agent",
+                module_path="agents.super_agents.call_agent.call_agent",
                 class_name="CallAgent",
                 capabilities=[
                     AgentCapability("call_planning", "Prepare call scripts, goals, and safe call workflows.", True, False, AgentRiskLevel.MEDIUM, ["call.plan"], ["calls"]),
@@ -939,7 +939,7 @@ class AgentManifest(BaseAgent):
                 description="Handles business strategy, marketing, sales, proposals, audits, dashboards, and client workflows.",
                 category=AgentCategory.INTELLIGENCE,
                 status=AgentStatus.PLANNED,
-                module_path="agents.business_agent.business_agent",
+                module_path="agents.super_agents.business_agent.business_agent",
                 class_name="BusinessAgent",
                 capabilities=[
                     AgentCapability("business_strategy", "Generate business strategy and growth plans.", True, False, AgentRiskLevel.MEDIUM, ["business.strategy"], ["strategy"]),
@@ -956,7 +956,7 @@ class AgentManifest(BaseAgent):
                 description="Handles financial summaries, budget planning, invoices, pricing, and permission-gated finance workflows.",
                 category=AgentCategory.FINANCE,
                 status=AgentStatus.PLANNED,
-                module_path="agents.finance_agent.finance_agent",
+                module_path="agents.super_agents.finance_agent.finance_agent",
                 class_name="FinanceAgent",
                 capabilities=[
                     AgentCapability("budget_planning", "Prepare budgets, forecasts, and financial summaries.", True, False, AgentRiskLevel.MEDIUM, ["finance.plan"], ["finance"]),
@@ -974,7 +974,7 @@ class AgentManifest(BaseAgent):
                 description="Handles content creation, scripts, prompts, design briefs, ads, videos, and creative workflows.",
                 category=AgentCategory.CREATIVE,
                 status=AgentStatus.PLANNED,
-                module_path="agents.creator_agent.creator_agent",
+                module_path="agents.super_agents.creator_agent.creator_agent",
                 class_name="CreatorAgent",
                 capabilities=[
                     AgentCapability("scriptwriting", "Create scripts for ads, videos, voiceovers, and storytelling.", True, False, AgentRiskLevel.LOW, ["creator.script"], ["script"]),

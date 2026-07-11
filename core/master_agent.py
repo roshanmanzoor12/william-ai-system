@@ -101,7 +101,21 @@ except Exception:  # pragma: no cover
     Planner = None  # type: ignore
 
 try:
-    from core.router import AgentRouter  # type: ignore
+    # core/router.py's class is named Router, not AgentRouter -- this
+    # import always raised ImportError, so self.router silently fell
+    # back to the bare in-file FallbackRouter for every MasterAgent
+    # instance. Router's own docstring/shape (route_task(task, context),
+    # resolve_agent() checking both "agent" and "agent_name" keys,
+    # _get_agent() duck-typing against anything with .get()/.get_agent())
+    # is exactly what this file's _route_step()/_execute_routed_step()
+    # already call -- it's the real intended component, just misnamed
+    # on import. (agents/agent_router.py's AgentRouter is a different,
+    # heavier all-in-one routing+security+execution pipeline meant to be
+    # driven directly by main.py/dashboard, not nested inside this
+    # file's own separately-staged security/route/execute/verify/memory
+    # pipeline -- using it here would either double-execute or bypass
+    # this file's own safety_bridge stage.)
+    from core.router import Router as AgentRouter  # type: ignore
 except Exception:  # pragma: no cover
     AgentRouter = None  # type: ignore
 
@@ -1101,7 +1115,14 @@ class MasterAgent(BaseAgent):
     def _build_router(self) -> Any:
         if AgentRouter is not None:
             try:
-                return AgentRouter(config=self.config, agent_registry=self.agent_registry)
+                # core.router.Router's own RouterConfig dataclass has a
+                # different shape than CoreConfig -- let it use its own
+                # defaults rather than pass a config object it doesn't
+                # understand (same reasoning as the safety/verification/
+                # memory bridges below). Its registry duck-types against
+                # anything with .get()/.get_agent(), and self.agent_registry
+                # is a plain dict, so a direct .get() lookup works as-is.
+                return AgentRouter(registry=self.agent_registry)
             except TypeError:
                 try:
                     return AgentRouter(self.agent_registry)
