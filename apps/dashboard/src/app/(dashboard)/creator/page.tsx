@@ -7,12 +7,14 @@ import React, {
   useMemo,
   useState,
 } from 'react';
+import { useRouter } from 'next/navigation';
+import { SessionData, UserPlan, UserRole, readSession } from '@/lib/auth';
 
 type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
-type RoleName = 'owner' | 'admin' | 'operator' | 'viewer';
+type RoleName = UserRole;
 
-type SubscriptionPlan = 'free' | 'starter' | 'pro' | 'enterprise';
+type SubscriptionPlan = UserPlan;
 
 type CreatorStatus =
   | 'draft'
@@ -635,12 +637,19 @@ function buildAuditEvent(params: {
 }
 
 async function apiRequest<T>(path: string, options: ApiClientOptions = {}): Promise<T> {
+  const activeSession = readSession();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...options.headers,
+  };
+
+  if (activeSession?.accessToken) {
+    headers.Authorization = `Bearer ${activeSession.accessToken}`;
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: options.method || 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
+    headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
     credentials: 'include',
   });
@@ -657,20 +666,38 @@ async function apiRequest<T>(path: string, options: ApiClientOptions = {}): Prom
   return payload as T;
 }
 
-async function loadSession(): Promise<ConsoleUser> {
-  if (!API_BASE_URL) return DEFAULT_USER;
+/**
+ * There is no backend concept of ConsoleUser's `permissions`/
+ * `plan_features` capability-flag lists (apps/api/routes/auth.py only
+ * grants a fixed set of coarse permission strings to a brand new OWNER --
+ * see the "no backend-side static role -> permissions table" note in
+ * src/lib/auth.ts). Rather than fabricate a fake-looking granular matrix
+ * per role, every real session gets the same full capability lists this
+ * page already ships in DEFAULT_USER -- the actual security boundary is
+ * the server-side role/plan checks on each endpoint, not these
+ * client-side display flags.
+ */
+function sessionToConsoleUser(session: SessionData): ConsoleUser {
+  return {
+    user_id: session.user_id,
+    workspace_id: session.workspace_id,
+    name: session.name,
+    email: session.email,
+    role: session.role,
+    plan: session.plan,
+    permissions: DEFAULT_USER.permissions,
+    plan_features: DEFAULT_USER.plan_features,
+  };
+}
 
-  const response = await apiRequest<{
-    success: boolean;
-    data: ConsoleUser;
-    error?: { message: string };
-  }>('/api/auth/session');
+function loadSession(): ConsoleUser {
+  const activeSession = readSession();
 
-  if (!response.success || !response.data) {
-    throw new Error(response.error?.message || 'Unable to load session.');
+  if (!activeSession) {
+    throw new Error('No signed-in session was found.');
   }
 
-  return response.data;
+  return sessionToConsoleUser(activeSession);
 }
 
 async function loadAssets(user: ConsoleUser): Promise<ContentAsset[]> {
@@ -799,6 +826,7 @@ function StatCard(props: { label: string; value: number; hint: string }) {
 }
 
 export default function Page() {
+  const router = useRouter();
   const [user, setUser] = useState<ConsoleUser>(DEFAULT_USER);
   const [assets, setAssets] = useState<ContentAsset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string>('');
@@ -868,20 +896,26 @@ export default function Page() {
       setIsBooting(true);
       setSafeError(null);
 
+      let sessionUser: ConsoleUser;
+
       try {
-        const sessionUser = await loadSession();
+        sessionUser = loadSession();
+      } catch {
+        if (isMounted) router.replace('/login');
+        return;
+      }
 
-        if (!isMounted) return;
+      if (!isMounted) return;
+      setUser(sessionUser);
 
-        setUser(sessionUser);
+      try {
         await refreshAssets(sessionUser);
       } catch (error) {
-        if (!isMounted) return;
-
+        // A real session exists but the creator API call itself failed
+        // (network issue, backend down) -- show a safe error instead of
+        // silently swapping in fake demo data, and without forcing a
+        // logout the user's session doesn't actually warrant.
         setSafeError(sanitizeError(error));
-        setUser(DEFAULT_USER);
-        setAssets(LOCAL_ASSETS);
-        setSelectedAssetId(LOCAL_ASSETS[0]?.asset_id || '');
       } finally {
         if (isMounted) setIsBooting(false);
       }
@@ -892,7 +926,7 @@ export default function Page() {
     return () => {
       isMounted = false;
     };
-  }, [refreshAssets]);
+  }, [refreshAssets, router]);
 
   const updateAsset = useCallback((assetId: string, patch: Partial<ContentAsset>) => {
     setAssets((current) =>
