@@ -1261,7 +1261,7 @@ export default function Page() {
 
   if (isBooting) {
     return (
-      <main className="min-h-screen bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+      <div className="rounded-[28px] bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
         <section className="mx-auto flex min-h-[70vh] max-w-7xl items-center justify-center">
           <div className="w-full max-w-xl rounded-3xl border border-white/10 bg-white/[0.04] p-8 shadow-2xl shadow-black/30">
             <div className="mb-6 h-12 w-12 animate-pulse rounded-2xl bg-cyan-400/30" />
@@ -1273,12 +1273,12 @@ export default function Page() {
             </div>
           </div>
         </section>
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_34%),radial-gradient(circle_at_top_right,rgba(168,85,247,0.18),transparent_30%),#020617] px-4 py-6 text-white sm:px-6 lg:px-8">
+    <div className="rounded-[28px] bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_34%),radial-gradient(circle_at_top_right,rgba(168,85,247,0.18),transparent_30%),#020617] px-4 py-6 text-white sm:px-6 lg:px-8">
       <section className="mx-auto max-w-7xl">
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -1805,7 +1805,7 @@ export default function Page() {
           </section>
         </div>
       </section>
-    </main>
+    </div>
   );
 }
 

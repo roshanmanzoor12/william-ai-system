@@ -691,12 +691,12 @@ export default function Page() {
                     Keep me signed in
                   </label>
 
-                  <a
-                    href="/forgot-password"
-                    className="text-sm font-black text-neutral-950 underline-offset-4 transition hover:text-[#ff5a3d] hover:underline"
+                  <span
+                    className="cursor-not-allowed text-sm font-black text-neutral-400"
+                    title="Password reset is not available yet. Contact your workspace admin to reset your password."
                   >
                     Forgot password?
-                  </a>
+                  </span>
                 </div>
 
                 <button
