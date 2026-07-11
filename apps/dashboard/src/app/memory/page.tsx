@@ -434,27 +434,6 @@ function getSensitivityStyle(sensitivity: MemorySensitivity): string {
   return "bg-red-50 text-red-700";
 }
 
-function IconBox({
-  children,
-  active,
-}: {
-  children: React.ReactNode;
-  active?: boolean;
-}) {
-  return (
-    <div
-      className={[
-        "grid h-11 w-11 place-items-center rounded-2xl border text-sm font-black transition",
-        active
-          ? "border-black bg-black text-white shadow-xl shadow-black/15"
-          : "border-neutral-200 bg-white text-neutral-500",
-      ].join(" ")}
-    >
-      {children}
-    </div>
-  );
-}
-
 function StatCard({
   title,
   value,
@@ -980,7 +959,7 @@ export default function Page() {
 
   if (state === "checking_session" || !session) {
     return (
-      <main className="grid min-h-screen place-items-center bg-[#e9e9e7] px-6 text-neutral-950">
+      <div className="grid min-h-[420px] place-items-center text-neutral-950">
         <div className="rounded-[2rem] bg-white px-8 py-7 text-center shadow-2xl shadow-black/10">
           <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-neutral-200 border-t-[#ff5a3d]" />
           <p className="mt-4 text-sm font-black">Checking memory access...</p>
@@ -988,65 +967,24 @@ export default function Page() {
             Validating user_id and workspace_id.
           </p>
         </div>
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="min-h-screen bg-[#e9e9e7] px-4 py-6 text-neutral-950 sm:px-6 lg:px-8">
-      <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-7xl overflow-hidden rounded-[2.25rem] bg-[#f7f7f6] p-4 shadow-2xl shadow-black/10">
-        <aside className="hidden w-[72px] shrink-0 flex-col items-center justify-between rounded-[1.8rem] bg-white p-4 shadow-sm lg:flex">
-          <div className="space-y-8">
-            <div className="grid h-12 w-12 place-items-center rounded-2xl bg-[#ff5a3d] text-lg font-black text-white shadow-xl shadow-[#ff5a3d]/25">
-              W
+    <div className="text-neutral-950">
+        <section className="flex min-w-0 flex-1 flex-col px-0">
+          <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h1 className="text-4xl font-black tracking-[-0.055em] text-neutral-950 lg:text-5xl">
+                Memory Manager
+              </h1>
+              <p className="mt-2 text-sm font-medium text-neutral-500">
+                Search, export, and delete workspace-safe memory records without leaking user context.
+              </p>
             </div>
 
-            <div className="space-y-3">
-              <a href="/dashboard" aria-label="Dashboard">
-                <IconBox>⌘</IconBox>
-              </a>
-              <a href="/agents" aria-label="Agents">
-                <IconBox>▦</IconBox>
-              </a>
-              <a href="/agent-permissions" aria-label="Agent permissions">
-                <IconBox>☷</IconBox>
-              </a>
-              <IconBox active>◌</IconBox>
-              <a href="/security" aria-label="Security">
-                <IconBox>▣</IconBox>
-              </a>
-              <a href="/workflows" aria-label="Workflows">
-                <IconBox>◎</IconBox>
-              </a>
-              <a href="/settings" aria-label="Settings">
-                <IconBox>⚙</IconBox>
-              </a>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            <IconBox>?</IconBox>
-            <button type="button" onClick={handleLogout} aria-label="Logout">
-              <IconBox>↩</IconBox>
-            </button>
-          </div>
-        </aside>
-
-        <section className="flex min-w-0 flex-1 flex-col px-0 lg:px-6">
-          <header className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
-              <div className="lg:hidden flex items-center gap-3 rounded-[1.5rem] bg-white p-3 shadow-sm">
-                <div className="grid h-11 w-11 place-items-center rounded-2xl bg-[#ff5a3d] font-black text-white">
-                  W
-                </div>
-                <div>
-                  <p className="text-sm font-black">Memory Manager</p>
-                  <p className="text-xs font-medium text-neutral-500">
-                    {session.workspace_name}
-                  </p>
-                </div>
-              </div>
-
+            <div className="flex flex-wrap items-center gap-3">
               <div className="relative w-full max-w-md">
                 <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400">
                   ⌕
@@ -1059,53 +997,22 @@ export default function Page() {
                   className="h-12 w-full rounded-full border border-neutral-200 bg-white px-11 text-sm font-semibold outline-none transition placeholder:text-neutral-400 focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
                 />
               </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="rounded-full border border-emerald-100 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700">
-                🔒 Security Guarded
-              </span>
-              <span className="rounded-full border border-[#ffd9cc] bg-[#fff3ed] px-4 py-2 text-xs font-black text-[#ff5a3d]">
-                ⛓ Workspace Isolated
-              </span>
-              <div className="flex items-center gap-3 rounded-full bg-white px-3 py-2 shadow-sm">
-                <div className="grid h-10 w-10 place-items-center rounded-full bg-[#ff5a3d] text-xs font-black text-white">
-                  {session.name
-                    .split(" ")
-                    .map((part) => part[0])
-                    .join("")
-                    .slice(0, 2)
-                    .toUpperCase() || "DP"}
-                </div>
-                <div>
-                  <p className="max-w-[130px] truncate text-xs font-black text-neutral-950">
-                    {session.name}
-                  </p>
-                  <p className="max-w-[130px] truncate text-[11px] font-medium text-neutral-500">
-                    {session.role} · {session.plan}
-                  </p>
-                </div>
+              <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-neutral-400">
+                  Workspace
+                </p>
+                <p className="mt-1 text-sm font-black text-neutral-950">
+                  {session.workspace_name}
+                </p>
               </div>
-            </div>
-          </header>
-
-          <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <h1 className="text-4xl font-black tracking-[-0.055em] text-neutral-950 lg:text-5xl">
-                Memory Manager
-              </h1>
-              <p className="mt-2 text-sm font-medium text-neutral-500">
-                Search, export, and delete workspace-safe memory records without leaking user context.
-              </p>
-            </div>
-
-            <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
-              <p className="text-[11px] font-black uppercase tracking-[0.18em] text-neutral-400">
-                Workspace
-              </p>
-              <p className="mt-1 text-sm font-black text-neutral-950">
-                {session.workspace_name}
-              </p>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="rounded-2xl bg-white px-4 py-3 text-xs font-black text-neutral-500 shadow-sm transition hover:text-[#ff5a3d]"
+                aria-label="Logout"
+              >
+                ↩ Logout
+              </button>
             </div>
           </div>
 
@@ -1455,7 +1362,6 @@ export default function Page() {
             </div>
           )}
         </section>
-      </div>
-    </main>
+    </div>
   );
 }

@@ -1,24 +1,12 @@
-import Link from "next/link";
 import {
-  Activity,
-  Bell,
   Bot,
-  CalendarDays,
-  ChevronDown,
   CreditCard,
-  Database,
   Filter,
-  Home,
-  LayoutDashboard,
   LineChart,
-  LockKeyhole,
   MoreHorizontal,
   Search,
   Settings,
-  ShieldCheck,
-  Sparkles,
-  WalletCards,
-  Zap
+  Sparkles
 } from "lucide-react";
 
 type StatCard = {
@@ -130,18 +118,6 @@ const chartData = [
   { month: "Aug", profit: 33, loss: 16 }
 ];
 
-const sideIcons = [
-  Home,
-  LayoutDashboard,
-  WalletCards,
-  CreditCard,
-  Activity,
-  Bot,
-  Database,
-  ShieldCheck,
-  Settings
-];
-
 function StatusBadge({ status }: { status: ActivityRow["status"] }) {
   const classes = {
     Completed: "bg-emerald-50 text-emerald-700",
@@ -178,91 +154,10 @@ function MiniBarChart() {
   );
 }
 
-function SmallIconButton({ children }: { children: React.ReactNode }) {
-  return (
-    <button className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-zinc-700 shadow-sm ring-1 ring-zinc-100 transition hover:bg-zinc-50">
-      {children}
-    </button>
-  );
-}
-
 export default function Page() {
   return (
-    <main className="min-h-screen bg-[#eeeeee] px-4 py-8 text-[#161616] sm:px-6 lg:px-10">
-      <section className="mx-auto flex max-w-[1360px] overflow-hidden rounded-[34px] bg-[#f7f7f7] p-4 shadow-[0_24px_80px_rgba(15,15,15,0.08)] ring-1 ring-black/5">
-        <aside className="hidden w-[58px] shrink-0 flex-col items-center justify-between rounded-[28px] bg-white py-4 shadow-sm ring-1 ring-zinc-100 lg:flex">
-          <div className="space-y-3">
-            {sideIcons.map((Icon, index) => (
-              <Link
-                key={index}
-                href="#"
-                className={`flex h-10 w-10 items-center justify-center rounded-2xl transition ${
-                  index === 1
-                    ? "bg-[#1f1f1f] text-white shadow-lg"
-                    : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900"
-                }`}
-              >
-                <Icon className="h-4 w-4" />
-              </Link>
-            ))}
-          </div>
-
-          <div className="space-y-3">
-            <button className="flex h-10 w-10 items-center justify-center rounded-2xl text-zinc-400 hover:bg-zinc-100">
-              <Bell className="h-4 w-4" />
-            </button>
-            <button className="flex h-10 w-10 items-center justify-center rounded-2xl text-zinc-400 hover:bg-zinc-100">
-              <LockKeyhole className="h-4 w-4" />
-            </button>
-          </div>
-        </aside>
-
-        <div className="min-w-0 flex-1 px-0 lg:px-5">
-          <header className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#ff6a3d] text-white shadow-lg shadow-orange-500/20">
-                <Zap className="h-5 w-5" />
-              </div>
-              <span className="text-sm font-black tracking-tight">William</span>
-            </div>
-
-            <nav className="flex w-full max-w-[560px] items-center justify-between rounded-full bg-white p-1 text-xs font-semibold text-zinc-500 shadow-sm ring-1 ring-zinc-100">
-              {["Overview", "Activity", "Manage", "Program", "Account", "Reports"].map((item, index) => (
-                <Link
-                  key={item}
-                  href="#"
-                  className={`rounded-full px-4 py-2 transition ${
-                    index === 0 ? "bg-[#171717] text-white shadow-sm" : "hover:bg-zinc-100 hover:text-zinc-900"
-                  }`}
-                >
-                  {item}
-                </Link>
-              ))}
-            </nav>
-
-            <div className="flex items-center gap-3">
-              <SmallIconButton>
-                <Search className="h-4 w-4" />
-              </SmallIconButton>
-              <SmallIconButton>
-                <Bell className="h-4 w-4" />
-              </SmallIconButton>
-              <button className="flex items-center gap-3 rounded-full bg-white py-1.5 pl-2 pr-4 shadow-sm ring-1 ring-zinc-100">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#ffe2d8] text-xs font-black text-[#ff5b2e]">
-                  DP
-                </span>
-                <span className="hidden text-left sm:block">
-                  <span className="block text-xs font-bold">Saijbur Rahman</span>
-                  <span className="block max-w-[120px] truncate text-[10px] text-zinc-400">
-                    owner@digitalpromotix.com
-                  </span>
-                </span>
-                <ChevronDown className="h-3.5 w-3.5 text-zinc-400" />
-              </button>
-            </div>
-          </header>
-
-          <div className="mb-6">
+    <div className="text-[#161616]">
+      <div className="mb-6">
             <h1 className="text-3xl font-black tracking-tight text-[#141414]">
               Good morning, Saijbur
             </h1>
@@ -474,8 +369,6 @@ export default function Page() {
               </div>
             </div>
           </section>
-        </div>
-      </section>
-    </main>
+    </div>
   );
 }
