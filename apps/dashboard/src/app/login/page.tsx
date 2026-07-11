@@ -2,84 +2,8 @@
 
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-
-type UserRole = "owner" | "admin" | "member" | "viewer";
-type UserPlan = "free" | "starter" | "pro" | "enterprise";
-type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled";
-
-type ApiError = {
-  code: string;
-  message: string;
-  status_code?: number;
-  details?: Record<string, unknown>;
-};
-
-type ApiResponse<T> = {
-  success: boolean;
-  data: T | null;
-  error: ApiError | null;
-};
-
-type LoginPayload = {
-  email: string;
-  password: string;
-  workspaceSlug?: string;
-  rememberMe: boolean;
-  clientContext: {
-    app: "william-dashboard";
-    module: "auth.login";
-    action: "auth.login";
-    userAgent: string;
-    requiresAudit: true;
-    requiresSecurityRoute: false;
-    memoryCompatible: true;
-    verificationCompatible: true;
-  };
-};
-
-type LoginData = {
-  accessToken: string;
-  refreshToken?: string;
-  user: {
-    user_id: string;
-    email: string;
-    name: string;
-    role: UserRole;
-  };
-  workspace: {
-    workspace_id: string;
-    name: string;
-    slug: string;
-  };
-  subscription: {
-    plan: UserPlan;
-    status: SubscriptionStatus;
-  };
-  permissions: string[];
-  audit?: {
-    event_id?: string;
-    action: "auth.login";
-    routed_to_security_agent: boolean;
-    memory_ready: boolean;
-    verification_ready: boolean;
-  };
-};
-
-type SessionData = {
-  accessToken: string;
-  refreshToken?: string;
-  user_id: string;
-  workspace_id: string;
-  email: string;
-  name: string;
-  role: UserRole;
-  plan: UserPlan;
-  subscription_status: SubscriptionStatus;
-  permissions: string[];
-  workspace_name: string;
-  workspace_slug: string;
-  saved_at: string;
-};
+import { canUseDashboard, clearSession, readSession, saveSession } from "@/lib/auth";
+import { API_BASE_URL, authApi } from "@/lib/api-client";
 
 type FormErrors = {
   email?: string;
@@ -87,40 +11,6 @@ type FormErrors = {
   workspaceSlug?: string;
   general?: string;
 };
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
-
-const ALLOWED_ROLES: Record<UserRole, boolean> = {
-  owner: true,
-  admin: true,
-  member: true,
-  viewer: true,
-};
-
-const ALLOWED_PLANS: Record<UserPlan, boolean> = {
-  free: true,
-  starter: true,
-  pro: true,
-  enterprise: true,
-};
-
-function createSafeError<T = never>(
-  code: string,
-  message: string,
-  statusCode = 400,
-  details: Record<string, unknown> = {},
-): ApiResponse<T> {
-  return {
-    success: false,
-    data: null,
-    error: {
-      code,
-      message,
-      status_code: statusCode,
-      details,
-    },
-  };
-}
 
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
@@ -162,222 +52,6 @@ function validateLoginForm(
   }
 
   return errors;
-}
-
-async function parseApiJson<T>(response: Response): Promise<ApiResponse<T>> {
-  try {
-    const json = (await response.json()) as ApiResponse<T>;
-
-    if (
-      typeof json === "object" &&
-      json !== null &&
-      typeof json.success === "boolean" &&
-      "data" in json &&
-      "error" in json
-    ) {
-      return json;
-    }
-
-    return createSafeError<T>(
-      "INVALID_API_RESPONSE",
-      "The server returned an invalid response shape.",
-      response.status,
-    );
-  } catch {
-    return createSafeError<T>(
-      "INVALID_JSON_RESPONSE",
-      "The server response could not be parsed.",
-      response.status,
-    );
-  }
-}
-
-async function loginRequest(payload: LoginPayload): Promise<ApiResponse<LoginData>> {
-  if (!API_BASE_URL) {
-    return createSafeError<LoginData>(
-      "API_BASE_URL_MISSING",
-      "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
-      503,
-      {
-        required_env: "NEXT_PUBLIC_API_BASE_URL",
-      },
-    );
-  }
-
-  try {
-    const baseUrl = API_BASE_URL.replace(/\/$/, "");
-    const response = await fetch(`${baseUrl}/auth/login`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Client-App": "william-dashboard",
-        "X-Action": "auth.login",
-      },
-      credentials: "include",
-      body: JSON.stringify(payload),
-    });
-
-    const body = await parseApiJson<LoginData>(response);
-
-    if (!response.ok) {
-      if (!body.success && body.error) {
-        return body;
-      }
-
-      return createSafeError<LoginData>(
-        "LOGIN_HTTP_ERROR",
-        "Login failed. Please check your credentials and try again.",
-        response.status,
-      );
-    }
-
-    return body;
-  } catch {
-    return createSafeError<LoginData>(
-      "NETWORK_ERROR",
-      "Could not connect to the William API. Make sure your backend server is running.",
-      503,
-    );
-  }
-}
-
-function validateLoginData(data: LoginData): ApiResponse<LoginData> {
-  if (!data.accessToken) {
-    return createSafeError<LoginData>(
-      "ACCESS_TOKEN_MISSING",
-      "Login succeeded, but no access token was returned.",
-      403,
-    );
-  }
-
-  if (!data.user?.user_id || !data.workspace?.workspace_id) {
-    return createSafeError<LoginData>(
-      "ISOLATION_CONTEXT_MISSING",
-      "Login succeeded, but user/workspace isolation context is missing.",
-      403,
-    );
-  }
-
-  if (!ALLOWED_ROLES[data.user.role]) {
-    return createSafeError<LoginData>(
-      "ROLE_ACCESS_DENIED",
-      "Your role does not have dashboard access.",
-      403,
-      {
-        role: data.user.role,
-      },
-    );
-  }
-
-  if (!ALLOWED_PLANS[data.subscription.plan]) {
-    return createSafeError<LoginData>(
-      "PLAN_ACCESS_DENIED",
-      "Your plan does not have dashboard access.",
-      402,
-      {
-        plan: data.subscription.plan,
-      },
-    );
-  }
-
-  if (!["active", "trialing"].includes(data.subscription.status)) {
-    return createSafeError<LoginData>(
-      "SUBSCRIPTION_INACTIVE",
-      "Your workspace subscription is not active.",
-      402,
-      {
-        status: data.subscription.status,
-      },
-    );
-  }
-
-  if (
-    !data.permissions.includes("dashboard:read") &&
-    !data.permissions.includes("workspace:read")
-  ) {
-    return createSafeError<LoginData>(
-      "PERMISSION_DENIED",
-      "Your account does not have permission to open this workspace dashboard.",
-      403,
-    );
-  }
-
-  return {
-    success: true,
-    data,
-    error: null,
-  };
-}
-
-function saveSession(data: LoginData, rememberMe: boolean): void {
-  const session: SessionData = {
-    accessToken: data.accessToken,
-    refreshToken: data.refreshToken,
-    user_id: data.user.user_id,
-    workspace_id: data.workspace.workspace_id,
-    email: data.user.email,
-    name: data.user.name,
-    role: data.user.role,
-    plan: data.subscription.plan,
-    subscription_status: data.subscription.status,
-    permissions: data.permissions,
-    workspace_name: data.workspace.name,
-    workspace_slug: data.workspace.slug,
-    saved_at: new Date().toISOString(),
-  };
-
-  const selectedStorage = rememberMe ? window.localStorage : window.sessionStorage;
-  const otherStorage = rememberMe ? window.sessionStorage : window.localStorage;
-
-  otherStorage.removeItem("william.session");
-  otherStorage.removeItem("william.access_token");
-  otherStorage.removeItem("william.refresh_token");
-
-  selectedStorage.setItem("william.session", JSON.stringify(session));
-  selectedStorage.setItem("william.access_token", data.accessToken);
-
-  if (data.refreshToken) {
-    selectedStorage.setItem("william.refresh_token", data.refreshToken);
-  }
-}
-
-function readExistingSession(): SessionData | null {
-  if (typeof window === "undefined") return null;
-
-  const raw =
-    window.localStorage.getItem("william.session") ||
-    window.sessionStorage.getItem("william.session");
-
-  if (!raw) return null;
-
-  try {
-    const session = JSON.parse(raw) as SessionData;
-
-    if (
-      session?.accessToken &&
-      session?.user_id &&
-      session?.workspace_id &&
-      session?.subscription_status &&
-      ["active", "trialing"].includes(session.subscription_status)
-    ) {
-      return session;
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function clearExistingSession(): void {
-  if (typeof window === "undefined") return;
-
-  window.localStorage.removeItem("william.session");
-  window.localStorage.removeItem("william.access_token");
-  window.localStorage.removeItem("william.refresh_token");
-  window.sessionStorage.removeItem("william.session");
-  window.sessionStorage.removeItem("william.access_token");
-  window.sessionStorage.removeItem("william.refresh_token");
 }
 
 function FieldError({ message }: { message?: string }) {
@@ -434,7 +108,7 @@ export default function Page() {
   );
 
   useEffect(() => {
-    const session = readExistingSession();
+    const session = readSession();
 
     if (session) {
       router.replace("/dashboard");
@@ -456,50 +130,35 @@ export default function Page() {
 
     setIsLoading(true);
 
-    const payload: LoginPayload = {
+    // normalizedWorkspaceSlug is not sent to the backend: LoginRequest
+    // (apps/api/routes/auth.py) only accepts a real workspace_id, and no
+    // slug -> workspace_id resolution endpoint exists anywhere in the
+    // backend. Leaving it out lets the backend fall back to the user's
+    // default active membership (AUTH_STORE.choose_membership) instead of
+    // sending a value that would always fail to resolve.
+    const result = await authApi.login({
       email: email.trim().toLowerCase(),
       password,
-      workspaceSlug: normalizedWorkspaceSlug || undefined,
-      rememberMe,
-      clientContext: {
-        app: "william-dashboard",
-        module: "auth.login",
-        action: "auth.login",
-        userAgent:
-          typeof window !== "undefined" ? window.navigator.userAgent : "server",
-        requiresAudit: true,
-        requiresSecurityRoute: false,
-        memoryCompatible: true,
-        verificationCompatible: true,
-      },
-    };
+    });
 
-    const response = await loginRequest(payload);
-
-    if (!response.success || !response.data) {
+    if (result.success === false) {
       setErrors({
-        general:
-          response.error?.message ||
-          "Login failed. Check your email, password, and workspace.",
+        general: result.error.message || "Login failed. Check your email and password.",
       });
       setIsLoading(false);
       return;
     }
 
-    const accessCheck = validateLoginData(response.data);
+    const accessCheck = canUseDashboard(result.data);
 
-    if (!accessCheck.success || !accessCheck.data) {
-      setErrors({
-        general:
-          accessCheck.error?.message ||
-          "Your account cannot access this dashboard.",
-      });
-      clearExistingSession();
+    if (accessCheck.allowed === false) {
+      setErrors({ general: accessCheck.message });
+      clearSession();
       setIsLoading(false);
       return;
     }
 
-    saveSession(accessCheck.data, rememberMe);
+    saveSession(result.data, rememberMe);
     router.replace("/dashboard");
   }
 
