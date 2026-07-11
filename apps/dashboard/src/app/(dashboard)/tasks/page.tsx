@@ -17,40 +17,65 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation";
 import { SessionData, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
 
-type TaskStatus = "queued" | "running" | "waiting_security" | "completed" | "failed" | "rejected";
-type TaskPriority = "low" | "normal" | "high" | "critical";
-type AgentName =
-  | "Master Agent"
-  | "Security Agent"
-  | "Verification Agent"
-  | "Memory Agent"
-  | "Browser Agent"
-  | "Code Agent"
-  | "Workflow Agent"
-  | "Business Agent"
-  | "Finance Agent"
-  | "Creator Agent";
+// Matches apps/api/routes/tasks.py's real TaskStatus/TaskPriority enums and
+// TaskRecord model exactly (confirmed by reading the source). The old
+// vocabulary here ("rejected" status, "critical" priority, plus a `progress`
+// percentage, `duration_ms`, and `cost_units` that have no backend field at
+// all) was fabricated and never matched what the API actually returns.
+type TaskStatus = "created" | "queued" | "running" | "waiting_security" | "completed" | "failed" | "cancelled";
+type TaskPriority = "low" | "normal" | "high" | "urgent";
 
 type TaskRecord = {
-  id: string;
+  task_id: string;
   user_id: string;
   workspace_id: string;
-  title: string;
-  agent: AgentName;
-  status: TaskStatus;
+  created_by_user_id: string;
+  action: string;
+  message: string;
+  preferred_agent: string | null;
   priority: TaskPriority;
-  progress: number;
-  sensitive: boolean;
+  status: TaskStatus;
+  approved_by_security: boolean;
+  security_result: Record<string, unknown> | null;
+  memory_result: Record<string, unknown> | null;
+  verification_result: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
-  duration_ms: number;
-  cost_units: number;
-  memory_payload_ready: boolean;
-  verification_payload_ready: boolean;
-  security_review_required: boolean;
-  security_review_status: "not_required" | "pending" | "approved" | "rejected";
-  audit_event_id?: string;
+  started_at: string | null;
+  completed_at: string | null;
 };
+
+type TaskListResponse = {
+  tasks: TaskRecord[];
+  pagination: { limit: number; offset: number; returned: number };
+  filters: { status: string | null; agent: string | null; include_workspace_tasks: boolean };
+  isolation: { user_id: string; workspace_id: string };
+};
+
+function taskTitle(task: TaskRecord): string {
+  return task.message || task.action;
+}
+
+function taskAgentLabel(task: TaskRecord): string {
+  return task.preferred_agent || "Unassigned";
+}
+
+/** Real duration, derived from real timestamps -- null (not a fabricated
+ * number) until the task has both started and completed. */
+function taskDurationMs(task: TaskRecord): number | null {
+  if (!task.started_at || !task.completed_at) return null;
+  return new Date(task.completed_at).getTime() - new Date(task.started_at).getTime();
+}
+
+function taskIsSensitive(task: TaskRecord): boolean {
+  return task.status === "waiting_security" || task.security_result !== null;
+}
+
+function taskSecurityReviewStatus(task: TaskRecord): "not_required" | "pending" | "approved" | "rejected" {
+  if (task.status === "waiting_security") return "pending";
+  if (task.security_result !== null) return task.approved_by_security ? "approved" : "rejected";
+  return "not_required";
+}
 
 type ApiResponse<T> = {
   success: boolean;
@@ -65,29 +90,41 @@ type TaskStats = {
   running: number;
   failed: number;
   securityPending: number;
-  avgProgress: number;
 };
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
+  created: "Created",
   queued: "Queued",
   running: "Running",
   waiting_security: "Security Review",
   completed: "Completed",
   failed: "Failed",
-  rejected: "Rejected",
+  cancelled: "Cancelled",
 };
 
 const PRIORITY_LABELS: Record<TaskPriority, string> = {
   low: "Low",
   normal: "Normal",
   high: "High",
-  critical: "Critical",
+  urgent: "Urgent",
 };
 
-const SENSITIVE_ACTIONS = new Set(["delete", "export", "security", "permission", "billing", "execute"]);
+// Purely a coarse visual stage indicator for the progress bar's width --
+// not a real completion percentage (the backend has no such field on
+// TaskRecord; per-run progress only exists as individual TaskProgressEvent
+// rows this page doesn't fetch). Never rendered as a number to the user.
+const STATUS_STAGE_WIDTH: Record<TaskStatus, number> = {
+  created: 5,
+  queued: 15,
+  running: 55,
+  waiting_security: 60,
+  completed: 100,
+  failed: 100,
+  cancelled: 100,
+};
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -119,7 +156,8 @@ function formatDateTime(value: string): string {
   }
 }
 
-function formatDuration(ms: number): string {
+function formatDuration(ms: number | null): string {
+  if (ms === null) return "Not available";
   if (ms < 1000) return `${ms}ms`;
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -132,133 +170,6 @@ function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
 }
 
-function buildDemoTasks(session: SessionData): TaskRecord[] {
-  const base = Date.now();
-
-  return [
-    {
-      id: "TSK-000076",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Run Master Agent command orchestration",
-      agent: "Master Agent",
-      status: "completed",
-      priority: "high",
-      progress: 100,
-      sensitive: false,
-      created_at: new Date(base - 1000 * 60 * 14).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 7).toISOString(),
-      duration_ms: 42000,
-      cost_units: 7,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      security_review_required: false,
-      security_review_status: "not_required",
-      audit_event_id: "audit_task_000076",
-    },
-    {
-      id: "TSK-000075",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Security Agent approval for file action",
-      agent: "Security Agent",
-      status: "waiting_security",
-      priority: "critical",
-      progress: 64,
-      sensitive: true,
-      created_at: new Date(base - 1000 * 60 * 32).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 9).toISOString(),
-      duration_ms: 88000,
-      cost_units: 12,
-      memory_payload_ready: true,
-      verification_payload_ready: false,
-      security_review_required: true,
-      security_review_status: "pending",
-      audit_event_id: "audit_task_000075",
-    },
-    {
-      id: "TSK-000074",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Save task context into Memory Agent",
-      agent: "Memory Agent",
-      status: "completed",
-      priority: "normal",
-      progress: 100,
-      sensitive: false,
-      created_at: new Date(base - 1000 * 60 * 58).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 51).toISOString(),
-      duration_ms: 24000,
-      cost_units: 4,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      security_review_required: false,
-      security_review_status: "not_required",
-      audit_event_id: "audit_task_000074",
-    },
-    {
-      id: "TSK-000073",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Generate CRM workflow payload",
-      agent: "Workflow Agent",
-      status: "running",
-      priority: "high",
-      progress: 78,
-      sensitive: false,
-      created_at: new Date(base - 1000 * 60 * 76).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 3).toISOString(),
-      duration_ms: 121000,
-      cost_units: 9,
-      memory_payload_ready: true,
-      verification_payload_ready: false,
-      security_review_required: false,
-      security_review_status: "not_required",
-      audit_event_id: "audit_task_000073",
-    },
-    {
-      id: "TSK-000072",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Verification Agent completion check",
-      agent: "Verification Agent",
-      status: "completed",
-      priority: "normal",
-      progress: 100,
-      sensitive: false,
-      created_at: new Date(base - 1000 * 60 * 140).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 130).toISOString(),
-      duration_ms: 18000,
-      cost_units: 3,
-      memory_payload_ready: true,
-      verification_payload_ready: true,
-      security_review_required: false,
-      security_review_status: "not_required",
-      audit_event_id: "audit_task_000072",
-    },
-    {
-      id: "TSK-000071",
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title: "Browser Agent live research action",
-      agent: "Browser Agent",
-      status: "failed",
-      priority: "normal",
-      progress: 42,
-      sensitive: false,
-      created_at: new Date(base - 1000 * 60 * 190).toISOString(),
-      updated_at: new Date(base - 1000 * 60 * 184).toISOString(),
-      duration_ms: 66000,
-      cost_units: 5,
-      memory_payload_ready: false,
-      verification_payload_ready: false,
-      security_review_required: false,
-      security_review_status: "not_required",
-      audit_event_id: "audit_task_000071",
-    },
-  ];
-}
-
 async function dashboardFetch<T>(
   path: string,
   options: RequestInit & {
@@ -269,7 +180,7 @@ async function dashboardFetch<T>(
   if (!API_BASE_URL) {
     return {
       success: false,
-      error: "API base URL is not configured. Using local safe demo data.",
+      error: "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
     };
   }
 
@@ -538,9 +449,9 @@ function MiniBarChart({ tasks }: { tasks: TaskRecord[] }) {
   const bars = useMemo(() => {
     const labels = ["Master", "Security", "Memory", "Workflow", "Verify", "Code"];
     const counts = labels.map((label) => {
-      const total = tasks.filter((task) => task.agent.toLowerCase().includes(label.toLowerCase())).length;
+      const total = tasks.filter((task) => taskAgentLabel(task).toLowerCase().includes(label.toLowerCase())).length;
       const completed = tasks.filter(
-        (task) => task.agent.toLowerCase().includes(label.toLowerCase()) && task.status === "completed",
+        (task) => taskAgentLabel(task).toLowerCase().includes(label.toLowerCase()) && task.status === "completed",
       ).length;
 
       return {
@@ -548,7 +459,7 @@ function MiniBarChart({ tasks }: { tasks: TaskRecord[] }) {
         total: Math.max(total, 1),
         completed,
         failed: tasks.filter(
-          (task) => task.agent.toLowerCase().includes(label.toLowerCase()) && task.status === "failed",
+          (task) => taskAgentLabel(task).toLowerCase().includes(label.toLowerCase()) && task.status === "failed",
         ).length,
       };
     });
@@ -635,11 +546,10 @@ export default function Page() {
     const total = tasks.length;
     const completed = tasks.filter((task) => task.status === "completed").length;
     const running = tasks.filter((task) => task.status === "running").length;
-    const failed = tasks.filter((task) => task.status === "failed" || task.status === "rejected").length;
+    const failed = tasks.filter((task) => task.status === "failed" || task.status === "cancelled").length;
     const securityPending = tasks.filter((task) => task.status === "waiting_security").length;
-    const avgProgress = total ? Math.round(tasks.reduce((sum, task) => sum + task.progress, 0) / total) : 0;
 
-    return { total, completed, running, failed, securityPending, avgProgress };
+    return { total, completed, running, failed, securityPending };
   }, [tasks]);
 
   const filteredTasks = useMemo(() => {
@@ -649,9 +559,9 @@ export default function Page() {
       const statusMatch = selectedStatus === "all" || task.status === selectedStatus;
       const searchMatch =
         !q ||
-        task.id.toLowerCase().includes(q) ||
-        task.title.toLowerCase().includes(q) ||
-        task.agent.toLowerCase().includes(q);
+        task.task_id.toLowerCase().includes(q) ||
+        taskTitle(task).toLowerCase().includes(q) ||
+        taskAgentLabel(task).toLowerCase().includes(q);
 
       return statusMatch && searchMatch;
     });
@@ -661,59 +571,49 @@ export default function Page() {
     return tasks.find((task) => task.status === "running") || tasks.find((task) => task.status === "waiting_security") || tasks[0];
   }, [tasks]);
 
-  const loadTasks = useCallback(async () => {
-    if (!session) return;
+  const loadTasks = useCallback(
+    async (mode: "initial" | "poll" = "initial") => {
+      if (!session) return;
 
-    setIsLoading(true);
-    setError(null);
+      if (mode === "initial") setIsLoading(true);
+      setError(null);
 
-    const response = await dashboardFetch<TaskRecord[]>("/api/tasks", {
-      method: "GET",
-      accessToken: session.accessToken,
-      audit_action: "task_history_read",
-    });
+      const response = await dashboardFetch<TaskListResponse>("/tasks", {
+        method: "GET",
+        accessToken: session.accessToken,
+        audit_action: "task_history_read",
+      });
 
-    if (response.success && Array.isArray(response.data)) {
-      const isolated = response.data.filter(
-        (task) => task.user_id === session.user_id && task.workspace_id === session.workspace_id,
-      );
-      setTasks(isolated);
-    } else {
-      setTasks(buildDemoTasks(session));
-      if (response.error && API_BASE_URL) setError(response.error);
-    }
+      if (response.success && response.data) {
+        setTasks(response.data.tasks);
+      } else if (mode === "initial") {
+        setTasks([]);
+        if (response.error) setError(response.error);
+      }
 
-    setIsLoading(false);
-  }, [session]);
+      if (mode === "initial") setIsLoading(false);
+    },
+    [session],
+  );
 
   useEffect(() => {
-    if (mounted.current) return;
+    if (!session || mounted.current) return;
     mounted.current = true;
-    void loadTasks();
-  }, [loadTasks]);
+    void loadTasks("initial");
+  }, [loadTasks, session]);
 
+  // "Live" polls the real /tasks endpoint on an interval instead of
+  // fabricating progress ticks client-side -- there is no progress field
+  // anywhere in the backend's TaskRecord to simulate in the first place.
   useEffect(() => {
-    if (!liveEnabled) return;
+    if (!liveEnabled || !session) return;
 
     const timer = window.setInterval(() => {
-      setTasks((current) =>
-        current.map((task) => {
-          if (task.status !== "running") return task;
-
-          const nextProgress = Math.min(99, task.progress + Math.floor(Math.random() * 6) + 1);
-
-          return {
-            ...task,
-            progress: nextProgress,
-            updated_at: nowIso(),
-            duration_ms: task.duration_ms + 3000,
-          };
-        }),
-      );
-    }, 3000);
+      void loadTasks("poll");
+    }, 5000);
 
     return () => window.clearInterval(timer);
-  }, [liveEnabled]);
+  }, [liveEnabled, session, loadTasks]);
 
   const createTask = async () => {
     if (!session) return;
@@ -726,22 +626,16 @@ export default function Page() {
     setIsCreatingTask(true);
     setError(null);
 
-    const title = "New Master Agent workspace task";
-    const sensitive = Array.from(SENSITIVE_ACTIONS).some((word) => title.toLowerCase().includes(word));
-
     const payload = {
-      user_id: session.user_id,
-      workspace_id: session.workspace_id,
-      title,
-      agent: "Master Agent",
-      sensitive,
-      route_to_security_agent: sensitive,
-      prepare_verification_payload: true,
-      memory_agent_compatible: true,
-      audit_action: "task_created_from_dashboard",
+      action: "general_request",
+      message: `Task created from the dashboard by ${session.name}.`,
+      priority: "normal",
+      auto_run: true,
+      approved_by_security: false,
+      metadata: { source: "dashboard_run_task_button" },
     };
 
-    const response = await dashboardFetch<TaskRecord>("/api/tasks", {
+    const response = await dashboardFetch<{ task: TaskRecord }>("/tasks/run", {
       method: "POST",
       accessToken: session.accessToken,
       audit_action: "task_create",
@@ -749,32 +643,14 @@ export default function Page() {
     });
 
     if (response.success && response.data) {
-      if (response.data.user_id === session.user_id && response.data.workspace_id === session.workspace_id) {
-        setTasks((current) => [response.data as TaskRecord, ...current]);
-      }
+      setTasks((current) => [response.data!.task, ...current]);
     } else {
-      const demoTask: TaskRecord = {
-        id: `TSK-${String(Math.floor(Math.random() * 900000) + 100000)}`,
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
-        title,
-        agent: "Master Agent",
-        status: "running",
-        priority: "normal",
-        progress: 8,
-        sensitive,
-        created_at: nowIso(),
-        updated_at: nowIso(),
-        duration_ms: 0,
-        cost_units: 1,
-        memory_payload_ready: true,
-        verification_payload_ready: false,
-        security_review_required: sensitive,
-        security_review_status: sensitive ? "pending" : "not_required",
-        audit_event_id: `audit_${Date.now()}`,
-      };
-
-      setTasks((current) => [demoTask, ...current]);
+      // A sensitive task's run step can fail server-side with 403
+      // SECURITY_APPROVAL_REQUIRED even though the task itself was created
+      // (it lands in "waiting_security") -- refresh from the real list
+      // either way instead of guessing at what happened.
+      if (response.error) setError(response.error);
+      void loadTasks("poll");
     }
 
     setIsCreatingTask(false);
@@ -790,43 +666,26 @@ export default function Page() {
 
     setError(null);
 
-    const response = await dashboardFetch<TaskRecord>(`/api/security/tasks/${encodeURIComponent(task.id)}/approve`, {
+    // The real backend has no dedicated "approve" endpoint -- a
+    // waiting_security task is unblocked by re-running it with
+    // approved_by_security: true (apps/api/routes/tasks.py's
+    // TaskRunRequest, handled by POST /tasks/{task_id}/run).
+    const response = await dashboardFetch<{ task: TaskRecord }>(`/tasks/${encodeURIComponent(task.task_id)}/run`, {
       method: "POST",
       accessToken: session.accessToken,
       audit_action: "security_task_approve",
       body: JSON.stringify({
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
-        task_id: task.id,
-        security_agent_required: true,
-        verification_payload_required: true,
+        approved_by_security: true,
+        runtime_input: {},
+        metadata: { source: "dashboard_security_approval" },
       }),
     });
 
     if (response.success && response.data) {
-      setTasks((current) =>
-        current.map((item) =>
-          item.id === task.id && response.data?.workspace_id === session.workspace_id
-            ? response.data
-            : item,
-        ),
-      );
-      return;
+      setTasks((current) => current.map((item) => (item.task_id === task.task_id ? response.data!.task : item)));
+    } else if (response.error) {
+      setError(response.error);
     }
-
-    setTasks((current) =>
-      current.map((item) =>
-        item.id === task.id
-          ? {
-              ...item,
-              status: "running",
-              security_review_status: "approved",
-              progress: Math.max(item.progress, 70),
-              updated_at: nowIso(),
-            }
-          : item,
-      ),
-    );
   };
 
   const exportTasks = () => {
@@ -917,8 +776,8 @@ export default function Page() {
               </div>
               <div>
                 <Icon name="check" />
-                <strong>{stats.avgProgress}%</strong>
-                <span>Avg Progress</span>
+                <strong>{stats.completed}</strong>
+                <span>Completed</span>
               </div>
             </div>
           </div>
@@ -939,12 +798,12 @@ export default function Page() {
             <div className="metricCard">
               <div className="metricIcon"><Icon name="memory" /></div>
               <span>Memory Ready</span>
-              <strong>{tasks.filter((task) => task.memory_payload_ready).length}</strong>
+              <strong>{tasks.filter((task) => task.memory_result !== null).length}</strong>
               <p>Context safe</p>
             </div>
             <div className="metricCard">
               <div className="metricIcon"><Icon name="chart" /></div>
-              <span>Failed / Rejected</span>
+              <span>Failed / Cancelled</span>
               <strong>{stats.failed}</strong>
               <p>Needs review</p>
             </div>
@@ -957,8 +816,8 @@ export default function Page() {
           <div className="progressCard">
             <div className="cardTop">
               <div>
-                <h3>Live Task Progress</h3>
-                <p>{liveTask ? liveTask.title : "No active task yet"}</p>
+                <h3>Most Active Task</h3>
+                <p>{liveTask ? taskTitle(liveTask) : "No active task yet"}</p>
               </div>
               <button className={cx("liveToggle", liveEnabled && "on")} onClick={() => setLiveEnabled((value) => !value)}>
                 {liveEnabled ? "Live On" : "Paused"}
@@ -966,11 +825,11 @@ export default function Page() {
             </div>
 
             <div className="progressTrack">
-              <span style={{ width: `${liveTask?.progress || 0}%` }} />
+              <span style={{ width: `${liveTask ? STATUS_STAGE_WIDTH[liveTask.status] : 0}%` }} />
             </div>
 
             <div className="progressMeta">
-              <span>{liveTask?.progress || 0}% completed</span>
+              <span>{liveTask ? formatDateTime(liveTask.updated_at) : "No recent activity"}</span>
               <strong>{liveTask ? STATUS_LABELS[liveTask.status] : "Empty"}</strong>
             </div>
           </div>
@@ -1015,12 +874,13 @@ export default function Page() {
 
               <select value={selectedStatus} onChange={(event) => setSelectedStatus(event.target.value as TaskStatus | "all")}>
                 <option value="all">All Status</option>
+                <option value="created">Created</option>
                 <option value="queued">Queued</option>
                 <option value="running">Running</option>
                 <option value="waiting_security">Security Review</option>
                 <option value="completed">Completed</option>
                 <option value="failed">Failed</option>
-                <option value="rejected">Rejected</option>
+                <option value="cancelled">Cancelled</option>
               </select>
 
               <button className="filterBtn"><Icon name="filter" size={16} /> Filter</button>
@@ -1048,7 +908,7 @@ export default function Page() {
                     <th>Task ID</th>
                     <th>Activity</th>
                     <th>Agent</th>
-                    <th>Progress</th>
+                    <th>Duration</th>
                     <th>Status</th>
                     <th>Priority</th>
                     <th>Updated</th>
@@ -1058,35 +918,29 @@ export default function Page() {
 
                 <tbody>
                   {filteredTasks.map((task) => (
-                    <tr key={task.id}>
-                      <td><input type="checkbox" aria-label={`Select ${task.id}`} /></td>
-                      <td><strong className="mono">{task.id}</strong></td>
+                    <tr key={task.task_id}>
+                      <td><input type="checkbox" aria-label={`Select ${task.task_id}`} /></td>
+                      <td><strong className="mono">{task.task_id}</strong></td>
                       <td>
                         <div className="activityCell">
-                          <span className={cx("agentIcon", task.sensitive && "sensitive")}>
-                            {task.sensitive ? <Icon name="shield" size={15} /> : <Icon name="bolt" size={15} />}
+                          <span className={cx("agentIcon", taskIsSensitive(task) && "sensitive")}>
+                            {taskIsSensitive(task) ? <Icon name="shield" size={15} /> : <Icon name="bolt" size={15} />}
                           </span>
                           <div>
-                            <strong>{task.title}</strong>
+                            <strong>{taskTitle(task)}</strong>
                             <small>
-                              {task.memory_payload_ready ? "Memory-ready" : "Memory pending"} ·{" "}
-                              {task.verification_payload_ready ? "Verified" : "Verification pending"}
+                              {task.memory_result !== null ? "Memory-ready" : "Memory pending"} ·{" "}
+                              {task.verification_result !== null ? "Verified" : "Verification pending"}
                             </small>
                           </div>
                         </div>
                       </td>
-                      <td>{task.agent}</td>
-                      <td>
-                        <div className="rowProgress">
-                          <span style={{ width: `${task.progress}%` }} />
-                        </div>
-                        <small>{task.progress}%</small>
-                      </td>
+                      <td>{taskAgentLabel(task)}</td>
+                      <td>{formatDuration(taskDurationMs(task))}</td>
                       <td><StatusPill status={task.status} /></td>
                       <td><PriorityPill priority={task.priority} /></td>
                       <td>
                         <span>{formatDateTime(task.updated_at)}</span>
-                        <small>{formatDuration(task.duration_ms)}</small>
                       </td>
                       <td>
                         {task.status === "waiting_security" ? (
@@ -1094,7 +948,7 @@ export default function Page() {
                             Approve
                           </button>
                         ) : (
-                          <button className="moreBtn" aria-label={`More actions for ${task.id}`}>
+                          <button className="moreBtn" aria-label={`More actions for ${task.task_id}`}>
                             <Icon name="more" size={18} />
                           </button>
                         )}
