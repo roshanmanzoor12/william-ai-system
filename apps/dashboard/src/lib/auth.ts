@@ -14,9 +14,52 @@
  * shape only has to happen once.
  */
 
-export type UserRole = "owner" | "admin" | "member" | "viewer";
-export type UserPlan = "free" | "starter" | "pro" | "enterprise";
+// Matches apps/api/routes/auth.py's real Role/Plan enums exactly (confirmed
+// by reading the source, not guessed) -- five pages independently invented
+// two different, both-wrong, 4-value vocabularies ("owner|admin|member|
+// viewer" and "owner|admin|operator|viewer") before this file existed. The
+// real backend has 8 roles and 5 plans; ROLE_RANK/PLAN_RANK below mirror the
+// backend's own numeric ranking so `hasMinRole`/`hasMinPlan` comparisons
+// stay correct even for roles/plans the older frontend code never accounted
+// for (manager, developer, analyst, agent, user, business).
+export type UserRole =
+  | "owner"
+  | "admin"
+  | "manager"
+  | "developer"
+  | "analyst"
+  | "agent"
+  | "user"
+  | "viewer";
+export type UserPlan = "free" | "starter" | "pro" | "business" | "enterprise";
 export type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled";
+
+const ROLE_RANK: Record<UserRole, number> = {
+  viewer: 10,
+  user: 20,
+  agent: 30,
+  analyst: 35,
+  developer: 40,
+  manager: 50,
+  admin: 80,
+  owner: 100,
+};
+
+const PLAN_RANK: Record<UserPlan, number> = {
+  free: 10,
+  starter: 20,
+  pro: 40,
+  business: 70,
+  enterprise: 100,
+};
+
+export function hasMinRole(role: UserRole, requiredRole: UserRole): boolean {
+  return (ROLE_RANK[role] ?? 0) >= (ROLE_RANK[requiredRole] ?? 0);
+}
+
+export function hasMinPlan(plan: UserPlan, requiredPlan: UserPlan): boolean {
+  return (PLAN_RANK[plan] ?? 0) >= (PLAN_RANK[requiredPlan] ?? 0);
+}
 
 export type SessionData = {
   accessToken: string;
@@ -38,37 +81,35 @@ const SESSION_KEY = "william.session";
 const ACCESS_TOKEN_KEY = "william.access_token";
 const REFRESH_TOKEN_KEY = "william.refresh_token";
 
-// Baseline permissions implied by role, in case a membership's explicit
+// Baseline permissions implied by rank, in case a membership's explicit
 // `permissions` list (returned by the backend) doesn't already carry them.
-// Matches apps/api/routes/auth.py's ROLE_RANK ordering (owner > admin >
-// member > viewer).
-const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
-  owner: [
-    "dashboard:read",
-    "workspace:read",
-    "tasks:write",
-    "agents:run",
-    "security:approve",
-    "audit:read",
-    "memory:read",
-    "billing:manage",
-  ],
-  admin: [
-    "dashboard:read",
-    "workspace:read",
-    "tasks:write",
-    "agents:run",
-    "audit:read",
-    "memory:read",
-  ],
-  member: ["dashboard:read", "workspace:read", "tasks:write", "agents:run", "memory:read"],
-  viewer: ["dashboard:read", "workspace:read", "memory:read"],
-};
+// There is no backend-side static role -> permissions table to mirror here
+// (apps/api/routes/auth.py only grants a fixed permission set to a brand
+// new OWNER on self-registration: workspace:read, workspace:update,
+// agent:execute, session:manage, billing:read -- invited members get
+// whatever list the inviter passes, per-membership, with no default), so
+// this is a rank-threshold approximation covering the permission strings
+// the dashboard pages actually gate on. It only affects what the UI shows;
+// every sensitive action is re-authorized server-side against ROLE_RANK
+// regardless of what this table says.
+function permissionsForRank(rank: number): string[] {
+  const permissions = ["dashboard:read", "workspace:read", "memory:read"];
+  if (rank >= ROLE_RANK.user) permissions.push("tasks:write", "agents:run", "agent:execute");
+  if (rank >= ROLE_RANK.manager) permissions.push("audit:read", "billing:read");
+  if (rank >= ROLE_RANK.admin) permissions.push("security:approve", "workspace:update", "session:manage");
+  if (rank >= ROLE_RANK.owner) permissions.push("billing:manage");
+  return permissions;
+}
+
+const ROLE_PERMISSIONS: Record<UserRole, string[]> = Object.fromEntries(
+  (Object.keys(ROLE_RANK) as UserRole[]).map((role) => [role, permissionsForRank(ROLE_RANK[role])]),
+) as Record<UserRole, string[]>;
 
 const PLAN_ACCESS: Record<UserPlan, boolean> = {
   free: true,
   starter: true,
   pro: true,
+  business: true,
   enterprise: true,
 };
 

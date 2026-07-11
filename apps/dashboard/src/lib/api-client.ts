@@ -236,8 +236,17 @@ type RawLoginData = {
   };
 };
 
-const ALLOWED_ROLES: UserRole[] = ["owner", "admin", "member", "viewer"];
-const ALLOWED_PLANS: UserPlan[] = ["free", "starter", "pro", "enterprise"];
+const ALLOWED_ROLES: UserRole[] = [
+  "owner",
+  "admin",
+  "manager",
+  "developer",
+  "analyst",
+  "agent",
+  "user",
+  "viewer",
+];
+const ALLOWED_PLANS: UserPlan[] = ["free", "starter", "pro", "business", "enterprise"];
 const ALLOWED_SUBSCRIPTION_STATUSES: SubscriptionStatus[] = [
   "active",
   "trialing",
