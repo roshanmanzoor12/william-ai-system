@@ -90,7 +90,9 @@ except Exception:
 # Router
 # =============================================================================
 
-router = APIRouter(prefix="/workflows", tags=["Workflows"])
+router = APIRouter(tags=["Workflows"])
+# No self-prefix -- apps/api/main.py's OPTIONAL_ROUTERS supplies
+# "/workflows" as this router's default_prefix once mounted below.
 
 
 # =============================================================================

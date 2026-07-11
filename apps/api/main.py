@@ -1177,12 +1177,22 @@ OPTIONAL_ROUTERS: List[Tuple[str, str, str]] = [
     ("apps.api.routes.agents", "router", "/agents"),
     ("apps.api.routes.tasks", "router", "/tasks"),
     ("apps.api.routes.memory", "router", "/memory"),
+    ("apps.api.routes.security", "router", "/security"),
+    ("apps.api.routes.workflows", "router", "/workflows"),
     ("apps.api.routes.audit", "router", "/audit"),
     ("apps.api.routes.analytics", "router", "/analytics"),
     ("apps.api.routes.billing", "router", "/billing"),
     ("apps.api.routes.subscriptions", "router", "/subscriptions"),
     ("apps.api.routes.files", "router", "/files"),
-    ("apps.api.routes.devices", "router", "/devices"),
+    # No apps.api.routes.devices entry: no device-pairing concept exists
+    # anywhere else in this codebase (no model, no agent, no worker
+    # protocol for it) to build a real router against -- inventing one
+    # would violate the "no fake implementation" rule. Tracked as an
+    # honest out-of-scope gap in the final production-readiness report.
+    # WEBSOCKET_PATH already carries the full "/ws/agent-events" path
+    # itself (see that module), so no extra path segment here beyond
+    # the shared API prefix.
+    ("apps.api.websockets.agent_events", "router", ""),
 ]
 
 
@@ -1207,13 +1217,24 @@ def include_optional_routers(app: FastAPI) -> List[Dict[str, Any]]:
                 loaded.append(record)
                 continue
 
-            existing_paths = {route.path for route in app.routes}
-            router_paths = {getattr(route, "path", "") for route in router.routes}
-
-            if existing_paths.intersection(router_paths):
-                app.include_router(router, prefix=SETTINGS.api_prefix)
-            else:
-                app.include_router(router, prefix=f"{SETTINGS.api_prefix}{default_prefix}")
+            # Previously this branched on whether any of the router's own
+            # (relative) paths happened to string-match an already-mounted
+            # absolute path, on the theory that a match meant "this router
+            # already bakes in its own prefix, don't add default_prefix
+            # too." That heuristic was wrong: apps.api.routes.agents has a
+            # bare "/health" endpoint that coincidentally matches the
+            # top-level health-check route's "/health" path even though
+            # agents.py has no self-prefix at all, so it silently mounted
+            # at just SETTINGS.api_prefix (e.g. "/api/v1") instead of
+            # "/api/v1/agents" -- every one of its 12 real endpoints ended
+            # up unreachable at their intended path (and some, like
+            # "/audit", collided with and shadowed a different router's
+            # route at the same accidental path). Every router in
+            # OPTIONAL_ROUTERS is now written without a self-prefix
+            # (memory.py/billing.py/security.py/workflows.py had one and
+            # were fixed to match agents.py/tasks.py's convention), so
+            # default_prefix is always the correct and only prefix to add.
+            app.include_router(router, prefix=f"{SETTINGS.api_prefix}{default_prefix}")
 
             record["loaded"] = True
 

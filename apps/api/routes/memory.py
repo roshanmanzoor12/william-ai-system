@@ -77,7 +77,10 @@ except Exception:
 # Router
 # =============================================================================
 
-router = APIRouter(prefix="/memory", tags=["Memory"])
+router = APIRouter(tags=["Memory"])
+# No self-prefix here -- apps/api/main.py's OPTIONAL_ROUTERS already
+# applies "/memory" as this router's default_prefix. Baking it in here
+# too produced double-prefixed live paths like /api/v1/memory/memory/save.
 
 
 # =============================================================================

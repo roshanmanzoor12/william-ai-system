@@ -136,6 +136,7 @@ MODEL_MODULES: tuple[str, ...] = (
     "database.models.agent",
     "database.models.memory",
     "database.models.security",
+    "database.models.file",
     "database.models.workflow",
     "database.models.business",
     "database.models.finance",

@@ -84,7 +84,9 @@ except Exception:
 # Router
 # =============================================================================
 
-router = APIRouter(prefix="/billing", tags=["Billing"])
+router = APIRouter(tags=["Billing"])
+# No self-prefix -- apps/api/main.py's OPTIONAL_ROUTERS already applies
+# "/billing" as this router's default_prefix (see routes/memory.py).
 
 
 # =============================================================================

@@ -73,7 +73,9 @@ except Exception:
 # Router
 # =============================================================================
 
-router = APIRouter(prefix="/security", tags=["Security"])
+router = APIRouter(tags=["Security"])
+# No self-prefix -- apps/api/main.py's OPTIONAL_ROUTERS supplies
+# "/security" as this router's default_prefix once mounted below.
 
 
 # =============================================================================
