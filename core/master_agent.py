@@ -144,6 +144,23 @@ try:
 except Exception:  # pragma: no cover
     MemoryBridge = None  # type: ignore
 
+# Real Verification/Memory Agent instances to inject into the bridges
+# above. Unlike SecurityAgent (which SafetyBridge builds for itself
+# internally in _init_security_agent), VerificationBridge and
+# MemoryBridge only ever take their agent via a constructor argument
+# that nothing previously supplied -- verification_agent/memory_agent
+# stayed None forever regardless of whether the bridge classes
+# themselves imported successfully.
+try:
+    from agents.verification_agent.verification_agent import VerificationAgent  # type: ignore
+except Exception:  # pragma: no cover
+    VerificationAgent = None  # type: ignore
+
+try:
+    from agents.memory_agent.memory_agent import MemoryAgent  # type: ignore
+except Exception:  # pragma: no cover
+    MemoryAgent = None  # type: ignore
+
 
 # =============================================================================
 # Constants
@@ -1164,8 +1181,20 @@ class MasterAgent(BaseAgent):
 
     def _build_verification_bridge(self) -> Any:
         if VerificationBridge is not None:
+            # VerificationBridge's own `config` param expects a
+            # VerificationConfig, not CoreConfig -- unlike SafetyBridge,
+            # passing config=self.config here doesn't raise (the
+            # constructor accepts it as a plain Optional[Any] slot), it
+            # just silently stores the wrong-shaped object, so this can't
+            # rely on a TypeError fallback the way _build_safety_bridge
+            # does. Let it build its own default config, and inject the
+            # real agent explicitly since nothing else ever did.
             try:
-                return VerificationBridge(config=self.config)
+                real_agent = VerificationAgent() if VerificationAgent is not None else None
+            except Exception:
+                real_agent = None
+            try:
+                return VerificationBridge(verification_agent=real_agent)
             except TypeError:
                 return VerificationBridge()
             except Exception:
@@ -1174,8 +1203,15 @@ class MasterAgent(BaseAgent):
 
     def _build_memory_bridge(self) -> Any:
         if MemoryBridge is not None:
+            # Same reasoning as _build_verification_bridge: MemoryBridge's
+            # `config` expects a MemoryBridgeConfig, and memory_agent is
+            # never supplied unless explicitly passed here.
             try:
-                return MemoryBridge(config=self.config)
+                real_agent = MemoryAgent() if MemoryAgent is not None else None
+            except Exception:
+                real_agent = None
+            try:
+                return MemoryBridge(memory_agent=real_agent)
             except TypeError:
                 return MemoryBridge()
             except Exception:
@@ -1728,7 +1764,25 @@ class MasterAgent(BaseAgent):
             if not approval_payload.get("success"):
                 return approval_payload
 
-            if _method_exists(self.safety_bridge, "check"):
+            if _method_exists(self.safety_bridge, "inspect_task"):
+                # The real core.safety_bridge.SafetyBridge exposes
+                # inspect_task(action, payload, context, ...), not
+                # check()/request_approval() -- neither of those names
+                # exist on it, so this always fell through to a brand
+                # new, disconnected FallbackSafetyBridge(config=self.config)
+                # instead of the properly-wired self.safety_bridge (with
+                # its real SecurityAgent), even after that agent was
+                # correctly injected elsewhere.
+                inspection = await _maybe_await(
+                    self.safety_bridge.inspect_task(
+                        action=action,
+                        payload=approval_payload.get("data", {}),
+                        context=context,
+                        force_security_check=True,
+                    )
+                )
+                safety_result = self._interpret_safety_inspection(inspection)
+            elif _method_exists(self.safety_bridge, "check"):
                 safety_result = await _maybe_await(
                     self.safety_bridge.check(approval_payload.get("data", {}))
                 )
@@ -1768,6 +1822,41 @@ class MasterAgent(BaseAgent):
                     "action": action,
                 },
             )
+
+    def _interpret_safety_inspection(self, inspection: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Translate core.safety_bridge.SafetyBridge.inspect_task()'s
+        decision-based result (decision: allow/require_approval/block/
+        review/error) into the approved/blocked/approval_required shape
+        _process_step() actually reads. inspect_task() returns
+        success=True even for a require_approval decision (it succeeded
+        at *inspecting*, independent of whether the action is allowed to
+        proceed) -- callers must key off "decision", not "success". Only
+        "allow" is treated as safe to proceed; every other decision
+        (including "review" and inspection errors) blocks, since no real
+        interactive approval flow exists yet to resolve them.
+        """
+        data = inspection.get("data", {}) if isinstance(inspection, dict) else {}
+        decision = data.get("decision")
+
+        approved = decision == "allow"
+        blocked = not approved
+
+        return {
+            "success": bool(inspection.get("success", False)) if approved else False,
+            "message": inspection.get("message", "Security inspection completed."),
+            "data": {
+                "approved": approved,
+                "blocked": blocked,
+                "approval_required": decision == "require_approval",
+                "decision": decision,
+                "risk_level": data.get("risk_level"),
+                "reasons": data.get("reasons"),
+                "inspection": data,
+            },
+            "error": None if approved else (inspection.get("error") or "SECURITY_APPROVAL_REQUIRED"),
+            "metadata": inspection.get("metadata", {}),
+        }
 
     async def _route_step(
         self,

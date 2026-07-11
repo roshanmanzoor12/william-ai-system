@@ -1159,7 +1159,29 @@ class VerificationBridge(BaseAgent):
         if self.verification_agent:
             try:
                 if hasattr(self.verification_agent, "verify_task"):
-                    result = self.verification_agent.verify_task(verification_payload)  # type: ignore
+                    # The real agents.verification_agent.verification_agent.
+                    # VerificationAgent.verify_task(context, task_payload, ...)
+                    # takes context and task_payload as separate positional
+                    # arguments, not one combined dict -- calling it with a
+                    # single positional arg (verification_payload) always
+                    # raised "missing 1 required positional argument:
+                    # 'task_payload'", caught below and reported as
+                    # VERIFICATION_AGENT_EXCEPTION. Split the payload this
+                    # bridge already built in _prepare_verification_payload
+                    # into the real method's actual shape.
+                    result = self.verification_agent.verify_task(  # type: ignore
+                        context={
+                            "user_id": verification_payload.get("user_id"),
+                            "workspace_id": verification_payload.get("workspace_id"),
+                            "task_id": verification_payload.get("task_id"),
+                        },
+                        task_payload={
+                            "action_type": verification_payload.get("action_type"),
+                            "task": verification_payload.get("task"),
+                            "completed_result": verification_payload.get("completed_result"),
+                        },
+                        proof_inputs=verification_payload.get("proof_items"),
+                    )
                 elif hasattr(self.verification_agent, "verify"):
                     result = self.verification_agent.verify(verification_payload)  # type: ignore
                 elif hasattr(self.verification_agent, "run"):

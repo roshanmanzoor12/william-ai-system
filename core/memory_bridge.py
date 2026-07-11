@@ -1209,11 +1209,19 @@ class MemoryBridge(BaseAgent):
 
         if self.memory_agent:
             try:
-                method_name = self._memory_method_for_action(request.action)
-
-                if method_name and hasattr(self.memory_agent, method_name):
-                    method = getattr(self.memory_agent, method_name)
-                    result = method(payload)
+                if hasattr(self.memory_agent, "run_task"):
+                    # The real agents.memory_agent.memory_agent.MemoryAgent
+                    # only exposes run_task(task: dict), keyed by
+                    # task["action"] using vocabulary store/recall/search/
+                    # update/delete -- it has no recall()/save()/update()/
+                    # forget()/run() methods, so _memory_method_for_action's
+                    # mapping (and the "save" action name itself, which the
+                    # real agent calls "store") never matched anything,
+                    # always falling through to MEMORY_AGENT_METHOD_MISSING.
+                    real_action = self._real_memory_agent_action(request.action)
+                    real_task = dict(payload)
+                    real_task["action"] = real_action
+                    result = self.memory_agent.run_task(real_task)  # type: ignore
                 elif hasattr(self.memory_agent, "run"):
                     result = self.memory_agent.run(payload)  # type: ignore
                 else:
@@ -1248,6 +1256,21 @@ class MemoryBridge(BaseAgent):
             message="Memory Agent is not configured.",
             error="MEMORY_AGENT_NOT_CONFIGURED",
         )
+
+    def _real_memory_agent_action(self, action: MemoryAction) -> str:
+        """
+        Translate this bridge's MemoryAction vocabulary to the real
+        agents.memory_agent.memory_agent.MemoryAgent.run_task() action
+        vocabulary (store/recall/search/update/delete). Only SAVE differs
+        by name (-> store); LIST/SUMMARIZE have no direct real-agent
+        action, so they map to recall (closest real capability), matching
+        _memory_method_for_action's existing behavior below.
+        """
+        if action == MemoryAction.SAVE:
+            return "store"
+        if action in {MemoryAction.LIST, MemoryAction.SUMMARIZE}:
+            return "recall"
+        return action.value
 
     def _memory_method_for_action(self, action: MemoryAction) -> Optional[str]:
         """

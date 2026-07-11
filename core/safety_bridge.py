@@ -94,7 +94,10 @@ except Exception:  # pragma: no cover
 
 
 try:
-    from agents.security.security_agent import SecurityAgent  # type: ignore
+    # Real path is agents.security_agent.security_agent -- this always
+    # raised ImportError, so self.security_agent (see _init_security_agent
+    # below) was always None regardless of anything MasterAgent did.
+    from agents.security_agent.security_agent import SecurityAgent  # type: ignore
 except Exception:  # pragma: no cover
     SecurityAgent = None  # type: ignore
 
@@ -1146,6 +1149,45 @@ class SafetyBridge(BaseAgent):
             }
 
         request_dict = asdict(approval_request)
+
+        if hasattr(self.security_agent, "run_task"):
+            # The real agents.security_agent.security_agent.SecurityAgent
+            # only exposes run_task(task: dict), keyed by task["command"]
+            # ("authorize", "permission_check", "risk_assessment", ...) --
+            # it has none of the 5 method names probed below, so this
+            # always fell through to "Security Agent has no compatible
+            # approval method yet" (pending=True, approved=False) even
+            # after a real SecurityAgent instance was wired in.
+            try:
+                response = self.security_agent.run_task({  # type: ignore
+                    "command": "authorize",
+                    "protected_action": approval_request.action,
+                    "user_id": approval_request.user_id,
+                    "workspace_id": approval_request.workspace_id,
+                    "task_id": approval_request.task_id,
+                    "payload": approval_request.sanitized_payload,
+                })
+
+                if isinstance(response, dict):
+                    decision_data = response.get("data", {})
+                    return self._sanitize_payload({
+                        "success": bool(response.get("success")),
+                        "approved": bool(decision_data.get("authorized")),
+                        "denied": decision_data.get("decision") in {"deny", "locked"},
+                        "blocked": decision_data.get("decision") in {"deny", "locked"},
+                        "message": response.get("message", "Security Agent authorization completed."),
+                        "data": decision_data,
+                        "error": response.get("error"),
+                    })
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "approved": False,
+                    "pending": True,
+                    "message": "Security Agent run_task failed.",
+                    "data": {"approval_id": approval_request.approval_id},
+                    "error": {"type": exc.__class__.__name__, "message": str(exc)},
+                }
 
         method_names = [
             "review_task",

@@ -479,7 +479,15 @@ class MemoryAgent(BaseAgent):
                 "structured_result": True,
                 "memory_payload_ready": True,
             },
-            "result_metadata": result.get("metadata", {}),
+            # A copy, not the live result["metadata"] reference: the call
+            # site does `result["metadata"]["verification_payload"] =
+            # <this payload>` right after this returns, which would
+            # otherwise make result["metadata"] contain a
+            # verification_payload whose own result_metadata points back
+            # at result["metadata"] itself -- a direct reference cycle
+            # that crashed every later redact()/json.dumps() pass over
+            # the result with a RecursionError.
+            "result_metadata": dict(result.get("metadata", {})),
             "extra": extra or {},
         }
 
