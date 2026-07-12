@@ -48,6 +48,7 @@ MODEL_MODULES: Tuple[str, ...] = (
     "database.models.business",
     "database.models.finance",
     "database.models.voice",
+    "database.models.system_worker",
 )
 
 

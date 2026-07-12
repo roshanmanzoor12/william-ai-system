@@ -79,6 +79,12 @@ export type SessionData = {
   workspace_name: string;
   workspace_slug: string;
   saved_at: string;
+  // Real, DB-driven flag (database.models.user.User.is_platform_admin via
+  // apps/api/routes/auth.py's _safe_user()) -- a cross-workspace
+  // capability distinct from this workspace's own role. Only gates what
+  // the UI shows (the Admin sidebar link); every /api/v1/admin/* route
+  // re-checks it server-side regardless.
+  is_platform_admin?: boolean;
 };
 
 const SESSION_KEY = "william.session";

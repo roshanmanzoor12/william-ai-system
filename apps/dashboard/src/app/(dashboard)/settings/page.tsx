@@ -277,45 +277,45 @@ const settingsRules: SettingsRule[] = [
 function getRoleStyles(role: RoleLevel): string {
   switch (role) {
     case "owner":
-      return "border-orange-400/25 bg-orange-500/10 text-orange-300";
+      return "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]";
     case "admin":
-      return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
     case "manager":
-      return "border-blue-400/20 bg-blue-400/10 text-blue-300";
+      return "border-blue-200 bg-blue-50 text-blue-700";
     case "member":
-      return "border-purple-400/20 bg-purple-400/10 text-purple-300";
+      return "border-purple-200 bg-purple-50 text-purple-700";
     case "viewer":
-      return "border-zinc-500/20 bg-zinc-500/10 text-zinc-400";
+      return "border-zinc-500/20 bg-zinc-500/10 text-neutral-500";
     default:
-      return "border-white/10 bg-white/[0.04] text-zinc-400";
+      return "border-neutral-100 bg-neutral-50 text-neutral-500";
   }
 }
 
 function getPermissionStyles(status: PermissionStatus): string {
   switch (status) {
     case "enabled":
-      return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
     case "approval_required":
-      return "border-yellow-400/25 bg-yellow-400/10 text-yellow-300";
+      return "border-yellow-200 bg-yellow-50 text-yellow-700";
     case "limited":
-      return "border-orange-400/25 bg-orange-500/10 text-orange-300";
+      return "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]";
     case "disabled":
-      return "border-red-400/25 bg-red-500/10 text-red-300";
+      return "border-red-200 bg-red-50 text-red-700";
     default:
-      return "border-white/10 bg-white/[0.04] text-zinc-400";
+      return "border-neutral-100 bg-neutral-50 text-neutral-500";
   }
 }
 
 function getIntegrationStyles(status: IntegrationStatus): string {
   switch (status) {
     case "connected":
-      return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
     case "available":
-      return "border-blue-400/20 bg-blue-400/10 text-blue-300";
+      return "border-blue-200 bg-blue-50 text-blue-700";
     case "restricted":
-      return "border-orange-400/25 bg-orange-500/10 text-orange-300";
+      return "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]";
     default:
-      return "border-white/10 bg-white/[0.04] text-zinc-400";
+      return "border-neutral-100 bg-neutral-50 text-neutral-500";
   }
 }
 
@@ -325,33 +325,33 @@ function formatStatus(value: string): string {
 
 function MetricCardItem({ label, value, description, icon: Icon }: MetricCard) {
   return (
-    <div className="rounded-[28px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.28)] transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
+    <div className="rounded-[28px] border border-neutral-100 bg-white p-5 shadow-sm transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
       <div className="mb-5 flex items-center justify-between gap-4">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-400">
           {label}
         </p>
-        <span className="flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-orange-300">
+        <span className="flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-[#ff5a3d]">
           <Icon className="h-5 w-5" />
         </span>
       </div>
 
-      <p className="text-2xl font-black tracking-tight text-white">{value}</p>
-      <p className="mt-2 text-sm leading-6 text-zinc-500">{description}</p>
+      <p className="text-2xl font-black tracking-tight text-neutral-950">{value}</p>
+      <p className="mt-2 text-sm leading-6 text-neutral-400">{description}</p>
     </div>
   );
 }
 
 function TeamMemberCard({ member }: { member: TeamMember }) {
   return (
-    <article className="rounded-[26px] border border-white/10 bg-white/[0.035] p-4 transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
+    <article className="rounded-[26px] border border-neutral-100 bg-white p-4 transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
       <div className="mb-4 flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
-          <span className="flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-orange-300">
+          <span className="flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-[#ff5a3d]">
             <Users className="h-5 w-5" />
           </span>
           <div>
-            <h3 className="text-sm font-black text-white">{member.name}</h3>
-            <p className="mt-1 text-xs text-zinc-500">{member.email}</p>
+            <h3 className="text-sm font-black text-neutral-950">{member.name}</h3>
+            <p className="mt-1 text-xs text-neutral-400">{member.email}</p>
           </div>
         </div>
 
@@ -365,18 +365,18 @@ function TeamMemberCard({ member }: { member: TeamMember }) {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+        <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
             Status
           </p>
-          <p className="mt-2 text-sm font-bold text-white">{member.status}</p>
+          <p className="mt-2 text-sm font-bold text-neutral-950">{member.status}</p>
         </div>
 
-        <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+        <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
             Access
           </p>
-          <p className="mt-2 text-sm font-bold text-white">{member.access}</p>
+          <p className="mt-2 text-sm font-bold text-neutral-950">{member.access}</p>
         </div>
       </div>
     </article>
@@ -388,9 +388,9 @@ function AgentPermissionCard({ permission }: { permission: AgentPermission }) {
   const isDisabled = permission.status === "disabled";
 
   return (
-    <article className="rounded-[26px] border border-white/10 bg-white/[0.035] p-4 transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
+    <article className="rounded-[26px] border border-neutral-100 bg-white p-4 transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
       <div className="mb-4 flex items-start justify-between gap-4">
-        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-orange-300">
+        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-[#ff5a3d]">
           <Icon className="h-5 w-5" />
         </span>
 
@@ -399,16 +399,16 @@ function AgentPermissionCard({ permission }: { permission: AgentPermission }) {
           aria-label={`${permission.agent} permission state`}
           className={`flex h-10 w-10 items-center justify-center rounded-2xl border transition ${
             isDisabled
-              ? "border-red-400/20 bg-red-500/10 text-red-300"
-              : "border-emerald-400/20 bg-emerald-400/10 text-emerald-300 hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-orange-300"
+              ? "border-red-200 bg-red-50 text-red-700"
+              : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
           }`}
         >
           <ToggleRight className="h-5 w-5" />
         </button>
       </div>
 
-      <h3 className="text-sm font-black text-white">{permission.agent}</h3>
-      <p className="mt-2 min-h-[72px] text-sm leading-6 text-zinc-500">
+      <h3 className="text-sm font-black text-neutral-950">{permission.agent}</h3>
+      <p className="mt-2 min-h-[72px] text-sm leading-6 text-neutral-400">
         {permission.description}
       </p>
 
@@ -427,9 +427,9 @@ function IntegrationCard({ integration }: { integration: Integration }) {
   const Icon = integration.icon;
 
   return (
-    <article className="rounded-[26px] border border-white/10 bg-white/[0.035] p-4 transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
+    <article className="rounded-[26px] border border-neutral-100 bg-white p-4 transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
       <div className="mb-4 flex items-start justify-between gap-4">
-        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-orange-300">
+        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-[#ff5a3d]">
           <Icon className="h-5 w-5" />
         </span>
 
@@ -442,14 +442,14 @@ function IntegrationCard({ integration }: { integration: Integration }) {
         </span>
       </div>
 
-      <h3 className="text-sm font-black text-white">{integration.name}</h3>
-      <p className="mt-2 min-h-[72px] text-sm leading-6 text-zinc-500">
+      <h3 className="text-sm font-black text-neutral-950">{integration.name}</h3>
+      <p className="mt-2 min-h-[72px] text-sm leading-6 text-neutral-400">
         {integration.description}
       </p>
 
       <button
         type="button"
-        className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-zinc-300 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-orange-300"
+        className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
       >
         Configure
         <ArrowRight className="h-3.5 w-3.5" />
@@ -462,14 +462,14 @@ function SettingsRuleCard({ rule }: { rule: SettingsRule }) {
   const Icon = rule.icon;
 
   return (
-    <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-orange-500/10 text-orange-300">
+    <div className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-4">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-orange-500/10 text-[#ff5a3d]">
         <Icon className="h-5 w-5" />
       </span>
 
       <div>
-        <p className="text-sm font-bold text-white">{rule.title}</p>
-        <p className="mt-1 text-sm leading-6 text-zinc-500">
+        <p className="text-sm font-bold text-neutral-950">{rule.title}</p>
+        <p className="mt-1 text-sm leading-6 text-neutral-400">
           {rule.description}
         </p>
       </div>
@@ -492,52 +492,52 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <section className="relative overflow-hidden rounded-[34px] border border-white/10 bg-[radial-gradient(circle_at_18%_10%,rgba(249,115,22,0.3),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.025))] p-6 shadow-[0_40px_120px_rgba(0,0,0,0.42)] md:p-8 lg:p-10">
+      <section className="relative overflow-hidden rounded-[34px] border border-neutral-100 bg-[radial-gradient(circle_at_18%_10%,rgba(255,90,61,0.10),transparent_34%),linear-gradient(135deg,rgba(0,0,0,0.015),rgba(0,0,0,0.0))] p-6 shadow-sm md:p-8 lg:p-10">
         <div className="absolute right-10 top-0 h-72 w-72 rounded-full bg-orange-500/20 blur-3xl" />
         <div className="absolute bottom-0 left-1/3 h-56 w-56 rounded-full bg-orange-900/25 blur-3xl" />
 
         <div className="relative grid gap-8 xl:grid-cols-[1.1fr_0.9fr] xl:items-center">
           <div>
-            <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-orange-400/25 bg-orange-500/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-orange-300">
+            <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-orange-400/25 bg-orange-500/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-[#ff5a3d]">
               <Settings className="h-4 w-4" />
               Workspace Settings
             </div>
 
-            <h1 className="max-w-5xl text-4xl font-black tracking-tight text-white md:text-5xl lg:text-6xl">
+            <h1 className="max-w-5xl text-4xl font-black tracking-tight text-neutral-950 md:text-5xl lg:text-6xl">
               Configure Workspace, Team, Roles, Agents, And Integrations.
             </h1>
 
-            <p className="mt-5 max-w-3xl text-base leading-8 text-zinc-400 md:text-lg">
+            <p className="mt-5 max-w-3xl text-base leading-8 text-neutral-500 md:text-lg">
               Manage workspace identity, team roles, agent permissions,
               integration access, privacy behavior, notification preferences,
               and SaaS-safe security rules for William/Jarvis.
             </p>
 
             <div className="mt-7 flex flex-wrap gap-3">
-              <span className="inline-flex items-center gap-2 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm font-bold text-emerald-300">
+              <span className="inline-flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-700">
                 <BadgeCheck className="h-4 w-4" />
                 {activeMembers} Active Members
               </span>
 
-              <span className="inline-flex items-center gap-2 rounded-2xl border border-yellow-400/25 bg-yellow-400/10 px-4 py-2 text-sm font-bold text-yellow-300">
+              <span className="inline-flex items-center gap-2 rounded-2xl border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm font-bold text-yellow-700">
                 <ShieldCheck className="h-4 w-4" />
                 {approvalRequiredAgents} Approval-Gated Agents
               </span>
 
-              <span className="inline-flex items-center gap-2 rounded-2xl border border-blue-400/20 bg-blue-400/10 px-4 py-2 text-sm font-bold text-blue-300">
+              <span className="inline-flex items-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">
                 <PlugZap className="h-4 w-4" />
                 {connectedIntegrations} Connected Integration
               </span>
             </div>
           </div>
 
-          <div className="rounded-[30px] border border-white/10 bg-black/35 p-5 shadow-[0_30px_100px_rgba(0,0,0,0.42)] backdrop-blur-xl">
+          <div className="rounded-[30px] border border-neutral-100 bg-neutral-50 p-5 shadow-sm backdrop-blur-xl">
             <div className="mb-5 flex items-center justify-between">
               <div>
-                <p className="text-sm font-bold text-white">
+                <p className="text-sm font-bold text-neutral-950">
                   Workspace Identity
                 </p>
-                <p className="mt-1 text-xs text-zinc-500">
+                <p className="mt-1 text-xs text-neutral-400">
                   Current workspace preview
                 </p>
               </div>
@@ -549,32 +549,32 @@ export default function SettingsPage() {
 
             <div className="space-y-4">
               <label className="block">
-                <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+                <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
                   Workspace Name
                 </span>
                 <input
-                  className="w-full rounded-2xl border border-white/10 bg-[#07080b] px-4 py-3 text-sm font-semibold text-zinc-200 outline-none transition placeholder:text-zinc-600 focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
+                  className="w-full rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition placeholder:text-neutral-400 focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
                   defaultValue="Digital Promotix"
                   type="text"
                 />
               </label>
 
               <label className="block">
-                <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+                <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
                   Workspace Slug
                 </span>
                 <input
-                  className="w-full rounded-2xl border border-white/10 bg-[#07080b] px-4 py-3 text-sm font-semibold text-zinc-200 outline-none transition placeholder:text-zinc-600 focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
+                  className="w-full rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition placeholder:text-neutral-400 focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
                   defaultValue="digital-promotix"
                   type="text"
                 />
               </label>
 
               <label className="block">
-                <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+                <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
                   Default Reply Style
                 </span>
-                <select className="w-full rounded-2xl border border-white/10 bg-[#07080b] px-4 py-3 text-sm font-semibold text-zinc-200 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10">
+                <select className="w-full rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10">
                   <option>Professional and direct</option>
                   <option>Friendly and detailed</option>
                   <option>Short and technical</option>
@@ -591,14 +591,14 @@ export default function SettingsPage() {
               </button>
             </div>
 
-            <div className="mt-5 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+            <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
               <div className="flex items-center gap-3">
                 <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_18px_rgba(52,211,153,0.9)]" />
-                <p className="text-sm font-bold text-emerald-300">
+                <p className="text-sm font-bold text-emerald-700">
                   Workspace isolation active
                 </p>
               </div>
-              <p className="mt-2 text-sm leading-6 text-zinc-400">
+              <p className="mt-2 text-sm leading-6 text-neutral-500">
                 Settings are designed to stay scoped by workspace_id, role, and
                 current user permissions.
               </p>
@@ -615,17 +615,17 @@ export default function SettingsPage() {
 
       <section className="grid gap-6 xl:grid-cols-[0.78fr_1.22fr]">
         <aside className="space-y-6">
-          <div className="rounded-[32px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_30px_100px_rgba(0,0,0,0.32)] md:p-6">
+          <div className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
             <div className="mb-6 flex items-center justify-between">
               <div>
-                <p className="text-sm font-bold text-orange-300">
+                <p className="text-sm font-bold text-[#ff5a3d]">
                   Settings Menu
                 </p>
-                <h2 className="mt-2 text-2xl font-black text-white">
+                <h2 className="mt-2 text-2xl font-black text-neutral-950">
                   Control Areas
                 </h2>
               </div>
-              <SlidersHorizontal className="h-5 w-5 text-orange-300" />
+              <SlidersHorizontal className="h-5 w-5 text-[#ff5a3d]" />
             </div>
 
             <div className="space-y-3">
@@ -644,8 +644,8 @@ export default function SettingsPage() {
                   type="button"
                   className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-sm font-bold transition ${
                     index === 0
-                      ? "border-orange-500/25 bg-orange-500/10 text-orange-300"
-                      : "border-white/10 bg-white/[0.035] text-zinc-400 hover:border-orange-500/25 hover:bg-orange-500/10 hover:text-orange-300"
+                      ? "border-orange-500/25 bg-orange-500/10 text-[#ff5a3d]"
+                      : "border-neutral-100 bg-white text-neutral-500 hover:border-orange-500/25 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
                   }`}
                 >
                   {item}
@@ -655,17 +655,17 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="rounded-[32px] border border-white/10 bg-black/30 p-5 md:p-6">
+          <div className="rounded-[32px] border border-neutral-100 bg-neutral-50 p-5 md:p-6">
             <div className="mb-5 flex items-center justify-between">
               <div>
-                <p className="text-sm font-bold text-orange-300">
+                <p className="text-sm font-bold text-[#ff5a3d]">
                   Settings Rules
                 </p>
-                <h2 className="mt-2 text-xl font-black text-white">
+                <h2 className="mt-2 text-xl font-black text-neutral-950">
                   SaaS Safety
                 </h2>
               </div>
-              <ShieldCheck className="h-5 w-5 text-orange-300" />
+              <ShieldCheck className="h-5 w-5 text-[#ff5a3d]" />
             </div>
 
             <div className="space-y-3">
@@ -677,12 +677,12 @@ export default function SettingsPage() {
 
           <div className="rounded-[32px] border border-orange-500/15 bg-orange-500/[0.07] p-5 md:p-6">
             <div className="mb-4 flex items-center gap-3">
-              <Zap className="h-5 w-5 text-orange-300" />
-              <p className="text-sm font-black uppercase tracking-[0.16em] text-orange-300">
+              <Zap className="h-5 w-5 text-[#ff5a3d]" />
+              <p className="text-sm font-black uppercase tracking-[0.16em] text-[#ff5a3d]">
                 Next Backend Hook
               </p>
             </div>
-            <p className="text-sm leading-7 text-zinc-400">
+            <p className="text-sm leading-7 text-neutral-500">
               Later, connect this page to auth routes, workspace models, team
               roles, agent permissions, integration secrets, audit logs, and
               subscription access control.
@@ -691,11 +691,11 @@ export default function SettingsPage() {
         </aside>
 
         <main className="space-y-6">
-          <section className="rounded-[32px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_30px_100px_rgba(0,0,0,0.32)] md:p-6">
+          <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
             <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-sm font-bold text-orange-300">Team</p>
-                <h2 className="mt-2 text-2xl font-black tracking-tight text-white">
+                <p className="text-sm font-bold text-[#ff5a3d]">Team</p>
+                <h2 className="mt-2 text-2xl font-black tracking-tight text-neutral-950">
                   Members, Roles, And Access
                 </h2>
               </div>
@@ -716,18 +716,18 @@ export default function SettingsPage() {
             </div>
           </section>
 
-          <section className="rounded-[32px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_30px_100px_rgba(0,0,0,0.32)] md:p-6">
+          <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
             <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-sm font-bold text-orange-300">
+                <p className="text-sm font-bold text-[#ff5a3d]">
                   Agent Permissions
                 </p>
-                <h2 className="mt-2 text-2xl font-black tracking-tight text-white">
+                <h2 className="mt-2 text-2xl font-black tracking-tight text-neutral-950">
                   Control What Agents Can Do
                 </h2>
               </div>
 
-              <span className="inline-flex items-center gap-2 rounded-full border border-yellow-400/25 bg-yellow-400/10 px-3 py-2 text-xs font-bold text-yellow-300">
+              <span className="inline-flex items-center gap-2 rounded-full border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs font-bold text-yellow-700">
                 <KeyRound className="h-3.5 w-3.5" />
                 Approval Rules Active
               </span>
@@ -747,20 +747,20 @@ export default function SettingsPage() {
 
           <TrustedVoiceProfiles />
 
-          <section className="rounded-[32px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_30px_100px_rgba(0,0,0,0.32)] md:p-6">
+          <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
             <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-sm font-bold text-orange-300">
+                <p className="text-sm font-bold text-[#ff5a3d]">
                   Integrations
                 </p>
-                <h2 className="mt-2 text-2xl font-black tracking-tight text-white">
+                <h2 className="mt-2 text-2xl font-black tracking-tight text-neutral-950">
                   Connect Backend, Apps, And Services
                 </h2>
               </div>
 
               <button
                 type="button"
-                className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-zinc-300 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-orange-300"
+                className="inline-flex items-center gap-2 rounded-2xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
               >
                 <RefreshCcw className="h-3.5 w-3.5" />
                 Refresh
@@ -777,32 +777,32 @@ export default function SettingsPage() {
             </div>
           </section>
 
-          <section className="rounded-[32px] border border-white/10 bg-black/30 p-5 md:p-6">
+          <section className="rounded-[32px] border border-neutral-100 bg-neutral-50 p-5 md:p-6">
             <div className="grid gap-5 lg:grid-cols-3">
-              <div className="rounded-[26px] border border-white/10 bg-white/[0.035] p-5">
-                <Bell className="mb-4 h-6 w-6 text-orange-300" />
-                <p className="text-sm font-bold text-white">Notifications</p>
-                <p className="mt-2 text-sm leading-6 text-zinc-500">
+              <div className="rounded-[26px] border border-neutral-100 bg-white p-5">
+                <Bell className="mb-4 h-6 w-6 text-[#ff5a3d]" />
+                <p className="text-sm font-bold text-neutral-950">Notifications</p>
+                <p className="mt-2 text-sm leading-6 text-neutral-400">
                   Configure task alerts, security approvals, billing updates,
                   and verification reports.
                 </p>
               </div>
 
-              <div className="rounded-[26px] border border-white/10 bg-white/[0.035] p-5">
-                <Palette className="mb-4 h-6 w-6 text-orange-300" />
-                <p className="text-sm font-bold text-white">
+              <div className="rounded-[26px] border border-neutral-100 bg-white p-5">
+                <Palette className="mb-4 h-6 w-6 text-[#ff5a3d]" />
+                <p className="text-sm font-bold text-neutral-950">
                   Brand Preferences
                 </p>
-                <p className="mt-2 text-sm leading-6 text-zinc-500">
+                <p className="mt-2 text-sm leading-6 text-neutral-400">
                   Store workspace theme, tone, content style, and dashboard
                   appearance preferences.
                 </p>
               </div>
 
-              <div className="rounded-[26px] border border-white/10 bg-white/[0.035] p-5">
-                <Layers3 className="mb-4 h-6 w-6 text-orange-300" />
-                <p className="text-sm font-bold text-white">Module Settings</p>
-                <p className="mt-2 text-sm leading-6 text-zinc-500">
+              <div className="rounded-[26px] border border-neutral-100 bg-white p-5">
+                <Layers3 className="mb-4 h-6 w-6 text-[#ff5a3d]" />
+                <p className="text-sm font-bold text-neutral-950">Module Settings</p>
+                <p className="mt-2 text-sm leading-6 text-neutral-400">
                   Future settings can enable or restrict modules per plan, role,
                   and workspace policy.
                 </p>
@@ -816,12 +816,12 @@ export default function SettingsPage() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="mb-3 flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-red-300" />
-              <p className="text-sm font-black uppercase tracking-[0.16em] text-red-300">
+              <AlertTriangle className="h-5 w-5 text-red-700" />
+              <p className="text-sm font-black uppercase tracking-[0.16em] text-red-700">
                 Settings Safety Reminder
               </p>
             </div>
-            <p className="max-w-4xl text-sm leading-7 text-zinc-400">
+            <p className="max-w-4xl text-sm leading-7 text-neutral-500">
               This frontend page does not actually save workspace, team, agent,
               billing, integration, or security settings yet. Real changes must
               be connected later through protected backend routes, role checks,
@@ -831,7 +831,7 @@ export default function SettingsPage() {
 
           <button
             type="button"
-            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-red-400/25 bg-red-500/10 px-4 py-3 text-sm font-bold text-red-300 transition hover:bg-red-500/15"
+            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700 transition hover:bg-red-500/15"
           >
             <Lock className="h-4 w-4" />
             Review Protected Settings

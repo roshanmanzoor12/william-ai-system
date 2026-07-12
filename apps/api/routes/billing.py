@@ -81,10 +81,18 @@ except Exception:
 # only for a genuinely broken install, matching the same defensive pattern
 # apps/api/routes/tasks.py already uses for the same dependency.
 try:
-    from apps.api.routes.auth import AuthContext as RealAuthContext, get_current_auth_context  # type: ignore
+    from apps.api.routes.auth import (  # type: ignore
+        AuthContext as RealAuthContext,
+        get_current_auth_context,
+        platform_admin_gets_unlimited_plan,
+    )
 except Exception as real_auth_import_exc:
     RealAuthContext = None
     get_current_auth_context = None
+
+    def platform_admin_gets_unlimited_plan(context: Any) -> bool:  # type: ignore
+        return False
+
     logging.getLogger(__name__).warning(
         "Real auth import fallback enabled in %s: %s", __name__, real_auth_import_exc
     )
@@ -101,6 +109,7 @@ router = APIRouter(tags=["Billing"])
 APP_NAME = os.getenv("WILLIAM_APP_NAME", "William Jarvis")
 DEFAULT_CURRENCY = os.getenv("WILLIAM_BILLING_CURRENCY", "USD").upper()
 FREE_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_FREE_PRICE_CENTS", "0"))
+STARTER_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_STARTER_PRICE_CENTS", "1200"))
 PRO_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_PRO_PRICE_CENTS", "2900"))
 BUSINESS_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_BUSINESS_PRICE_CENTS", "9900"))
 ENTERPRISE_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_ENTERPRISE_PRICE_CENTS", "29900"))
@@ -124,6 +133,7 @@ class UserRole(str, Enum):
 
 class SubscriptionPlan(str, Enum):
     FREE = "free"
+    STARTER = "starter"
     PRO = "pro"
     BUSINESS = "business"
     ENTERPRISE = "enterprise"
@@ -190,6 +200,7 @@ class ActorContext:
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
+    is_platform_admin: bool = False
 
 
 @dataclass
@@ -495,6 +506,43 @@ def parse_plan(value: Optional[str]) -> SubscriptionPlan:
     return SubscriptionPlan.FREE
 
 
+def effective_actor_plan(actor: "ActorContext") -> SubscriptionPlan:
+    """
+    A real platform admin testing locally (never in production, never a
+    normal user) is treated as SubscriptionPlan.ENTERPRISE regardless of
+    the workspace's real stored plan -- mirrors apps.api.routes.agents.
+    effective_plan_for / apps.api.routes.agent_permissions's identical
+    Enterprise override, so /agents, /agent-permissions, and /billing never
+    disagree about what plan this actor effectively has.
+    """
+    if actor.is_platform_admin:
+        return SubscriptionPlan.ENTERPRISE
+    return actor.plan
+
+
+def _sync_workspace_plan(workspace_id: str, plan: SubscriptionPlan, updated_by_user_id: str) -> None:
+    """Writes a real billing plan change through to the actual
+    database.models.workspace.Workspace.plan column, so /agents,
+    /agent-permissions, and /admin/workspaces immediately reflect it --
+    without this, a "successful" plan change on the billing page never
+    affected anything else in the system."""
+    try:
+        from database.db import db_manager
+        from database.models.workspace import Workspace as _DbWorkspace, WorkspacePlan as _DbWorkspacePlan, plan_member_limit, plan_agent_limit
+
+        target = _DbWorkspacePlan(plan.value)
+
+        with db_manager.session_scope() as db:
+            workspace = db.query(_DbWorkspace).filter(_DbWorkspace.id == workspace_id).first()
+            if workspace is not None:
+                workspace.plan = target
+                workspace.max_members = plan_member_limit(target)
+                workspace.max_agents = plan_agent_limit(target)
+                workspace.updated_by = updated_by_user_id
+    except Exception as exc:  # noqa: BLE001 -- billing's own in-memory record already has the change; never fail the request over the sync step
+        logging.getLogger(__name__).warning("Failed to sync workspace.plan for workspace_id=%s: %s", workspace_id, exc)
+
+
 def safe_json(data: Any) -> Any:
     try:
         json.dumps(data, default=str)
@@ -518,6 +566,7 @@ def can_track_usage(role: UserRole) -> bool:
 def plan_price_cents(plan: SubscriptionPlan) -> int:
     prices = {
         SubscriptionPlan.FREE: FREE_PRICE_CENTS,
+        SubscriptionPlan.STARTER: STARTER_PRICE_CENTS,
         SubscriptionPlan.PRO: PRO_PRICE_CENTS,
         SubscriptionPlan.BUSINESS: BUSINESS_PRICE_CENTS,
         SubscriptionPlan.ENTERPRISE: ENTERPRISE_PRICE_CENTS,
@@ -537,6 +586,19 @@ def limits_for_plan(plan: SubscriptionPlan) -> Dict[str, int]:
             UsageMetric.STORAGE_MB.value: 500,
             UsageMetric.API_CALLS.value: 1000,
             UsageMetric.TEAM_MEMBERS.value: 1,
+        }
+
+    if plan == SubscriptionPlan.STARTER:
+        return {
+            UsageMetric.TASKS.value: 1000,
+            UsageMetric.AGENT_RUNS.value: 2500,
+            UsageMetric.MEMORY_RECORDS.value: 1000,
+            UsageMetric.WORKFLOW_RUNS.value: 100,
+            UsageMetric.WEBHOOKS.value: 5,
+            UsageMetric.FILES.value: 250,
+            UsageMetric.STORAGE_MB.value: 2500,
+            UsageMetric.API_CALLS.value: 10000,
+            UsageMetric.TEAM_MEMBERS.value: 3,
         }
 
     if plan == SubscriptionPlan.PRO:
@@ -594,6 +656,23 @@ def default_plans() -> List[PlanRecord]:
                 "Community support",
             ],
             limits=limits_for_plan(SubscriptionPlan.FREE),
+            recommended=False,
+            active=True,
+        ),
+        PlanRecord(
+            id="plan_starter_monthly",
+            name="Starter",
+            plan=SubscriptionPlan.STARTER,
+            price_cents=plan_price_cents(SubscriptionPlan.STARTER),
+            currency=DEFAULT_CURRENCY,
+            interval=BillingInterval.MONTHLY,
+            features=[
+                "Core agent access",
+                "Expanded task history",
+                "Small team support",
+                "Email support",
+            ],
+            limits=limits_for_plan(SubscriptionPlan.STARTER),
             recommended=False,
             active=True,
         ),
@@ -1071,8 +1150,22 @@ class Billing:
         )
 
     def get_or_create_subscription(self, actor: ActorContext) -> SubscriptionRecord:
+        target_plan = effective_actor_plan(actor)
         existing = self.subscription_repository.get_current(actor.user_id, actor.workspace_id)
+
         if existing:
+            # This in-memory record is a point-in-time snapshot taken the
+            # first time a subscription was lazily created for this actor --
+            # it never re-synced with the real current plan afterward, so a
+            # workspace plan change (e.g. /admin/workspaces PATCH .../plan,
+            # or this actor becoming a platform admin) never showed up here.
+            # actor.plan itself IS always fresh (ActorContext is rebuilt from
+            # a live AuthContext on every request), so re-sync against it.
+            if existing.plan != target_plan:
+                existing.plan = target_plan
+                existing.updated_at = utc_now()
+                existing.updated_by = actor.user_id
+                existing = self.subscription_repository.update(existing)
             return existing
 
         now = utc_now()
@@ -1080,7 +1173,7 @@ class Billing:
             id=str(uuid.uuid4()),
             user_id=actor.user_id,
             workspace_id=actor.workspace_id,
-            plan=actor.plan,
+            plan=target_plan,
             status=SubscriptionStatus.ACTIVE if actor.subscription_active else SubscriptionStatus.INACTIVE,
             interval=BillingInterval.MONTHLY,
             currency=DEFAULT_CURRENCY,
@@ -1190,6 +1283,14 @@ class Billing:
 
         if payload.plan is not None:
             current.plan = payload.plan
+            # billing.py's SubscriptionRecord was previously the ONLY place
+            # a plan change landed -- database.models.workspace.Workspace.plan
+            # (the real plan /agents, /agent-permissions, and /admin/workspaces
+            # all gate on) was never touched, so a "successful" plan change
+            # from this page silently had zero effect anywhere else. Writing
+            # both together makes this page a real, authoritative plan-change
+            # surface instead of a cosmetic one.
+            _sync_workspace_plan(actor.workspace_id, payload.plan, actor.user_id)
         if payload.status is not None:
             current.status = payload.status
             if payload.status == SubscriptionStatus.CANCELLED:
@@ -1542,6 +1643,7 @@ if get_current_auth_context is not None:
             request_id=context.request_id,
             ip_address=request.client.host if request.client else None,
             user_agent=request.headers.get("User-Agent"),
+            is_platform_admin=bool(getattr(context, "is_platform_admin", False)),
         )
 
 else:

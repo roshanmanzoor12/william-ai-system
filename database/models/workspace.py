@@ -139,7 +139,14 @@ class WorkspaceStatus(str, enum.Enum):
 
 
 class WorkspacePlan(str, enum.Enum):
+    # "starter" was missing here even though it's a real, canonical plan
+    # tier everywhere else (database/seeders/default_plans.py's PlanTier,
+    # apps/api/routes/agents.py's Plan enum and required_plan gates) --
+    # workspaces.plan is a native SQL Enum column restricted to this
+    # class's members, so admin plan-assignment for "starter" would have
+    # failed at the DB layer with no other symptom.
     FREE = "free"
+    STARTER = "starter"
     PRO = "pro"
     BUSINESS = "business"
     ENTERPRISE = "enterprise"
@@ -238,6 +245,7 @@ def can_approve_sensitive_actions(role: WorkspaceMemberRole) -> bool:
 def plan_member_limit(plan: WorkspacePlan) -> int:
     limits = {
         WorkspacePlan.FREE: 1,
+        WorkspacePlan.STARTER: 3,
         WorkspacePlan.PRO: 5,
         WorkspacePlan.BUSINESS: 25,
         WorkspacePlan.ENTERPRISE: 1000,
@@ -248,6 +256,7 @@ def plan_member_limit(plan: WorkspacePlan) -> int:
 def plan_agent_limit(plan: WorkspacePlan) -> int:
     limits = {
         WorkspacePlan.FREE: 3,
+        WorkspacePlan.STARTER: 5,
         WorkspacePlan.PRO: 14,
         WorkspacePlan.BUSINESS: 14,
         WorkspacePlan.ENTERPRISE: 14,
@@ -262,9 +271,10 @@ def plan_allows_team_members(plan: WorkspacePlan, requested_count: int) -> bool:
 def workspace_plan_rank(plan: WorkspacePlan) -> int:
     ranks = {
         WorkspacePlan.FREE: 1,
-        WorkspacePlan.PRO: 2,
-        WorkspacePlan.BUSINESS: 3,
-        WorkspacePlan.ENTERPRISE: 4,
+        WorkspacePlan.STARTER: 2,
+        WorkspacePlan.PRO: 3,
+        WorkspacePlan.BUSINESS: 4,
+        WorkspacePlan.ENTERPRISE: 5,
     }
     return ranks.get(plan, 0)
 
@@ -1119,7 +1129,16 @@ class WorkspaceInvitation(Base):
     def is_expired(self) -> bool:
         if not self.expires_at:
             return False
-        return utc_now() > self.expires_at
+        # SQLite doesn't reliably round-trip tzinfo through DateTime(timezone=
+        # True) columns -- a naive value here is always UTC (every write path
+        # uses utc_now()), so attach it explicitly rather than let this
+        # comparison raise "can't compare offset-naive and offset-aware
+        # datetimes" (same class of bug already fixed in
+        # apps/api/services/voice_service.py::compute_worker_connected).
+        expires_at = self.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return utc_now() > expires_at
 
     def accept(self, accepted_by: str) -> None:
         if self.status != WorkspaceInvitationStatus.PENDING:

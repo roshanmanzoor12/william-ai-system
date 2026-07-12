@@ -1292,6 +1292,8 @@ OPTIONAL_ROUTERS: List[Tuple[str, str, str]] = [
     ("apps.api.routes.files", "router", "/files"),
     ("apps.api.routes.voice", "router", "/voice"),
     ("apps.api.routes.agent_permissions", "router", "/agent-permissions"),
+    ("apps.api.routes.admin", "router", "/admin"),
+    ("apps.api.routes.system_worker", "router", "/system"),
     # No apps.api.routes.devices entry: no device-pairing concept exists
     # anywhere else in this codebase (no model, no agent, no worker
     # protocol for it) to build a real router against -- inventing one

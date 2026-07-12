@@ -421,6 +421,7 @@ class UserRecord(BaseModel):
     created_at: str
     updated_at: str
     is_active: bool = True
+    is_platform_admin: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -475,6 +476,29 @@ class AuthContext(BaseModel):
     permissions: List[str] = Field(default_factory=list)
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
+    # Real, DB-driven flag (database.models.user.User.is_platform_admin) --
+    # never derived from a hardcoded email check in route code. Platform
+    # admin is a cross-workspace capability, distinct from any single
+    # workspace's owner/admin role.
+    is_platform_admin: bool = False
+
+
+def platform_admin_gets_unlimited_plan(context: "AuthContext") -> bool:
+    """
+    Single, shared predicate for the one dev/local-only plan bypass in this
+    codebase: a real platform admin (is_platform_admin, DB-driven, never a
+    hardcoded email) testing locally should not be blocked by their
+    workspace's real stored plan. This is FALSE in production regardless of
+    is_platform_admin, and FALSE for every normal (non-platform-admin) user
+    regardless of environment -- it never lets a normal user bypass their
+    plan, and never applies outside local/dev.
+
+    Callers combine this with their OWN Plan enum's highest tier (agents.py's
+    Plan.ENTERPRISE, billing.py's SubscriptionPlan.ENTERPRISE, etc.) rather
+    than this function returning a single shared enum value, since each
+    router still carries its own historically-separate Plan type.
+    """
+    return bool(context.is_platform_admin) and AUTH_SETTINGS.environment.lower() not in {"production", "prod"}
 
 
 # =============================================================================
@@ -724,6 +748,7 @@ class DatabaseAuthStore:
             created_at=user.created_at.isoformat() if user.created_at else utc_now(),
             updated_at=user.updated_at.isoformat() if user.updated_at else utc_now(),
             is_active=bool(user.is_active),
+            is_platform_admin=bool(getattr(user, "is_platform_admin", False)),
             metadata={},
         )
 
@@ -1391,6 +1416,7 @@ async def get_current_auth_context(
         permissions=membership.permissions,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
+        is_platform_admin=user.is_platform_admin,
     )
 
     request.state.auth_context = context
@@ -2341,6 +2367,7 @@ class Auth:
             "created_at": user.created_at,
             "updated_at": user.updated_at,
             "is_active": user.is_active,
+            "is_platform_admin": user.is_platform_admin,
             "metadata": user.metadata,
         }
 

@@ -60,6 +60,13 @@ type SessionData = {
   workspace_name: string;
   workspace_slug: string;
   saved_at: string;
+  // Real, DB-driven flag (database.models.user.User.is_platform_admin,
+  // already returned by /auth/login's user object and persisted into
+  // william.session by apps/dashboard/src/lib/api-client.ts). Used here
+  // only to label the plan card "Admin Unlimited" -- the actual bypass is
+  // enforced server-side (apps.api.routes.auth.platform_admin_gets_unlimited_plan),
+  // never trusted client-side for access decisions.
+  is_platform_admin?: boolean;
 };
 
 type AgentStatus =
@@ -292,12 +299,16 @@ const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   viewer: ["dashboard:read", "workspace:read", "agents:read"],
 };
 
+// apps/api/routes/agents.py::AGENT_CATALOG has 15 real agents -- pro/
+// business/enterprise previously capped at 14, one short of the real
+// catalog, which silently blocked enabling the 15th agent (hologram) from
+// this page even on a plan that should allow all of them.
 const PLAN_AGENT_LIMITS: Record<UserPlan, number> = {
   free: 2,
   starter: 5,
-  pro: 14,
-  business: 14,
-  enterprise: 14,
+  pro: 15,
+  business: 15,
+  enterprise: 15,
 };
 
 const DEFAULT_AGENTS: AgentItem[] = [
@@ -1506,6 +1517,9 @@ export default function Page() {
     useState<CapabilityFilter>("all");
   const [voiceRuntimeState, setVoiceRuntimeState] =
     useState<VoiceRuntimeStateLite | null>(null);
+  const [systemWorkerConnected, setSystemWorkerConnected] = useState<
+    boolean | null
+  >(null);
 
   const canConfigureAgents = useMemo(() => {
     if (!session) return false;
@@ -1517,10 +1531,29 @@ export default function Page() {
     return hasPermission(session, "security:approve");
   }, [session]);
 
+  // The JWT/session's own "plan" is always the real, raw workspace plan
+  // (apps/api/routes/auth.py bakes membership.plan into the token, never
+  // the dev-only admin bypass). Each live /agents entry's access.plan is
+  // the server's actual EFFECTIVE plan for this request
+  // (apps.api.routes.agents::effective_plan_for), which is "enterprise"
+  // for a platform admin in a non-production environment even when the
+  // workspace's real stored plan is still "free". Prefer that live value
+  // so this page doesn't show a stale "free" plan for an admin who never
+  // ran scripts/grant_platform_admin.py against this exact workspace.
+  const effectivePlan = useMemo<UserPlan>(() => {
+    const liveAccessPlan = agents.find((agent) => agent.access?.plan)?.access
+      ?.plan as UserPlan | undefined;
+    return liveAccessPlan || session?.plan || "free";
+  }, [agents, session]);
+
+  const isAdminUnlimited = Boolean(
+    session?.is_platform_admin && effectivePlan === "enterprise",
+  );
+
   const maxAgentsForPlan = useMemo(() => {
     if (!session) return 0;
-    return PLAN_AGENT_LIMITS[session.plan] || 0;
-  }, [session]);
+    return PLAN_AGENT_LIMITS[effectivePlan] || 0;
+  }, [effectivePlan, session]);
 
   const summary = useMemo(() => calculateSummary(agents), [agents]);
 
@@ -1618,6 +1651,17 @@ export default function Page() {
           setVoiceRuntimeState(voiceResponse.data.runtime_state);
         }
       }
+
+      if (liveAgents.some((agent) => agent.key === "system")) {
+        const systemWorkerResponse = await apiRequest<{
+          worker_connected: boolean;
+        }>("/system/worker/status", activeSession, { method: "GET" });
+        if (systemWorkerResponse.success && systemWorkerResponse.data) {
+          setSystemWorkerConnected(
+            Boolean(systemWorkerResponse.data.worker_connected),
+          );
+        }
+      }
     },
     [router],
   );
@@ -1653,7 +1697,7 @@ export default function Page() {
     if (nextEnabled && currentEnabledCount >= maxAgentsForPlan) {
       setNotice({
         type: "error",
-        message: `Your ${session.plan} plan allows ${maxAgentsForPlan} enabled agent(s). Upgrade or disable another agent first.`,
+        message: `Your ${isAdminUnlimited ? "Admin Unlimited" : effectivePlan} plan allows ${maxAgentsForPlan} enabled agent(s). Upgrade or disable another agent first.`,
       });
       return;
     }
@@ -2006,8 +2050,8 @@ export default function Page() {
                         Plan-based control limit
                       </p>
                     </div>
-                    <span className="rounded-full bg-[#fff3ed] px-3 py-1 text-xs font-black text-[#ff5a3d]">
-                      {session.plan}
+                    <span className="rounded-full bg-[#fff3ed] px-3 py-1 text-xs font-black uppercase tracking-[0.06em] text-[#ff5a3d]">
+                      {isAdminUnlimited ? "Admin Unlimited" : effectivePlan}
                     </span>
                   </div>
 
@@ -2163,11 +2207,23 @@ export default function Page() {
                   <div className="grid gap-4 xl:grid-cols-2">
                     {filteredAgents.map((agent) => {
                       const isBusy = busyAgentId === agent.agent_id;
+                      // Live /agents entries key protected core agents as
+                      // "master"/"security" (apps/api/routes/agents.py's
+                      // AGENT_CATALOG bare agent_name); the offline
+                      // DEFAULT_AGENTS mock fallback uses the suffixed
+                      // "master_agent"/"security_agent" form. Both are
+                      // checked so Security Agent in particular can never
+                      // be disabled from this page regardless of data
+                      // source (CLAUDE.md: never disable SecurityAgent).
+                      const isProtectedCoreAgent =
+                        agent.key === "master" ||
+                        agent.key === "master_agent" ||
+                        agent.key === "security" ||
+                        agent.key === "security_agent";
                       const cannotToggle =
                         !canConfigureAgents ||
                         isBusy ||
-                        agent.key === "master_agent" ||
-                        agent.key === "security_agent" ||
+                        isProtectedCoreAgent ||
                         (agent.requires_security_approval &&
                           !canApproveSecurity);
 
@@ -2207,6 +2263,20 @@ export default function Page() {
                                 ].join(" ")}
                               >
                                 {VOICE_RUNTIME_LABELS[voiceRuntimeState]}
+                              </span>
+                            ) : agent.key === "system" &&
+                              systemWorkerConnected !== null ? (
+                              <span
+                                className={[
+                                  "rounded-full px-3 py-1 text-[11px] font-black",
+                                  systemWorkerConnected
+                                    ? "bg-emerald-50 text-emerald-700"
+                                    : "bg-orange-50 text-orange-700",
+                                ].join(" ")}
+                              >
+                                {systemWorkerConnected
+                                  ? "Worker Connected"
+                                  : "Worker Offline"}
                               </span>
                             ) : (
                               <span
@@ -2326,8 +2396,7 @@ export default function Page() {
                             </button>
                           </div>
 
-                          {agent.key === "master_agent" ||
-                          agent.key === "security_agent" ? (
+                          {isProtectedCoreAgent ? (
                             <p className="mt-3 text-[11px] font-bold text-neutral-400">
                               Core protected agent: direct disable is locked.
                             </p>

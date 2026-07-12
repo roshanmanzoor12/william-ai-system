@@ -83,7 +83,7 @@ def raise_api_error(status_code: int, message: str, code: str, request_id: Optio
 # Auth (canonical context -- same dependency every other router uses)
 # =============================================================================
 
-from apps.api.routes.auth import AuthContext, get_current_auth_context, require_auth_role  # type: ignore
+from apps.api.routes.auth import AuthContext, get_current_auth_context, platform_admin_gets_unlimited_plan  # type: ignore
 
 # Reuse the real agent registry/store and its role-ranking + hook helpers
 # rather than duplicating them -- this route is a view/editor over the same
@@ -91,6 +91,7 @@ from apps.api.routes.auth import AuthContext, get_current_auth_context, require_
 from apps.api.routes.agents import (  # type: ignore
     AGENT_CATALOG,
     AGENT_STORE,
+    Plan,
     Role,
     ROLE_RANK,
     has_min_role,
@@ -202,22 +203,49 @@ class PermissionUpdateRequest(BaseModel):
 router = APIRouter(tags=["Agent Permissions"])
 
 
+def _resolve_target_workspace_id(context: AuthContext, requested_workspace_id: Optional[str]) -> str:
+    """
+    Platform admins (apps/admin/agent-access) may target any workspace via
+    ?workspace_id=; everyone else is always confined to their own JWT-
+    derived workspace_id, regardless of what they pass -- this is the one
+    place cross-workspace access is legitimate, and it is gated on the
+    real is_platform_admin flag, never trusted from the request alone.
+    """
+    if requested_workspace_id and getattr(context, "is_platform_admin", False):
+        return requested_workspace_id
+    return context.workspace_id
+
+
 @router.get("")
-async def get_agent_permissions(context: AuthContext = Depends(get_current_auth_context)) -> Dict[str, Any]:
+async def get_agent_permissions(
+    workspace_id: Optional[str] = None,
+    context: AuthContext = Depends(get_current_auth_context),
+) -> Dict[str, Any]:
     from database.db import db_manager
     from database.models.user import User
-    from database.models.workspace import WorkspaceMembership, WorkspaceMembershipStatus
+    from database.models.workspace import Workspace, WorkspaceMembership, WorkspaceMembershipStatus, enum_value
+
+    target_workspace_id = _resolve_target_workspace_id(context, workspace_id)
 
     try:
-        agent_items = [_public_agent_item(agent_name, context.workspace_id) for agent_name in AGENT_CATALOG.keys()]
+        agent_items = [_public_agent_item(agent_name, target_workspace_id) for agent_name in AGENT_CATALOG.keys()]
         role_matrix = _workspace_role_matrix(agent_items)
 
         users: List[Dict[str, Any]] = []
         with db_manager.session_scope() as db:
+            workspace_row = db.query(Workspace).filter(Workspace.id == target_workspace_id).first()
+            real_workspace_plan = enum_value(workspace_row.plan) if workspace_row is not None else context.plan
+            # A real platform admin testing locally (never in production,
+            # never a normal user -- see platform_admin_gets_unlimited_plan)
+            # sees/assigns as if this workspace were Enterprise, without
+            # mutating the workspace's real stored plan (/admin/workspaces
+            # still shows and edits the true value).
+            workspace_plan = Plan.ENTERPRISE.value if platform_admin_gets_unlimited_plan(context) else real_workspace_plan
+
             memberships = (
                 db.query(WorkspaceMembership)
                 .filter(
-                    WorkspaceMembership.workspace_id == context.workspace_id,
+                    WorkspaceMembership.workspace_id == target_workspace_id,
                     WorkspaceMembership.status == WorkspaceMembershipStatus.ACTIVE,
                 )
                 .all()
@@ -226,18 +254,18 @@ async def get_agent_permissions(context: AuthContext = Depends(get_current_auth_
             for membership in memberships:
                 user_row = db.query(User).filter(User.id == membership.user_id).first()
                 role_value = getattr(membership.role, "value", str(membership.role))
-                plan_value = context.plan if membership.user_id == context.user_id else context.plan
+                plan_value = workspace_plan
 
                 users.append(
                     {
                         "user_id": membership.user_id,
-                        "workspace_id": context.workspace_id,
+                        "workspace_id": target_workspace_id,
                         "name": (user_row.full_name if user_row and user_row.full_name else (user_row.email if user_row else membership.user_id)),
                         "email": user_row.email if user_row else "",
                         "role": role_value,
                         "plan": plan_value,
                         "status": "active",
-                        "assigned_agents": _user_assigned_agents(membership.user_id, role_value, plan_value, context.workspace_id, agent_items),
+                        "assigned_agents": _user_assigned_agents(membership.user_id, role_value, plan_value, target_workspace_id, agent_items),
                         "created_at": membership.created_at.isoformat() if membership.created_at else None,
                         "last_active_at": membership.last_active_at.isoformat() if membership.last_active_at else None,
                     }
@@ -253,15 +281,24 @@ async def get_agent_permissions(context: AuthContext = Depends(get_current_auth_
         raise_api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not load agent permissions.", "AGENT_PERMISSIONS_LOAD_FAILED", context.request_id, {"detail": str(exc)})
 
 
+async def require_workspace_admin_or_platform_admin(context: AuthContext = Depends(get_current_auth_context)) -> AuthContext:
+    if getattr(context, "is_platform_admin", False) or has_min_role(context.role, Role.ADMIN.value):
+        return context
+    raise_api_error(status.HTTP_403_FORBIDDEN, f"Role '{Role.ADMIN.value}' or higher is required.", "INSUFFICIENT_ROLE", context.request_id)
+
+
 @router.put("/{user_id}")
 async def update_agent_permissions(
     user_id: str,
     payload: PermissionUpdateRequest,
     request: Request,
-    context: AuthContext = Depends(require_auth_role(Role.ADMIN.value)),
+    workspace_id: Optional[str] = None,
+    context: AuthContext = Depends(require_workspace_admin_or_platform_admin),
 ) -> Dict[str, Any]:
     from database.db import db_manager
     from database.models.workspace import WorkspaceMembership, WorkspaceMembershipStatus
+
+    target_workspace_id = _resolve_target_workspace_id(context, workspace_id)
 
     if payload.target_user_id != user_id:
         raise_api_error(status.HTTP_400_BAD_REQUEST, "target_user_id must match the path user_id.", "USER_ID_MISMATCH", context.request_id)
@@ -270,7 +307,7 @@ async def update_agent_permissions(
         membership = (
             db.query(WorkspaceMembership)
             .filter(
-                WorkspaceMembership.workspace_id == context.workspace_id,
+                WorkspaceMembership.workspace_id == target_workspace_id,
                 WorkspaceMembership.user_id == user_id,
                 WorkspaceMembership.status == WorkspaceMembershipStatus.ACTIVE,
             )
@@ -289,14 +326,14 @@ async def update_agent_permissions(
         {
             "type": "agent_permissions_update",
             "actor_user_id": context.user_id,
-            "workspace_id": context.workspace_id,
+            "workspace_id": target_workspace_id,
             "target_user_id": user_id,
             "sensitive_agents": sensitive_agents,
         }
     )
 
     for agent_name in AGENT_CATALOG.keys():
-        config = AGENT_STORE.get_or_create_config(context.workspace_id, agent_name)
+        config = AGENT_STORE.get_or_create_config(target_workspace_id, agent_name)
         allowed_user_ids = set(config.allowed_user_ids)
         denied_user_ids = set(config.denied_user_ids)
 
@@ -308,7 +345,7 @@ async def update_agent_permissions(
             allowed_user_ids.discard(user_id)
 
         AGENT_STORE.update_access(
-            context.workspace_id,
+            target_workspace_id,
             agent_name,
             allowed_user_ids=sorted(allowed_user_ids),
             denied_user_ids=sorted(denied_user_ids),
@@ -323,14 +360,14 @@ async def update_agent_permissions(
         result="success",
         target_user_id=user_id,
         status_code=status.HTTP_200_OK,
-        metadata={"assigned_agents": sorted(assigned), "sensitive_agents": sensitive_agents, "notes": payload.notes},
+        metadata={"assigned_agents": sorted(assigned), "sensitive_agents": sensitive_agents, "notes": payload.notes, "workspace_id": target_workspace_id},
     )
 
     memory_result = await emit_memory_context(
         {
             "type": "agent_permissions_update",
             "user_id": context.user_id,
-            "workspace_id": context.workspace_id,
+            "workspace_id": target_workspace_id,
             "request_id": context.request_id,
             "content": {"event": "agent_permissions_updated", "target_user_id": user_id, "assigned_agents": sorted(assigned)},
         }
@@ -340,7 +377,7 @@ async def update_agent_permissions(
         {
             "type": "agent_permissions_update_confirmation",
             "user_id": context.user_id,
-            "workspace_id": context.workspace_id,
+            "workspace_id": target_workspace_id,
             "request_id": context.request_id,
             "target_user_id": user_id,
             "assigned_agents": sorted(assigned),
@@ -351,7 +388,7 @@ async def update_agent_permissions(
         "Agent permissions saved.",
         data={
             "user_id": user_id,
-            "workspace_id": context.workspace_id,
+            "workspace_id": target_workspace_id,
             "assigned_agents": sorted(assigned),
             "audit": {"event_id": audit.get("audit_id"), "action": "agent_permissions.update"},
             "security": {

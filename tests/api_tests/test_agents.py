@@ -52,6 +52,18 @@ from typing import Any, Dict
 
 import pytest
 
+from database.db import db_manager
+from database.models.user import User
+
+
+def make_platform_admin(user_id: str) -> None:
+    """Flip is_platform_admin=True for an already-registered real user."""
+
+    with db_manager.session_scope() as db:
+        user = db.query(User).filter(User.id == user_id).first()
+        assert user is not None
+        user.is_platform_admin = True
+
 
 MASTER_AGENT_ID = "master"
 SECURITY_AGENT_ID = "security"
@@ -446,6 +458,45 @@ class TestAgentAccessMatrix:
         after = response_json(client.get("/api/v1/agents/business", headers=owner.headers))
         assert after["data"]["access"]["allowed"] is True
         assert after["data"]["access"]["reason"] == "Access granted."
+
+
+class TestAdminEnablesAllAgents:
+    """Regression coverage for scripts/dev_activate_all_agents.py's core
+    claim: a platform admin can enable every one of the 15 real agents for
+    their workspace, and GET /agents's enabled count reflects it -- this is
+    workspace-level enablement (POST /agents/{name}/enable), independent of
+    per-user assignment (see test_agent_permissions.py)."""
+
+    def test_enabled_count_becomes_fifteen_after_enabling_every_agent(
+        self, client, make_owner
+    ) -> None:
+        owner = make_owner()
+        # Enabling every one of the 15 agents includes paid-tier ones
+        # (business/creator/voice/... require at least "starter"); a
+        # platform admin's dev-only effective_plan bypass is what makes
+        # this reachable without a real plan upgrade, matching
+        # scripts/dev_activate_all_agents.py's real-world precondition.
+        make_platform_admin(owner.user_id)
+
+        before = response_json(client.get("/api/v1/agents", headers=owner.headers))
+        before_enabled = sum(
+            1 for entry in before["data"]["agents"] if (entry.get("workspace_config") or {}).get("enabled")
+        )
+        assert before_enabled < len(KNOWN_AGENT_IDS)
+
+        for agent_id in KNOWN_AGENT_IDS:
+            response = client.post(
+                f"/api/v1/agents/{agent_id}/enable",
+                json={"reason": "test_enable_all"},
+                headers=owner.headers,
+            )
+            assert response.status_code == 200, response.text
+
+        after = response_json(client.get("/api/v1/agents", headers=owner.headers))
+        after_enabled = sum(
+            1 for entry in after["data"]["agents"] if (entry.get("workspace_config") or {}).get("enabled")
+        )
+        assert after_enabled == len(KNOWN_AGENT_IDS) == 15
 
 
 class TestTaskCreationAndIsolation:

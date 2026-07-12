@@ -49,6 +49,12 @@ type SessionData = {
   workspace_name: string;
   workspace_slug: string;
   saved_at: string;
+  // Real, DB-driven flag (database.models.user.User.is_platform_admin,
+  // already returned by /auth/login's user object and persisted into
+  // william.session). Used here only to label the plan "Admin Unlimited"
+  // -- the actual dev-only bypass is enforced server-side
+  // (apps.api.routes.auth.platform_admin_gets_unlimited_plan).
+  is_platform_admin?: boolean;
 };
 
 type WorkspaceUser = {
@@ -178,12 +184,17 @@ const PLAN_ORDER: Record<UserPlan, number> = {
   enterprise: 5,
 };
 
+// apps/api/routes/agents.py::AGENT_CATALOG has 15 real agents (this page's
+// own DEFAULT_AGENTS offline-mock fallback is short one -- hologram -- but
+// the live /agent-permissions response always returns all 15) -- pro/
+// business/enterprise previously capped at 14, one short, which silently
+// blocked assigning the 15th agent even on a plan that should allow all.
 const PLAN_AGENT_LIMITS: Record<UserPlan, number> = {
   free: 2,
   starter: 5,
-  pro: 14,
-  business: 14,
-  enterprise: 14,
+  pro: 15,
+  business: 15,
+  enterprise: 15,
 };
 
 const DEFAULT_ROLE_MATRIX: RolePermissionMatrix = {
@@ -767,6 +778,17 @@ export default function Page() {
     [selectedUserId, users],
   );
 
+  // selectedUser.plan comes straight from the live backend, which already
+  // resolves to the dev-only admin-unlimited plan for a platform admin
+  // (apps.api.routes.agent_permissions::get_agent_permissions sets every
+  // returned user's "plan" from that same effective workspace_plan) -- so
+  // no separate client-side bypass computation is needed here, only a
+  // friendlier label than the raw "enterprise" string.
+  const displayPlan = (selectedUser?.plan || session?.plan || "free") as UserPlan;
+  const isAdminUnlimited = Boolean(
+    session?.is_platform_admin && displayPlan === "enterprise",
+  );
+
   const canWritePermissions = useMemo(() => {
     if (!session) return false;
     return hasPermission(session, "agent_permissions:write");
@@ -1303,7 +1325,7 @@ export default function Page() {
               />
               <StatCard
                 title="Plan"
-                value={(selectedUser?.plan || session.plan).toUpperCase()}
+                value={isAdminUnlimited ? "ADMIN UNLIMITED" : displayPlan.toUpperCase()}
                 subtitle="Role + plan checked"
                 icon="$"
               />

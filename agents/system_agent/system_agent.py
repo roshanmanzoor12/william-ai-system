@@ -1108,45 +1108,91 @@ class SystemAgent(BaseAgent):
         }
         return self._safe_result("System information retrieved.", data=data)
 
+    def _device_worker_status(self, context: TaskContext) -> Dict[str, Any]:
+        """
+        Real, DB-backed check (database/models/system_worker.py, written to
+        by POST /api/v1/system/worker/heartbeat) -- never assumes a worker
+        is present just because this backend process is running. Import is
+        wrapped defensively (import-safe pattern) since agents must still
+        import even if the API layer isn't available in this context.
+        """
+        try:
+            from apps.api.routes.system_worker import get_system_worker_status
+
+            return get_system_worker_status(context.workspace_id)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Could not read device worker status: %s", exc)
+            return {"worker_connected": False, "worker_last_seen_at": None}
+
+    def _device_control_unavailable_result(
+        self,
+        app: str,
+        context: TaskContext,
+        *,
+        worker_connected: bool,
+    ) -> Dict[str, Any]:
+        """
+        Real device control (opening/closing an app on the user's own
+        machine) requires a connected Windows/Mac device worker AND a real
+        remote task-dispatch protocol -- neither executing the command on
+        this backend server's own host, nor claiming success without
+        either, is acceptable (this backend may not even be running on the
+        user's machine). The dispatch (poll/report) protocol isn't built
+        yet even when a worker is connected -- see apps/worker_nodes/
+        windows/windows_worker.py and apps/worker_nodes/common/
+        worker_client.py (register/heartbeat/poll_tasks/report methods
+        already exist client-side; the matching /api/worker/tasks/* server
+        routes do not exist yet). Documented next step: build those routes
+        plus a task queue the connected worker polls, then swap this
+        honest refusal for a real dispatch call.
+        """
+        is_store = app.strip().lower() in {"microsoft store", "store", "ms-windows-store"}
+
+        if not worker_connected:
+            message = (
+                "I can open Microsoft Store only when the Windows device worker is connected."
+                if is_store
+                else f"I can perform this system action only when the Windows device worker is connected (requested app: {app})."
+            )
+            code = "device_worker_offline"
+        else:
+            message = (
+                "The Windows device worker is connected, but remote command dispatch isn't built yet -- "
+                "I can't send it a task to open an app on your machine."
+            )
+            code = "external_dependency_required"
+
+        return self._error_result(
+            message,
+            code,
+            context,
+            metadata={"runtime_state": code, "app": app, "worker_connected": worker_connected},
+        )
+
     async def open_app(
         self,
         payload: Dict[str, Any],
         context: TaskContext,
     ) -> Dict[str, Any]:
         """
-        Open an application by app name/path.
+        Open an application on the user's own device.
 
-        Safe default:
-            If allow_real_execution is False, returns a dry-run result.
+        This NEVER executes locally on the backend server's own host --
+        real app-opening only ever happens on a connected Windows/Mac
+        device worker (apps/worker_nodes/windows/windows_worker.py), which
+        this backend cannot fake having reached. See
+        _device_control_unavailable_result for the honest states this
+        returns instead.
         """
 
         app = _coerce_str(payload.get("app") or payload.get("name") or payload.get("path")).strip()
-        args = payload.get("args") or []
 
         if not app:
             return self._error_result("Missing app name/path.", "missing_app", context)
 
-        command = self._build_open_app_command(app, args=args)
-        if command is None:
-            return self._error_result(
-                "Could not build app open command for this platform.",
-                "unsupported_platform_or_app",
-                context,
-                metadata={"app": app},
-            )
-
-        if not self.config.allow_real_execution:
-            return self._safe_result(
-                "App open prepared as dry-run. Real execution is disabled.",
-                data={"app": app, "command": command, "dry_run": True},
-            )
-
-        return await self._execute_subprocess_command(
-            command=command,
-            context=context,
-            shell=isinstance(command, str),
-            timeout=payload.get("timeout"),
-            action=SystemAction.OPEN_APP.value,
+        worker_status = self._device_worker_status(context)
+        return self._device_control_unavailable_result(
+            app, context, worker_connected=bool(worker_status.get("worker_connected"))
         )
 
     async def close_app(
@@ -1155,37 +1201,19 @@ class SystemAgent(BaseAgent):
         context: TaskContext,
     ) -> Dict[str, Any]:
         """
-        Close an application/process.
+        Close an application/process on the user's own device.
 
-        This is high-risk. Real execution requires SecurityAgent approval and
-        allow_real_execution=True.
+        Same honesty rule as open_app -- this never executes locally on the
+        backend server's own host.
         """
 
         app = _coerce_str(payload.get("app") or payload.get("name") or payload.get("process")).strip()
         if not app:
             return self._error_result("Missing app/process name.", "missing_app", context)
 
-        command = self._build_close_app_command(app)
-        if command is None:
-            return self._error_result(
-                "Could not build app close command for this platform.",
-                "unsupported_platform_or_app",
-                context,
-                metadata={"app": app},
-            )
-
-        if not self.config.allow_real_execution:
-            return self._safe_result(
-                "App close prepared as dry-run. Real execution is disabled.",
-                data={"app": app, "command": command, "dry_run": True},
-            )
-
-        return await self._execute_subprocess_command(
-            command=command,
-            context=context,
-            shell=isinstance(command, str),
-            timeout=payload.get("timeout"),
-            action=SystemAction.CLOSE_APP.value,
+        worker_status = self._device_worker_status(context)
+        return self._device_control_unavailable_result(
+            app, context, worker_connected=bool(worker_status.get("worker_connected"))
         )
 
     async def list_files(

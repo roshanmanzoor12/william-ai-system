@@ -269,29 +269,29 @@ function detectBillingRisk(
 function getStatusBadgeClass(status: BillingStatus): string {
   switch (status) {
     case "active":
-      return "border-emerald-400/40 bg-emerald-400/10 text-emerald-100";
+      return "border-emerald-400/40 bg-emerald-400/10 text-emerald-700";
     case "trialing":
-      return "border-cyan-400/40 bg-cyan-400/10 text-cyan-100";
+      return "border-[#ff5a3d]/40 bg-[#ff5a3d]/10 text-[#ff5a3d]";
     case "past_due":
-      return "border-orange-400/40 bg-orange-400/10 text-orange-100";
+      return "border-orange-400/40 bg-orange-400/10 text-orange-700";
     case "cancelled":
     case "inactive":
-      return "border-red-400/40 bg-red-400/10 text-red-100";
+      return "border-red-400/40 bg-red-400/10 text-red-700";
     default:
-      return "border-slate-400/30 bg-slate-400/10 text-slate-200";
+      return "border-neutral-200 bg-neutral-100 text-neutral-600";
   }
 }
 
 function getDecisionBadgeClass(outcome: SecurityDecisionOutcome): string {
   switch (outcome) {
     case "approved":
-      return "border-emerald-400/40 bg-emerald-400/10 text-emerald-100";
+      return "border-emerald-400/40 bg-emerald-400/10 text-emerald-700";
     case "requires_approval":
-      return "border-orange-400/40 bg-orange-400/10 text-orange-100";
+      return "border-orange-400/40 bg-orange-400/10 text-orange-700";
     case "denied":
-      return "border-red-400/40 bg-red-400/10 text-red-100";
+      return "border-red-400/40 bg-red-400/10 text-red-700";
     default:
-      return "border-slate-400/30 bg-slate-400/10 text-slate-200";
+      return "border-neutral-200 bg-neutral-100 text-neutral-600";
   }
 }
 
@@ -523,12 +523,12 @@ function StatCard(props: {
   hint: string;
 }) {
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/[0.05] p-5 shadow-xl shadow-black/20">
-      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">
+    <div className="rounded-3xl border border-neutral-100 bg-neutral-50 p-5 shadow-xl shadow-black/20">
+      <p className="text-xs uppercase tracking-[0.25em] text-neutral-400">
         {props.label}
       </p>
-      <p className="mt-3 text-3xl font-black text-white">{props.value}</p>
-      <p className="mt-2 text-xs text-slate-400">{props.hint}</p>
+      <p className="mt-3 text-3xl font-black text-neutral-950">{props.value}</p>
+      <p className="mt-2 text-xs text-neutral-500">{props.hint}</p>
     </div>
   );
 }
@@ -774,27 +774,27 @@ export default function Page() {
 
   if (isBooting) {
     return (
-      <div className="rounded-[28px] bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+      <div className="rounded-[28px] bg-transparent px-0 py-0 text-neutral-950 sm:px-6 lg:px-8">
         <section className="mx-auto flex min-h-[70vh] max-w-7xl items-center justify-center">
-          <LoadingState variant="dark" title="Loading billing..." />
+          <LoadingState variant="light" title="Loading billing..." />
         </section>
       </div>
     );
   }
 
   return (
-    <div className="rounded-[28px] bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_34%),radial-gradient(circle_at_top_right,rgba(168,85,247,0.18),transparent_30%),#020617] px-4 py-6 text-white sm:px-6 lg:px-8">
+    <div className="rounded-[28px] bg-transparent px-0 py-0 text-neutral-950 sm:px-6 lg:px-8">
       <section className="mx-auto max-w-7xl">
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm text-cyan-100">
-              <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_16px_rgba(103,232,249,0.9)]" />
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[#ff5a3d]/30 bg-[#ff5a3d]/10 px-4 py-2 text-sm text-[#ff5a3d]">
+              <span className="h-2 w-2 rounded-full bg-[#ff5a3d] shadow-[0_0_16px_rgba(255,90,61,0.7)]" />
               Billing / Plans / Subscription Usage
             </div>
             <h1 className="text-3xl font-black tracking-tight sm:text-4xl lg:text-5xl">
               Subscription Control Center
             </h1>
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300 sm:text-base">
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-neutral-600 sm:text-base">
               Manage William/Jarvis plans, usage, billing permissions, and
               subscription actions with workspace isolation, Security Agent
               review, audit hooks, Memory Agent context, and Verification Agent
@@ -802,20 +802,20 @@ export default function Page() {
             </p>
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-white/[0.05] p-4 shadow-xl shadow-black/20">
-            <p className="text-xs uppercase tracking-[0.25em] text-slate-400">
+          <div className="rounded-3xl border border-neutral-100 bg-neutral-50 p-4 shadow-xl shadow-black/20">
+            <p className="text-xs uppercase tracking-[0.25em] text-neutral-500">
               Workspace Scope
             </p>
-            <p className="mt-2 text-sm font-semibold text-white">{user.name}</p>
-            <p className="mt-1 text-xs text-slate-400">{user.email}</p>
+            <p className="mt-2 text-sm font-semibold text-neutral-950">{user.name}</p>
+            <p className="mt-1 text-xs text-neutral-500">{user.email}</p>
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
-              <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+              <span className="rounded-full border border-neutral-100 bg-neutral-100 px-3 py-1">
                 {user.role}
               </span>
-              <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+              <span className="rounded-full border border-neutral-100 bg-neutral-100 px-3 py-1">
                 {user.plan}
               </span>
-              <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+              <span className="rounded-full border border-neutral-100 bg-neutral-100 px-3 py-1">
                 {user.workspace_id}
               </span>
             </div>
@@ -825,7 +825,7 @@ export default function Page() {
         {safeError ? (
           <div className="mb-6">
             <ErrorState
-              variant="dark"
+              variant="light"
               message={safeError}
               onRetry={handleRetry}
             />
@@ -835,7 +835,7 @@ export default function Page() {
         {!canReadBilling ? (
           <div className="mb-6">
             <ForbiddenState
-              variant="dark"
+              variant="light"
               message="Your current role or subscription plan cannot access billing."
             />
           </div>
@@ -870,9 +870,9 @@ export default function Page() {
 
         <div className="grid gap-6 lg:grid-cols-[410px_1fr]">
           <aside className="space-y-6">
-            <section className="rounded-3xl border border-white/10 bg-white/[0.05] p-4 shadow-2xl shadow-black/20">
+            <section className="rounded-3xl border border-neutral-100 bg-neutral-50 p-4 shadow-2xl shadow-black/20">
               <h2 className="text-lg font-bold">Subscription Snapshot</h2>
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-xs text-neutral-500">
                 Scoped to current workspace only.
               </p>
 
@@ -893,9 +893,9 @@ export default function Page() {
                     value={new Date(subscription.updated_at).toLocaleString()}
                   />
 
-                  <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <div className="rounded-2xl border border-neutral-100 bg-black/20 p-4">
                     <div className="mb-3 flex items-center justify-between">
-                      <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-400">
                         Status
                       </p>
                       <span
@@ -907,7 +907,7 @@ export default function Page() {
                         {formatLabel(subscription.status)}
                       </span>
                     </div>
-                    <p className="text-sm leading-6 text-slate-300">
+                    <p className="text-sm leading-6 text-neutral-600">
                       Plan changes, cancellation, and portal actions are treated
                       as sensitive billing events and routed through Security
                       Agent.
@@ -915,12 +915,12 @@ export default function Page() {
                   </div>
                 </div>
               ) : (
-                <div className="mt-4 rounded-3xl border border-white/10 bg-slate-950/40 p-6 text-center">
-                  <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-cyan-400/30 bg-cyan-400/10">
+                <div className="mt-4 rounded-3xl border border-neutral-100 bg-neutral-50 p-6 text-center">
+                  <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[#ff5a3d]/30 bg-[#ff5a3d]/10">
                     $
                   </div>
                   <h3 className="font-bold">No subscription found</h3>
-                  <p className="mt-2 text-xs leading-5 text-slate-400">
+                  <p className="mt-2 text-xs leading-5 text-neutral-500">
                     Billing data will appear here once your workspace
                     subscription is created.
                   </p>
@@ -928,9 +928,9 @@ export default function Page() {
               )}
             </section>
 
-            <section className="rounded-3xl border border-white/10 bg-white/[0.05] p-4 shadow-2xl shadow-black/20">
+            <section className="rounded-3xl border border-neutral-100 bg-neutral-50 p-4 shadow-2xl shadow-black/20">
               <h2 className="text-lg font-bold">Access Control</h2>
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-xs text-neutral-500">
                 Role and subscription gates.
               </p>
 
@@ -964,12 +964,12 @@ export default function Page() {
             </section>
           </aside>
 
-          <section className="min-h-[820px] rounded-3xl border border-white/10 bg-white/[0.05] shadow-2xl shadow-black/30">
-            <div className="border-b border-white/10 p-5">
+          <section className="min-h-[820px] rounded-3xl border border-neutral-100 bg-neutral-50 shadow-2xl shadow-black/30">
+            <div className="border-b border-neutral-100 p-5">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div>
                   <h2 className="text-2xl font-black">Plans & Usage</h2>
-                  <p className="mt-2 max-w-2xl text-sm text-slate-400">
+                  <p className="mt-2 max-w-2xl text-sm text-neutral-500">
                     Upgrade, downgrade, refresh usage, or open billing workflows
                     safely.
                   </p>
@@ -999,7 +999,7 @@ export default function Page() {
                 {plans.length === 0 ? (
                   <div className="xl:col-span-4">
                     <EmptyState
-                      variant="dark"
+                      variant="light"
                       icon="◈"
                       title="No plans available"
                       message="No plans returned by the billing API."
@@ -1018,31 +1018,31 @@ export default function Page() {
                         className={[
                           "rounded-3xl border p-5 text-left transition",
                           isSelected
-                            ? "border-cyan-400/50 bg-cyan-400/10 shadow-lg shadow-cyan-950/40"
+                            ? "border-[#ff5a3d]/50 bg-[#ff5a3d]/10 shadow-lg shadow-[#ff5a3d]/20"
                             : plan.recommended
                               ? "border-purple-400/30 bg-purple-400/10 hover:bg-purple-400/15"
-                              : "border-white/10 bg-slate-950/40 hover:border-white/20 hover:bg-white/[0.07]",
+                              : "border-neutral-100 bg-neutral-50 hover:border-neutral-200 hover:bg-neutral-100",
                         ].join(" ")}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <h3 className="text-xl font-black text-white">
+                            <h3 className="text-xl font-black text-neutral-950">
                               {plan.name}
                             </h3>
-                            <p className="mt-1 text-2xl font-black text-cyan-100">
+                            <p className="mt-1 text-2xl font-black text-[#ff5a3d]">
                               {plan.price_cents === 0
                                 ? "Free"
                                 : `${formatPriceCents(plan.price_cents, plan.currency)}/${plan.interval === "yearly" ? "yr" : "mo"}`}
                             </p>
                           </div>
                           {isCurrent ? (
-                            <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[10px] text-emerald-100">
+                            <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[10px] text-emerald-700">
                               Current
                             </span>
                           ) : null}
                         </div>
 
-                        <div className="mt-4 space-y-2 text-xs text-slate-300">
+                        <div className="mt-4 space-y-2 text-xs text-neutral-600">
                           <p>Tasks: {formatLimit(plan.limits.tasks ?? 0)}</p>
                           <p>
                             Agent Runs:{" "}
@@ -1062,7 +1062,7 @@ export default function Page() {
                           {plan.features.slice(0, 4).map((feature) => (
                             <div
                               key={feature}
-                              className="flex items-center gap-2 text-xs text-slate-300"
+                              className="flex items-center gap-2 text-xs text-neutral-600"
                             >
                               <span className="h-2 w-2 rounded-full bg-emerald-400" />
                               {formatLabel(feature)}
@@ -1075,13 +1075,13 @@ export default function Page() {
                 )}
               </section>
 
-              <section className="rounded-3xl border border-white/10 bg-slate-950/40 p-5">
+              <section className="rounded-3xl border border-neutral-100 bg-neutral-50 p-5">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                   <div>
                     <h3 className="text-lg font-bold">
                       Selected Plan: {selectedPlanCard?.name || selectedPlan}
                     </h3>
-                    <p className="mt-1 text-sm text-slate-400">
+                    <p className="mt-1 text-sm text-neutral-500">
                       Current plan is{" "}
                       {currentPlanCard?.name || subscription?.plan || "N/A"}.
                       Sensitive changes are routed through the real Security
@@ -1107,7 +1107,7 @@ export default function Page() {
                           selectedPlan,
                         )
                       }
-                      className="rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-black text-slate-950 shadow-lg shadow-cyan-950/40 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
+                      className="rounded-2xl bg-[#ff5a3d] px-5 py-3 text-sm font-black text-neutral-950 shadow-lg shadow-[#ff5a3d]/20 transition hover:bg-neutral-950 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-500 disabled:shadow-none"
                     >
                       {isActionRunning ? "Processing..." : "Apply Plan Change"}
                     </button>
@@ -1116,7 +1116,7 @@ export default function Page() {
                       type="button"
                       disabled={isActionRunning || !canManageBilling}
                       onClick={() => runBillingAction("open_billing_portal")}
-                      className="rounded-2xl border border-white/10 bg-white/10 px-5 py-3 text-sm font-bold text-white transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-2xl border border-neutral-100 bg-neutral-100 px-5 py-3 text-sm font-bold text-neutral-950 transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Billing Portal
                     </button>
@@ -1128,7 +1128,7 @@ export default function Page() {
                         onClick={() =>
                           runBillingAction("reactivate_subscription")
                         }
-                        className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-5 py-3 text-sm font-bold text-emerald-100 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-5 py-3 text-sm font-bold text-emerald-700 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Reactivate
                       </button>
@@ -1137,7 +1137,7 @@ export default function Page() {
                         type="button"
                         disabled={isActionRunning || !canCancelSubscription}
                         onClick={() => runBillingAction("cancel_subscription")}
-                        className="rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-3 text-sm font-bold text-red-100 transition hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-3 text-sm font-bold text-red-700 transition hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Cancel
                       </button>
@@ -1146,11 +1146,11 @@ export default function Page() {
                 </div>
               </section>
 
-              <section className="rounded-3xl border border-white/10 bg-slate-950/40 p-5">
+              <section className="rounded-3xl border border-neutral-100 bg-neutral-50 p-5">
                 <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                   <div>
                     <h3 className="text-lg font-bold">Usage Metering</h3>
-                    <p className="mt-1 text-sm text-slate-400">
+                    <p className="mt-1 text-sm text-neutral-500">
                       All usage is scoped by user_id and workspace_id. No
                       cross-workspace soup.
                     </p>
@@ -1167,7 +1167,7 @@ export default function Page() {
                         setSafeError(sanitizeError(error));
                       }
                     }}
-                    className="rounded-2xl border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 text-sm font-bold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-2xl border border-[#ff5a3d]/30 bg-[#ff5a3d]/10 px-5 py-3 text-sm font-bold text-[#ff5a3d] transition hover:bg-[#ff5a3d]/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Refresh Usage
                   </button>
@@ -1176,7 +1176,7 @@ export default function Page() {
                 {usage.length === 0 ? (
                   <div className="mt-5">
                     <EmptyState
-                      variant="dark"
+                      variant="light"
                       icon="◈"
                       title="No usage data"
                       message="No usage data returned by the billing API yet."
@@ -1190,30 +1190,30 @@ export default function Page() {
                       return (
                         <div
                           key={record.id}
-                          className="rounded-3xl border border-white/10 bg-black/20 p-5"
+                          className="rounded-3xl border border-neutral-100 bg-black/20 p-5"
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <h4 className="font-bold text-white">
+                              <h4 className="font-bold text-neutral-950">
                                 {USAGE_METRIC_LABELS[record.metric]}
                               </h4>
-                              <p className="mt-1 text-xs text-slate-400">
+                              <p className="mt-1 text-xs text-neutral-500">
                                 {record.used.toLocaleString()} used
                               </p>
                             </div>
-                            <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs text-slate-300">
+                            <span className="rounded-full border border-neutral-100 bg-neutral-100 px-3 py-1 text-xs text-neutral-600">
                               {percent}%
                             </span>
                           </div>
 
-                          <div className="mt-4 h-3 overflow-hidden rounded-full bg-white/10">
+                          <div className="mt-4 h-3 overflow-hidden rounded-full bg-neutral-100">
                             <div
-                              className="h-full rounded-full bg-cyan-400 shadow-[0_0_18px_rgba(34,211,238,0.7)]"
+                              className="h-full rounded-full bg-[#ff5a3d] shadow-[0_0_18px_rgba(34,211,238,0.7)]"
                               style={{ width: `${percent}%` }}
                             />
                           </div>
 
-                          <p className="mt-3 text-xs text-slate-500">
+                          <p className="mt-3 text-xs text-neutral-400">
                             Limit: {formatLimit(record.limit)}
                           </p>
                         </div>
@@ -1224,10 +1224,10 @@ export default function Page() {
               </section>
 
               {lastVerification ? (
-                <section className="rounded-3xl border border-white/10 bg-slate-950/40 p-5">
+                <section className="rounded-3xl border border-neutral-100 bg-neutral-50 p-5">
                   <h3 className="text-lg font-bold">Agent Payloads</h3>
 
-                  <details className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-3 text-xs text-emerald-100">
+                  <details className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-3 text-xs text-emerald-700">
                     <summary className="cursor-pointer font-semibold">
                       Verification Agent Payload Ready
                     </summary>
@@ -1247,13 +1247,13 @@ export default function Page() {
 
 function InfoTile(props: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-      <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+    <div className="rounded-2xl border border-neutral-100 bg-black/20 p-4">
+      <p className="text-xs uppercase tracking-[0.2em] text-neutral-400">
         {props.label}
       </p>
       <p
         className={[
-          "mt-2 text-sm font-semibold text-slate-200",
+          "mt-2 text-sm font-semibold text-neutral-700",
           props.mono ? "break-all font-mono text-xs" : "",
         ].join(" ")}
       >
@@ -1265,14 +1265,14 @@ function InfoTile(props: { label: string; value: string; mono?: boolean }) {
 
 function AccessRow(props: { label: string; enabled: boolean }) {
   return (
-    <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
-      <span className="text-slate-300">{props.label}</span>
+    <div className="flex items-center justify-between rounded-2xl border border-neutral-100 bg-black/20 px-4 py-3 text-sm">
+      <span className="text-neutral-600">{props.label}</span>
       <span
         className={[
           "rounded-full border px-3 py-1 text-xs",
           props.enabled
-            ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-100"
-            : "border-orange-400/30 bg-orange-400/10 text-orange-100",
+            ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-700"
+            : "border-orange-400/30 bg-orange-400/10 text-orange-700",
         ].join(" ")}
       >
         {props.enabled ? "Allowed" : "Restricted"}

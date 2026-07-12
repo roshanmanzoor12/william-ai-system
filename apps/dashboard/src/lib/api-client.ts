@@ -246,6 +246,12 @@ export const patch = <T>(
   config?: AxiosRequestConfig,
 ) => request<T>(path, { ...config, method: "PATCH", data });
 
+export const put = <T>(
+  path: string,
+  data?: unknown,
+  config?: AxiosRequestConfig,
+) => request<T>(path, { ...config, method: "PUT", data });
+
 export const del = <T>(path: string, config?: AxiosRequestConfig) =>
   request<T>(path, { ...config, method: "DELETE" });
 
@@ -258,6 +264,7 @@ type RawUserRecord = {
   email: string;
   full_name: string;
   is_active: boolean;
+  is_platform_admin?: boolean;
 };
 
 type RawWorkspaceRecord = {
@@ -352,6 +359,7 @@ function normalizeAuthPayload(
     workspace_name: raw.workspace.name,
     workspace_slug: raw.workspace.slug || raw.workspace.workspace_id,
     saved_at: new Date().toISOString(),
+    is_platform_admin: Boolean(raw.user.is_platform_admin),
   };
 }
 
@@ -847,4 +855,179 @@ export const voiceApi = {
     post<VoiceEnrollCompleteData>("/voice/enroll/complete", payload),
 
   workerHeartbeat: () => post<VoiceHeartbeatData>("/voice/worker/heartbeat", {}),
+};
+
+// =============================================================================
+// Admin (apps/api/routes/admin.py, mounted at /admin/*)
+//
+// Every endpoint requires AuthContext.is_platform_admin server-side --
+// these calls will 403 for any non-platform-admin session regardless of
+// what the frontend shows/hides.
+// =============================================================================
+
+export type AdminUserMembership = {
+  membership_id: string;
+  user_id: string;
+  workspace_id: string;
+  role: string;
+  status: string;
+  created_at: string | null;
+};
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  status: string;
+  is_active: boolean;
+  is_platform_admin: boolean;
+  default_workspace_id: string | null;
+  last_login_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  memberships: AdminUserMembership[];
+};
+
+export type AdminWorkspace = {
+  workspace_id: string;
+  name: string;
+  slug: string;
+  owner_user_id: string;
+  plan: string;
+  status: string;
+  subscription_status: string;
+  max_members: number;
+  max_agents: number;
+  is_suspended: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  member_count?: number;
+};
+
+export type AdminInvite = {
+  invite_id: string;
+  workspace_id: string;
+  invited_email: string;
+  role: string;
+  status: string;
+  invited_by: string;
+  created_at: string | null;
+  expires_at: string | null;
+  accepted_at: string | null;
+};
+
+export type AdminAuditEntry = {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  actor: string;
+  status: string;
+  created_at: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type AdminOverviewData = {
+  users_count: number;
+  workspaces_count: number;
+  active_plans: Record<string, number>;
+  pending_invites: number;
+  agent_usage_summary: { enabled_configs: number; total_configs: number };
+  recent_admin_actions: AdminAuditEntry[];
+};
+
+export type AdminUsersListData = { users: AdminUser[]; count: number; limit: number; offset: number };
+export type AdminWorkspacesListData = { workspaces: AdminWorkspace[]; count: number };
+export type AdminInvitesListData = { invites: AdminInvite[]; count: number };
+export type AdminAuditListData = { entries: AdminAuditEntry[]; count: number };
+
+export type AdminCreateUserPayload = {
+  email: string;
+  password: string;
+  full_name: string;
+  workspace_id?: string;
+  role?: string;
+};
+
+export type AdminUpdateUserPayload = {
+  is_active?: boolean;
+  workspace_id?: string;
+  role?: string;
+  reset_role?: boolean;
+};
+
+export type AdminCreateWorkspacePayload = { name: string; owner_user_id: string; plan?: string };
+export type AdminCreateInvitePayload = {
+  email: string;
+  workspace_id: string;
+  role?: string;
+  plan?: string;
+  message?: string;
+};
+
+export const adminApi = {
+  overview: () => get<AdminOverviewData>("/admin/overview"),
+
+  listUsers: (params?: { search?: string; limit?: number; offset?: number }) =>
+    get<AdminUsersListData>("/admin/users", { params }),
+
+  createUser: (payload: AdminCreateUserPayload) =>
+    post<{ user: AdminUser; membership: AdminUserMembership | null }>("/admin/users", payload),
+
+  updateUser: (userId: string, payload: AdminUpdateUserPayload) =>
+    patch<{ user: AdminUser; membership: AdminUserMembership | null }>(
+      `/admin/users/${encodeURIComponent(userId)}`,
+      payload,
+    ),
+
+  listWorkspaces: () => get<AdminWorkspacesListData>("/admin/workspaces"),
+
+  getWorkspaceMembers: (workspaceId: string) =>
+    get<{ workspace: AdminWorkspace; members: Array<AdminUserMembership & { email: string | null; full_name: string | null }> }>(
+      `/admin/workspaces/${encodeURIComponent(workspaceId)}/members`,
+    ),
+
+  createWorkspace: (payload: AdminCreateWorkspacePayload) =>
+    post<{ workspace: AdminWorkspace }>("/admin/workspaces", payload),
+
+  updateWorkspacePlan: (workspaceId: string, plan: string) =>
+    patch<{ workspace: AdminWorkspace }>(`/admin/workspaces/${encodeURIComponent(workspaceId)}/plan`, { plan }),
+
+  updateWorkspaceOwner: (workspaceId: string, newOwnerUserId: string) =>
+    patch<{ workspace: AdminWorkspace }>(`/admin/workspaces/${encodeURIComponent(workspaceId)}/owner`, {
+      new_owner_user_id: newOwnerUserId,
+    }),
+
+  createInvite: (payload: AdminCreateInvitePayload) =>
+    post<{ invite: AdminInvite; invite_link: string; email_status: string }>("/admin/invites", payload),
+
+  listInvites: (workspaceId?: string) =>
+    get<AdminInvitesListData>("/admin/invites", { params: workspaceId ? { workspace_id: workspaceId } : undefined }),
+
+  acceptInvite: (token: string) =>
+    post<{ invite: AdminInvite; membership: AdminUserMembership }>(
+      `/admin/invites/${encodeURIComponent(token)}/accept`,
+      {},
+    ),
+
+  audit: (params?: { limit?: number; action?: string }) =>
+    get<AdminAuditListData>("/admin/audit", { params }),
+
+  // Reuses /agent-permissions with an admin-only ?workspace_id= override
+  // (apps/api/routes/agent_permissions.py::_resolve_target_workspace_id) --
+  // not a separate endpoint, so admin agent-access management stays backed
+  // by the exact same permission logic every workspace's own page uses.
+  agentAccess: (workspaceId: string) =>
+    get<{ users: Array<{ user_id: string; name: string; email: string; role: string; plan: string; assigned_agents: string[] }>; agents: Array<{ key: string; name: string; category: string; enabled: boolean; minimum_plan: string; allowed_roles: string[]; risk_level: string; requires_security_approval: boolean }>; role_matrix: Record<string, string[]> }>(
+      "/agent-permissions",
+      { params: { workspace_id: workspaceId } },
+    ),
+
+  updateAgentAccess: (userId: string, workspaceId: string, assignedAgents: string[], notes?: string) =>
+    put<{ user_id: string; workspace_id: string; assigned_agents: string[] }>(
+      `/agent-permissions/${encodeURIComponent(userId)}?workspace_id=${encodeURIComponent(workspaceId)}`,
+      { target_user_id: userId, assigned_agents: assignedAgents, notes },
+    ),
 };

@@ -71,17 +71,17 @@ const BOOLEAN_FIELDS: {
 ];
 
 function statusStyle(status: VoiceProfileStatus): string {
-  if (status === "active") return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
-  if (status === "disabled") return "border-orange-400/25 bg-orange-500/10 text-orange-300";
-  return "border-red-400/25 bg-red-500/10 text-red-300";
+  if (status === "active") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "disabled") return "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]";
+  return "border-red-200 bg-red-50 text-red-700";
 }
 
 function voiceprintStyle(status: VoiceprintStatus): string {
-  if (status === "enrolled") return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
-  if (status === "pending") return "border-blue-400/20 bg-blue-400/10 text-blue-300";
+  if (status === "enrolled") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "pending") return "border-blue-200 bg-blue-50 text-blue-700";
   if (status === "external_dependency_required")
-    return "border-orange-400/25 bg-orange-500/10 text-orange-300";
-  return "border-white/10 bg-white/[0.04] text-zinc-400";
+    return "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]";
+  return "border-neutral-100 bg-neutral-50 text-neutral-500";
 }
 
 function formatDate(value?: string | null): string {
@@ -139,13 +139,13 @@ function ProfileFormModal({
         className="absolute inset-0 h-full w-full cursor-default"
       />
 
-      <div className="relative max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-[28px] border border-white/10 bg-[#0b0c10] p-6 shadow-[0_40px_120px_rgba(0,0,0,0.5)]">
+      <div className="relative max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-[28px] border border-neutral-100 bg-white p-6 shadow-[0_40px_120px_rgba(0,0,0,0.25)]">
         <div className="mb-5 flex items-start justify-between gap-4">
-          <h3 className="text-xl font-black text-white">{title}</h3>
+          <h3 className="text-xl font-black text-neutral-950">{title}</h3>
           <button
             type="button"
             onClick={onClose}
-            className="grid h-9 w-9 place-items-center rounded-full bg-white/[0.06] text-zinc-300 transition hover:bg-orange-500 hover:text-black"
+            className="grid h-9 w-9 place-items-center rounded-full bg-neutral-100 text-neutral-600 transition hover:bg-orange-500 hover:text-black"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -154,7 +154,7 @@ function ProfileFormModal({
 
         <div className="space-y-4">
           <label className="block">
-            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
               Display name
             </span>
             <input
@@ -162,14 +162,14 @@ function ProfileFormModal({
               value={form.display_name}
               maxLength={160}
               onChange={(event) => updateField("display_name", event.target.value)}
-              className="w-full rounded-2xl border border-white/10 bg-[#07080b] px-4 py-3 text-sm font-semibold text-zinc-200 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
+              className="w-full rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
               placeholder="e.g. Jane Doe"
             />
           </label>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block">
-              <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+              <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
                 Role
               </span>
               <select
@@ -177,7 +177,7 @@ function ProfileFormModal({
                 onChange={(event) =>
                   updateField("role", event.target.value as VoiceProfileRole)
                 }
-                className="w-full rounded-2xl border border-white/10 bg-[#07080b] px-4 py-3 text-sm font-semibold text-zinc-200 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
+                className="w-full rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
               >
                 {ROLE_OPTIONS.map((role) => (
                   <option key={role} value={role}>
@@ -188,7 +188,7 @@ function ProfileFormModal({
             </label>
 
             <label className="block">
-              <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+              <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
                 Preferred language
               </span>
               <input
@@ -198,14 +198,14 @@ function ProfileFormModal({
                 onChange={(event) =>
                   updateField("preferred_language", event.target.value)
                 }
-                className="w-full rounded-2xl border border-white/10 bg-[#07080b] px-4 py-3 text-sm font-semibold text-zinc-200 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
+                className="w-full rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
                 placeholder="en"
               />
             </label>
           </div>
 
           <label className="block">
-            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
               Reply language mode
             </span>
             <input
@@ -214,13 +214,13 @@ function ProfileFormModal({
               onChange={(event) =>
                 updateField("reply_language_mode", event.target.value)
               }
-              className="w-full rounded-2xl border border-white/10 bg-[#07080b] px-4 py-3 text-sm font-semibold text-zinc-200 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
+              className="w-full rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
               placeholder="same_as_speaker"
             />
           </label>
 
           <div>
-            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
               Allowed agents
             </span>
             <div className="flex flex-wrap gap-2">
@@ -239,8 +239,8 @@ function ProfileFormModal({
                     className={[
                       "rounded-full border px-3 py-1.5 text-[11px] font-black capitalize transition",
                       active
-                        ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-                        : "border-white/10 bg-white/[0.03] text-zinc-400 hover:border-emerald-400/20",
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-neutral-100 bg-white text-neutral-500 hover:border-emerald-400/20",
                     ].join(" ")}
                   >
                     {key}
@@ -248,13 +248,13 @@ function ProfileFormModal({
                 );
               })}
             </div>
-            <p className="mt-2 text-[11px] text-zinc-500">
+            <p className="mt-2 text-[11px] text-neutral-400">
               Empty means no explicit allow-list restriction from this field.
             </p>
           </div>
 
           <div>
-            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
               Blocked agents
             </span>
             <div className="flex flex-wrap gap-2">
@@ -273,8 +273,8 @@ function ProfileFormModal({
                     className={[
                       "rounded-full border px-3 py-1.5 text-[11px] font-black capitalize transition",
                       active
-                        ? "border-red-400/30 bg-red-500/10 text-red-300"
-                        : "border-white/10 bg-white/[0.03] text-zinc-400 hover:border-red-400/20",
+                        ? "border-red-200 bg-red-50 text-red-700"
+                        : "border-neutral-100 bg-white text-neutral-500 hover:border-red-400/20",
                     ].join(" ")}
                   >
                     {key}
@@ -285,19 +285,19 @@ function ProfileFormModal({
           </div>
 
           <div className="space-y-3">
-            <span className="block text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+            <span className="block text-xs font-bold uppercase tracking-[0.16em] text-neutral-400">
               Permissions
             </span>
             {BOOLEAN_FIELDS.map((field) => (
               <label
                 key={field.key}
-                className="flex items-start justify-between gap-4 rounded-2xl border border-white/10 bg-black/25 p-3"
+                className="flex items-start justify-between gap-4 rounded-2xl border border-neutral-100 bg-neutral-50 p-3"
               >
                 <span>
-                  <span className="block text-sm font-bold text-white">
+                  <span className="block text-sm font-bold text-neutral-950">
                     {field.label}
                   </span>
-                  <span className="mt-1 block text-xs text-zinc-500">
+                  <span className="mt-1 block text-xs text-neutral-400">
                     {field.helper}
                   </span>
                 </span>
@@ -321,7 +321,7 @@ function ProfileFormModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-bold text-zinc-300 transition hover:bg-white/[0.08]"
+            className="rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-bold text-neutral-600 transition hover:bg-neutral-100"
           >
             Cancel
           </button>
@@ -489,14 +489,14 @@ export function TrustedVoiceProfiles() {
   }
 
   return (
-    <section className="rounded-[32px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_30px_100px_rgba(0,0,0,0.32)] md:p-6">
+    <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
       <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-sm font-bold text-orange-300">Trusted Voice Profiles</p>
-          <h2 className="mt-2 text-2xl font-black tracking-tight text-white">
+          <p className="text-sm font-bold text-[#ff5a3d]">Trusted Voice Profiles</p>
+          <h2 className="mt-2 text-2xl font-black tracking-tight text-neutral-950">
             Who William Trusts By Voice
           </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-400">
             Live workspace voice profiles from /voice/profiles -- roles,
             agent access, and voiceprint enrollment state.
           </p>
@@ -526,8 +526,8 @@ export function TrustedVoiceProfiles() {
           className={[
             "mb-5 rounded-2xl border px-4 py-3 text-sm font-bold",
             notice.type === "success"
-              ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
-              : "border-red-400/25 bg-red-500/10 text-red-300",
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : "border-red-200 bg-red-50 text-red-700",
           ].join(" ")}
         >
           {notice.message}
@@ -536,20 +536,20 @@ export function TrustedVoiceProfiles() {
 
       {state === "loading" ? (
         <LoadingState
-          variant="dark"
+          variant="light"
           title="Loading voice profiles..."
           subtitle="Calling /voice/profiles."
         />
       ) : state === "error" ? (
         <ErrorState
-          variant="dark"
+          variant="light"
           title="Voice profiles could not load"
           message={errorMessage}
           onRetry={() => void load()}
         />
       ) : profiles.length === 0 ? (
         <EmptyState
-          variant="dark"
+          variant="light"
           icon="◌"
           title="No voice profiles yet"
           message="Add a trusted voice profile so William knows who is allowed to speak commands into this workspace."
@@ -562,18 +562,18 @@ export function TrustedVoiceProfiles() {
             return (
               <article
                 key={profile.id}
-                className="rounded-[26px] border border-white/10 bg-white/[0.035] p-4 transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]"
+                className="rounded-[26px] border border-neutral-100 bg-white p-4 transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]"
               >
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3">
-                    <span className="flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-orange-300">
+                    <span className="flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10 text-[#ff5a3d]">
                       <UserCog className="h-5 w-5" />
                     </span>
                     <div>
-                      <h3 className="text-sm font-black text-white">
+                      <h3 className="text-sm font-black text-neutral-950">
                         {profile.display_name}
                       </h3>
-                      <p className="mt-1 text-xs capitalize text-zinc-500">
+                      <p className="mt-1 text-xs capitalize text-neutral-400">
                         {profile.role.replace(/_/g, " ")}
                       </p>
                     </div>
@@ -597,31 +597,31 @@ export function TrustedVoiceProfiles() {
                     Voiceprint: {profile.voiceprint_status.replace(/_/g, " ")}
                   </span>
                   {profile.can_use_wake_word ? (
-                    <span className="rounded-full border border-blue-400/20 bg-blue-400/10 px-2.5 py-1 text-[10px] font-black text-blue-300">
+                    <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700">
                       Wake word
                     </span>
                   ) : null}
                   {profile.requires_approval_for_risky_actions ? (
-                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-black text-zinc-400">
+                    <span className="rounded-full border border-neutral-100 bg-neutral-50 px-2.5 py-1 text-[10px] font-black text-neutral-500">
                       Approval required
                     </span>
                   ) : null}
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 text-xs text-zinc-500">
+                <div className="grid grid-cols-2 gap-3 text-xs text-neutral-400">
                   <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                       Language
                     </p>
-                    <p className="mt-1 font-bold text-white">
+                    <p className="mt-1 font-bold text-neutral-950">
                       {profile.preferred_language || "—"}
                     </p>
                   </div>
                   <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                       Last used
                     </p>
-                    <p className="mt-1 font-bold text-white">
+                    <p className="mt-1 font-bold text-neutral-950">
                       {formatDate(profile.last_used_at)}
                     </p>
                   </div>
@@ -629,14 +629,14 @@ export function TrustedVoiceProfiles() {
 
                 {profile.allowed_agents.length > 0 ? (
                   <div className="mt-3">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                       Allowed agents
                     </p>
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       {profile.allowed_agents.map((agent) => (
                         <span
                           key={agent}
-                          className="rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] font-bold text-zinc-300"
+                          className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-bold text-neutral-600"
                         >
                           {agent}
                         </span>
@@ -653,7 +653,7 @@ export function TrustedVoiceProfiles() {
                       setEditingProfile(profile);
                       setModalMode("edit");
                     }}
-                    className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-zinc-300 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-orange-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-2xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Edit
                   </button>
@@ -663,7 +663,7 @@ export function TrustedVoiceProfiles() {
                       type="button"
                       disabled={!canManageProfiles || isBusy}
                       onClick={() => void handleSetStatus(profile, "disabled")}
-                      className="rounded-2xl border border-orange-400/20 bg-orange-500/10 px-3 py-2 text-xs font-bold text-orange-300 transition hover:bg-orange-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-2xl border border-orange-400/20 bg-orange-500/10 px-3 py-2 text-xs font-bold text-[#ff5a3d] transition hover:bg-orange-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {isBusy ? "Working..." : "Disable"}
                     </button>
@@ -672,7 +672,7 @@ export function TrustedVoiceProfiles() {
                       type="button"
                       disabled={!canManageProfiles || isBusy}
                       onClick={() => void handleSetStatus(profile, "active")}
-                      className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {isBusy ? "Working..." : "Re-enable"}
                     </button>
@@ -683,7 +683,7 @@ export function TrustedVoiceProfiles() {
                       type="button"
                       disabled={!canManageProfiles || isBusy}
                       onClick={() => void handleRevoke(profile)}
-                      className="inline-flex items-center gap-1.5 rounded-2xl border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-300 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       {isBusy ? "Working..." : "Revoke"}

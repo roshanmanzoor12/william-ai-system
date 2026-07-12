@@ -8,7 +8,7 @@
  * of settings/page.tsx (still static mock data), this section always talks
  * to the real API through lib/api-client.ts's voiceApi -- no fabricated
  * values. Visually matches this page's own existing dark card language
- * (border-white/10, bg-white/[0.035], orange-500 accents) since that is
+ * (border-neutral-100, bg-white, orange-500 accents) since that is
  * what already surrounds it on this page.
  */
 
@@ -87,14 +87,14 @@ function runtimeStateLabel(state: string): string {
 
 function runtimeStateStyle(state: string): string {
   if (state === "listening")
-    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
   if (state === "push_to_talk")
-    return "border-blue-400/20 bg-blue-400/10 text-blue-300";
+    return "border-blue-200 bg-blue-50 text-blue-700";
   if (state === "worker_offline" || state === "dependency_required")
-    return "border-orange-400/25 bg-orange-500/10 text-orange-300";
+    return "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]";
   if (state === "standby")
-    return "border-purple-400/25 bg-purple-500/10 text-purple-300";
-  return "border-red-400/25 bg-red-500/10 text-red-300";
+    return "border-purple-200 bg-purple-50 text-purple-700";
+  return "border-red-200 bg-red-50 text-red-700";
 }
 
 const DEPENDENCY_LABELS: Record<keyof VoiceDependencyStatus, string> = {
@@ -107,9 +107,9 @@ const DEPENDENCY_LABELS: Record<keyof VoiceDependencyStatus, string> = {
 
 function dependencyStyle(status: VoiceDependencyStatusValue): string {
   if (status === "available" || status === "configured") {
-    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
   }
-  return "border-orange-400/25 bg-orange-500/10 text-orange-300";
+  return "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]";
 }
 
 function dependencyLabel(status: VoiceDependencyStatusValue): string {
@@ -119,10 +119,10 @@ function dependencyLabel(status: VoiceDependencyStatusValue): string {
 }
 
 function modeStyle(mode: VoiceMode): string {
-  if (mode === "disabled") return "border-red-400/25 bg-red-500/10 text-red-300";
+  if (mode === "disabled") return "border-red-200 bg-red-50 text-red-700";
   if (mode === "push_to_talk")
-    return "border-blue-400/20 bg-blue-400/10 text-blue-300";
-  return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+    return "border-blue-200 bg-blue-50 text-blue-700";
+  return "border-emerald-200 bg-emerald-50 text-emerald-700";
 }
 
 function formatDate(value?: string | null): string {
@@ -247,14 +247,14 @@ export function VoiceControlSettings() {
   }
 
   return (
-    <section className="rounded-[32px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_30px_100px_rgba(0,0,0,0.32)] md:p-6">
+    <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
       <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-sm font-bold text-orange-300">Voice Control</p>
-          <h2 className="mt-2 text-2xl font-black tracking-tight text-white">
+          <p className="text-sm font-bold text-[#ff5a3d]">Voice Control</p>
+          <h2 className="mt-2 text-2xl font-black tracking-tight text-neutral-950">
             William Voice Agent (Phase 9)
           </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-400">
             Live workspace voice mode, wake word, and dependency status --
             wired directly to /voice/status and /voice/config.
           </p>
@@ -263,7 +263,7 @@ export function VoiceControlSettings() {
         <button
           type="button"
           onClick={() => void load()}
-          className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-zinc-300 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-orange-300"
+          className="inline-flex items-center gap-2 rounded-2xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
         >
           <RefreshCcw className="h-3.5 w-3.5" />
           Refresh
@@ -272,13 +272,13 @@ export function VoiceControlSettings() {
 
       {state === "loading" ? (
         <LoadingState
-          variant="dark"
+          variant="light"
           title="Loading voice status..."
           subtitle="Calling /voice/status."
         />
       ) : state === "error" ? (
         <ErrorState
-          variant="dark"
+          variant="light"
           title="Voice status could not load"
           message={errorMessage}
           onRetry={() => void load()}
@@ -290,10 +290,10 @@ export function VoiceControlSettings() {
               className={[
                 "rounded-2xl border px-4 py-3 text-sm font-bold",
                 notice.type === "success"
-                  ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
                   : notice.type === "error"
-                    ? "border-red-400/25 bg-red-500/10 text-red-300"
-                    : "border-blue-400/20 bg-blue-400/10 text-blue-300",
+                    ? "border-red-200 bg-red-50 text-red-700"
+                    : "border-blue-200 bg-blue-50 text-blue-700",
               ].join(" ")}
             >
               {notice.message}
@@ -301,8 +301,8 @@ export function VoiceControlSettings() {
           ) : null}
 
           <div className="grid gap-4 sm:grid-cols-3">
-            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
                 Current mode
               </p>
               <span
@@ -313,15 +313,15 @@ export function VoiceControlSettings() {
                 {settings.mode.replace(/_/g, " ")}
               </span>
               {settings.requires_security_approval ? (
-                <p className="mt-3 flex items-center gap-2 text-xs font-semibold text-orange-300">
+                <p className="mt-3 flex items-center gap-2 text-xs font-semibold text-[#ff5a3d]">
                   <ShieldAlert className="h-3.5 w-3.5" />
                   This mode required Security Agent approval to enable.
                 </p>
               ) : null}
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
                 Runtime state
               </p>
               {status ? (
@@ -333,21 +333,21 @@ export function VoiceControlSettings() {
                   {runtimeStateLabel(status.runtime_state)}
                 </span>
               ) : (
-                <p className="mt-2 text-sm font-bold text-zinc-500">—</p>
+                <p className="mt-2 text-sm font-bold text-neutral-400">—</p>
               )}
-              <p className="mt-1 text-xs text-zinc-500">
+              <p className="mt-1 text-xs text-neutral-400">
                 Active sessions: {status?.active_sessions ?? 0}
               </p>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
                 Voice worker
               </p>
-              <p className="mt-2 text-sm font-bold text-white">
+              <p className="mt-2 text-sm font-bold text-neutral-950">
                 {settings.voice_worker_connected ? "Connected" : "Not connected"}
               </p>
-              <p className="mt-1 text-xs text-zinc-500">
+              <p className="mt-1 text-xs text-neutral-400">
                 Last seen: {formatDate(settings.voice_worker_last_seen_at)}
               </p>
             </div>
@@ -363,13 +363,13 @@ export function VoiceControlSettings() {
           ) : null}
 
           {settings.last_error_message ? (
-            <div className="rounded-2xl border border-red-400/25 bg-red-500/10 px-4 py-3 text-xs font-bold text-red-300">
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">
               Last error: {settings.last_error_message}
             </div>
           ) : null}
 
           <div>
-            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
               Mode controls
             </p>
 
@@ -395,29 +395,29 @@ export function VoiceControlSettings() {
                       "rounded-2xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-50",
                       isActive
                         ? "border-orange-500/40 bg-orange-500/10"
-                        : "border-white/10 bg-white/[0.03] hover:border-orange-500/25 hover:bg-orange-500/[0.06]",
+                        : "border-neutral-100 bg-white hover:border-orange-500/25 hover:bg-orange-500/[0.06]",
                     ].join(" ")}
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-black text-white">
+                      <p className="text-sm font-black text-neutral-950">
                         {option.label}
                       </p>
                       {isActive ? (
-                        <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-300" />
+                        <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-700" />
                       ) : option.requiresApproval ? (
-                        <ShieldAlert className="h-4 w-4 shrink-0 text-orange-300" />
+                        <ShieldAlert className="h-4 w-4 shrink-0 text-[#ff5a3d]" />
                       ) : null}
                     </div>
-                    <p className="mt-1 text-xs leading-5 text-zinc-500">
+                    <p className="mt-1 text-xs leading-5 text-neutral-400">
                       {option.description}
                     </p>
                     {option.requiresApproval ? (
-                      <p className="mt-2 text-[11px] font-bold text-orange-300">
+                      <p className="mt-2 text-[11px] font-bold text-[#ff5a3d]">
                         Requires Security Agent approval
                       </p>
                     ) : null}
                     {isBusy ? (
-                      <p className="mt-2 text-[11px] font-bold text-zinc-400">
+                      <p className="mt-2 text-[11px] font-bold text-neutral-500">
                         Saving...
                       </p>
                     ) : null}
@@ -427,8 +427,8 @@ export function VoiceControlSettings() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+          <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
               Wake word (default: {wakeWordDefault})
             </p>
             <div className="flex flex-col gap-3 sm:flex-row">
@@ -439,7 +439,7 @@ export function VoiceControlSettings() {
                 onChange={(event) => setWakeWordInput(event.target.value)}
                 maxLength={60}
                 placeholder={wakeWordDefault}
-                className="w-full rounded-2xl border border-white/10 bg-[#07080b] px-4 py-3 text-sm font-semibold text-zinc-200 outline-none transition placeholder:text-zinc-600 focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10 disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-xs"
+                className="w-full rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition placeholder:text-neutral-400 focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10 disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-xs"
               />
               <button
                 type="button"
@@ -459,7 +459,7 @@ export function VoiceControlSettings() {
           </div>
 
           <div>
-            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
               Dependency status
             </p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -470,9 +470,9 @@ export function VoiceControlSettings() {
               ).map((key) => (
                 <div
                   key={key}
-                  className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/25 px-4 py-3"
+                  className="flex items-center justify-between gap-3 rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3"
                 >
-                  <span className="text-xs font-semibold text-zinc-300">
+                  <span className="text-xs font-semibold text-neutral-600">
                     {DEPENDENCY_LABELS[key]}
                   </span>
                   <span
@@ -488,58 +488,58 @@ export function VoiceControlSettings() {
           </div>
 
           <div>
-            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
               Last voice activity
             </p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+              <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                   Last wake event
                 </p>
-                <p className="mt-1 text-sm font-bold text-white">
+                <p className="mt-1 text-sm font-bold text-neutral-950">
                   {formatDate(settings.last_wake_event_at)}
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+              <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                   Recognized speaker
                 </p>
-                <p className="mt-1 truncate text-sm font-bold text-white">
+                <p className="mt-1 truncate text-sm font-bold text-neutral-950">
                   {fieldValue(
                     settings.last_speaker_display_name ||
                       settings.last_recognized_speaker_profile_id,
                   )}
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+              <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                   Detected language
                 </p>
-                <p className="mt-1 text-sm font-bold text-white">
+                <p className="mt-1 text-sm font-bold text-neutral-950">
                   {fieldValue(settings.last_detected_language)}
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-black/25 p-3 sm:col-span-2 lg:col-span-3">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+              <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3 sm:col-span-2 lg:col-span-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                   Last command transcript
                 </p>
-                <p className="mt-1 text-sm font-medium leading-5 text-white">
+                <p className="mt-1 text-sm font-medium leading-5 text-neutral-950">
                   {fieldValue(settings.last_command_transcript)}
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+              <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                   Routed agent
                 </p>
-                <p className="mt-1 text-sm font-bold text-white">
+                <p className="mt-1 text-sm font-bold text-neutral-950">
                   {fieldValue(settings.last_routed_agent)}
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-black/25 p-3 sm:col-span-2">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+              <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3 sm:col-span-2">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
                   Last response
                 </p>
-                <p className="mt-1 text-sm font-medium leading-5 text-white">
+                <p className="mt-1 text-sm font-medium leading-5 text-neutral-950">
                   {fieldValue(settings.last_response_text)}
                 </p>
               </div>

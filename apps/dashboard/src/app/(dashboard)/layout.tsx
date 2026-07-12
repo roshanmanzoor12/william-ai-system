@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
@@ -25,6 +28,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  ShieldEllipsis,
   Sparkles,
   Sun,
   Users,
@@ -33,6 +37,7 @@ import {
   Zap,
 } from "lucide-react";
 import { OfflineBanner } from "@/components/state/OfflineBanner";
+import { readSession, type SessionData } from "@/lib/auth";
 
 type DashboardLayoutProps = {
   children: React.ReactNode;
@@ -64,6 +69,14 @@ const businessNavItems: NavItem[] = [
   { label: "Billing", href: "/billing", icon: CreditCard },
   { label: "Permissions", href: "/agent-permissions", icon: KeyRound },
   { label: "Settings", href: "/settings", icon: Settings },
+];
+
+// Platform-admin only -- shown solely when session.is_platform_admin is
+// true (a real, DB-driven flag read at login, see lib/auth.ts). This is a
+// UI convenience only: every /api/v1/admin/* route re-checks the same flag
+// server-side regardless of whether this link is visible.
+const adminNavItems: NavItem[] = [
+  { label: "Admin Control Center", href: "/admin", icon: ShieldEllipsis },
 ];
 
 const agentStatusCards = [
@@ -141,6 +154,12 @@ function SystemMetric({
 }
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
+  const [session, setSession] = useState<SessionData | null>(null);
+
+  useEffect(() => {
+    setSession(readSession());
+  }, []);
+
   return (
     <div className="william-app-shell">
       <OfflineBanner />
@@ -188,6 +207,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                 title="Business Stack"
                 items={businessNavItems}
               />
+              {session?.is_platform_admin ? (
+                <SidebarNavGroup title="Platform" items={adminNavItems} />
+              ) : null}
 
               <div className="rounded-[26px] border border-zinc-100 bg-white p-4 shadow-[0_18px_55px_rgba(15,23,42,0.05)]">
                 <div className="mb-4 flex items-center justify-between">

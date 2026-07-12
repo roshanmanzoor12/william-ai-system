@@ -310,6 +310,7 @@ class FallbackAuthContext(BaseModel):
     permissions: List[str] = Field(default_factory=list)
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
+    is_platform_admin: bool = False
 
 
 try:
@@ -317,10 +318,14 @@ try:
         AuthContext,
         get_current_auth_context,
         require_auth_role,
+        platform_admin_gets_unlimited_plan,
     )
 except Exception as auth_import_exc:
     logger.warning("Auth import fallback enabled in agents.py: %s", auth_import_exc)
     AuthContext = FallbackAuthContext
+
+    def platform_admin_gets_unlimited_plan(context: Any) -> bool:  # type: ignore
+        return False
 
     async def get_current_auth_context(
         request: Request,
@@ -432,7 +437,24 @@ class OptionalAgentHook:
             for method_name in self.method_candidates:
                 method = getattr(self.instance, method_name, None)
                 if callable(method):
-                    result = await maybe_await(method(payload))
+                    if method_name == "check_permission":
+                        # agents.security_agent.security_agent.SecurityAgent.
+                        # check_permission(task_context, action, ...) needs
+                        # a real task_context (with "user_id", not this
+                        # generic payload's "actor_user_id") plus a
+                        # required positional "action" -- calling it with
+                        # just `payload` raised a bare TypeError that
+                        # `except Exception` below silently turned into a
+                        # "Security Agent denied" 403 for every caller,
+                        # regardless of role, on every agent enable/
+                        # disable/access-update call. Adapt the payload
+                        # instead of crashing.
+                        task_context = dict(payload)
+                        task_context.setdefault("user_id", payload.get("actor_user_id"))
+                        action = str(payload.get("type") or payload.get("action") or "unknown_action")
+                        result = await maybe_await(method(task_context, action))
+                    else:
+                        result = await maybe_await(method(payload))
                     return self._normalize(result)
 
             return {
@@ -565,6 +587,9 @@ def security_approved(result: Dict[str, Any]) -> bool:
             data.get("approved") is True
             or data.get("allowed") is True
             or data.get("local_policy") is True
+            # SecurityAgent.check_permission's real return shape uses
+            # "granted", not "approved"/"allowed".
+            or data.get("granted") is True
         )
     )
 
@@ -1272,6 +1297,21 @@ async def get_agent_health(agent_name: str) -> AgentHealthRecord:
     return record
 
 
+def effective_plan_for(context: AuthContext) -> str:
+    """
+    A real platform admin testing locally (never in production, never a
+    normal user) is treated as Plan.ENTERPRISE for every plan-gating check
+    in this file -- see apps.api.routes.auth.platform_admin_gets_unlimited_plan
+    for the shared, environment-aware predicate this relies on. The
+    workspace's REAL stored plan (database.models.workspace.Workspace.plan)
+    is never modified by this -- /admin/workspaces still shows and edits
+    the true value.
+    """
+    if platform_admin_gets_unlimited_plan(context):
+        return Plan.ENTERPRISE.value
+    return normalize_plan(context.plan)
+
+
 def evaluate_agent_access(
     context: AuthContext,
     agent_name: str,
@@ -1279,6 +1319,7 @@ def evaluate_agent_access(
 ) -> AgentAccessDecision:
     definition = require_agent_definition(agent_name)
     config = AGENT_STORE.get_or_create_config(context.workspace_id, definition.agent_name)
+    plan = effective_plan_for(context)
 
     missing_permissions: List[str] = []
 
@@ -1290,7 +1331,7 @@ def evaluate_agent_access(
             workspace_id=context.workspace_id,
             agent_name=definition.agent_name,
             role=context.role,
-            plan=context.plan,
+            plan=plan,
             enabled_for_workspace=False,
             required_role=definition.required_role,
             required_plan=definition.required_plan,
@@ -1305,7 +1346,7 @@ def evaluate_agent_access(
             workspace_id=context.workspace_id,
             agent_name=definition.agent_name,
             role=context.role,
-            plan=context.plan,
+            plan=plan,
             enabled_for_workspace=True,
             required_role=definition.required_role,
             required_plan=definition.required_plan,
@@ -1320,7 +1361,7 @@ def evaluate_agent_access(
             workspace_id=context.workspace_id,
             agent_name=definition.agent_name,
             role=context.role,
-            plan=context.plan,
+            plan=plan,
             enabled_for_workspace=True,
             required_role=definition.required_role,
             required_plan=definition.required_plan,
@@ -1335,14 +1376,14 @@ def evaluate_agent_access(
             workspace_id=context.workspace_id,
             agent_name=definition.agent_name,
             role=context.role,
-            plan=context.plan,
+            plan=plan,
             enabled_for_workspace=True,
             required_role=definition.required_role,
             required_plan=definition.required_plan,
             missing_permissions=[],
         )
 
-    if not has_min_plan(context.plan, definition.required_plan):
+    if not has_min_plan(plan, definition.required_plan):
         return AgentAccessDecision(
             allowed=False,
             reason="Workspace plan is not high enough for this agent.",
@@ -1350,7 +1391,7 @@ def evaluate_agent_access(
             workspace_id=context.workspace_id,
             agent_name=definition.agent_name,
             role=context.role,
-            plan=context.plan,
+            plan=plan,
             enabled_for_workspace=True,
             required_role=definition.required_role,
             required_plan=definition.required_plan,
@@ -1371,7 +1412,7 @@ def evaluate_agent_access(
                 workspace_id=context.workspace_id,
                 agent_name=definition.agent_name,
                 role=context.role,
-                plan=context.plan,
+                plan=plan,
                 enabled_for_workspace=True,
                 required_role=definition.required_role,
                 required_plan=definition.required_plan,
@@ -1393,7 +1434,7 @@ def evaluate_agent_access(
             workspace_id=context.workspace_id,
             agent_name=definition.agent_name,
             role=context.role,
-            plan=context.plan,
+            plan=plan,
             enabled_for_workspace=True,
             required_role=definition.required_role,
             required_plan=definition.required_plan,
@@ -1407,7 +1448,7 @@ def evaluate_agent_access(
         workspace_id=context.workspace_id,
         agent_name=definition.agent_name,
         role=context.role,
-        plan=context.plan,
+        plan=plan,
         enabled_for_workspace=True,
         required_role=definition.required_role,
         required_plan=definition.required_plan,
@@ -1686,15 +1727,16 @@ class Agents:
     ) -> Dict[str, Any]:
         try:
             definition = require_agent_definition(agent_name)
+            plan = effective_plan_for(context)
 
-            if not has_min_plan(context.plan, definition.required_plan):
+            if not has_min_plan(plan, definition.required_plan):
                 raise_api_error(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     message="Current workspace plan cannot enable this agent.",
                     code="PLAN_REQUIRED",
                     request_id=context.request_id,
                     details={
-                        "current_plan": context.plan,
+                        "current_plan": plan,
                         "required_plan": definition.required_plan,
                     },
                 )
