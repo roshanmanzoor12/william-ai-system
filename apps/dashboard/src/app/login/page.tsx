@@ -2,7 +2,12 @@
 
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { canUseDashboard, clearSession, readSession, saveSession } from "@/lib/auth";
+import {
+  canUseDashboard,
+  clearSession,
+  readSession,
+  saveSession,
+} from "@/lib/auth";
 import { API_BASE_URL, authApi } from "@/lib/api-client";
 
 type FormErrors = {
@@ -143,7 +148,9 @@ export default function Page() {
 
     if (result.success === false) {
       setErrors({
-        general: result.error.message || "Login failed. Check your email and password.",
+        general:
+          result.error.message ||
+          "Login failed. Check your email and password.",
       });
       setIsLoading(false);
       return;
@@ -502,9 +509,17 @@ export default function Page() {
 
                   <div className="space-y-3">
                     {[
-                      ["01", "Request Intake", "user_id + workspace_id required"],
+                      [
+                        "01",
+                        "Request Intake",
+                        "user_id + workspace_id required",
+                      ],
                       ["02", "Security Agent", "Sensitive action approval"],
-                      ["03", "Verification Agent", "Completed payload prepared"],
+                      [
+                        "03",
+                        "Verification Agent",
+                        "Completed payload prepared",
+                      ],
                     ].map(([number, title, subtitle]) => (
                       <div
                         key={number}
@@ -572,8 +587,16 @@ export default function Page() {
 
                 {[
                   ["Workspace", "Never mix users or workspace data", "Active"],
-                  ["Security", "Sensitive actions route for approval", "Active"],
-                  ["Verification", "Completed actions prepare evidence", "Ready"],
+                  [
+                    "Security",
+                    "Sensitive actions route for approval",
+                    "Active",
+                  ],
+                  [
+                    "Verification",
+                    "Completed actions prepare evidence",
+                    "Ready",
+                  ],
                 ].map(([layer, rule, status]) => (
                   <div
                     key={layer}

@@ -13,12 +13,26 @@
  *   Verification Agent, audit logging, workflow automation, and billing limits.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { SessionData, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
+import { EmptyState } from "@/components/state/EmptyState";
+import { ErrorState } from "@/components/state/ErrorState";
+import { LoadingState } from "@/components/state/LoadingState";
 
 type LeadStatus = "new" | "qualified" | "proposal" | "won" | "lost";
-type LeadSource = "Website" | "Google Ads" | "Call Agent" | "Workflow" | "Referral";
+type LeadSource =
+  | "Website"
+  | "Google Ads"
+  | "Call Agent"
+  | "Workflow"
+  | "Referral";
 type ClientHealth = "excellent" | "good" | "watch" | "risk";
 
 type ApiResponse<T> = {
@@ -71,7 +85,8 @@ type PipelineStage = {
   count: number;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
 const STATUS_LABELS: Record<LeadStatus, string> = {
   new: "New",
@@ -97,8 +112,18 @@ function nowIso(): string {
 }
 
 function safeError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error || "Unknown error");
-  const blocked = ["secret", "token", "password", "apikey", "api_key", "database_url", "jwt", "connection string"];
+  const message =
+    error instanceof Error ? error.message : String(error || "Unknown error");
+  const blocked = [
+    "secret",
+    "token",
+    "password",
+    "apikey",
+    "api_key",
+    "database_url",
+    "jwt",
+    "connection string",
+  ];
 
   if (blocked.some((word) => message.toLowerCase().includes(word))) {
     return "A safe application error occurred. Please try again or contact workspace admin.";
@@ -164,7 +189,9 @@ async function dashboardFetch<T>(
     if (!response.ok) {
       return {
         success: false,
-        error: safeError(json.error || `Request failed with status ${response.status}`),
+        error: safeError(
+          json.error || `Request failed with status ${response.status}`,
+        ),
       };
     }
 
@@ -227,9 +254,19 @@ function Icon({
   switch (name) {
     case "logo":
       return (
-        <svg width={size} height={size} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+        <svg
+          width={size}
+          height={size}
+          viewBox="0 0 32 32"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden
+        >
           <rect width="32" height="32" rx="12" fill="url(#crmLogoGradient)" />
-          <path d="M10 21.5V16h5.7c1.1 0 2-.9 2-2v-1.8H12V8h10v6.1c0 3.3-2.6 5.9-5.9 5.9h-1.3v1.5H10Z" fill="white" />
+          <path
+            d="M10 21.5V16h5.7c1.1 0 2-.9 2-2v-1.8H12V8h10v6.1c0 3.3-2.6 5.9-5.9 5.9h-1.3v1.5H10Z"
+            fill="white"
+          />
           <path d="M19.3 24v-5.7H24V24h-4.7Z" fill="white" />
           <defs>
             <linearGradient id="crmLogoGradient" x1="4" x2="28" y1="4" y2="28">
@@ -240,59 +277,369 @@ function Icon({
         </svg>
       );
     case "search":
-      return <svg {...common}><path d="M11 19a8 8 0 1 1 5.3-2l3.4 3.3" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M11 19a8 8 0 1 1 5.3-2l3.4 3.3"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "bell":
-      return <svg {...common}><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M13.7 21a2 2 0 0 1-3.4 0" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="18.5" cy="5.5" r="2.5" fill="#ff5438" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M13.7 21a2 2 0 0 1-3.4 0"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <circle cx="18.5" cy="5.5" r="2.5" fill="#ff5438" />
+        </svg>
+      );
     case "alert":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="M12 7v6" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M12 16.8h.01" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M12 7v6"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M12 16.8h.01"
+            stroke={stroke}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "grid":
-      return <svg {...common}><path d="M8.5 4.5h-3v3h3v-3ZM18.5 4.5h-3v3h3v-3ZM8.5 16.5h-3v3h3v-3ZM18.5 16.5h-3v3h3v-3ZM13.5 10.5h-3v3h3v-3Z" stroke={stroke} strokeWidth="1.5" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M8.5 4.5h-3v3h3v-3ZM18.5 4.5h-3v3h3v-3ZM8.5 16.5h-3v3h3v-3ZM18.5 16.5h-3v3h3v-3ZM13.5 10.5h-3v3h3v-3Z"
+            stroke={stroke}
+            strokeWidth="1.5"
+          />
+        </svg>
+      );
     case "calendar":
-      return <svg {...common}><path d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "mail":
     case "mail2":
-      return <svg {...common}><path d="M4 6.5h16v11H4v-11Z" stroke={stroke} strokeWidth="1.7" /><path d="m4 7 8 6 8-6" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path d="M4 6.5h16v11H4v-11Z" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="m4 7 8 6 8-6"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "doc":
-      return <svg {...common}><path d="M7 3.8h7l3 3V20H7V3.8Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="M14 4v3h3M9.5 11h5M9.5 15h5" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M7 3.8h7l3 3V20H7V3.8Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M14 4v3h3M9.5 11h5M9.5 15h5"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "users":
     case "client":
-      return <svg {...common}><path d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="12" cy="9" r="3" stroke={stroke} strokeWidth="1.7" /><path d="M20 18c0-1.8-1.1-3.3-2.7-3.8M16.8 6.3a2.5 2.5 0 0 1 0 4.4" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <circle cx="12" cy="9" r="3" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M20 18c0-1.8-1.1-3.3-2.7-3.8M16.8 6.3a2.5 2.5 0 0 1 0 4.4"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "layers":
-      return <svg {...common}><path d="m12 3 8 4-8 4-8-4 8-4Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="m4 12 8 4 8-4M4 17l8 4 8-4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="m12 3 8 4-8 4-8-4 8-4Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m4 12 8 4 8-4M4 17l8 4 8-4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "settings":
-      return <svg {...common}><circle cx="12" cy="12" r="3" stroke={stroke} strokeWidth="1.7" /><path d="M19 12a7.4 7.4 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a6 6 0 0 0-1.8-1L14.4 3h-4l-.4 3a6 6 0 0 0-1.8 1L5.8 6l-2 3.5 2 1.5a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a6 6 0 0 0 1.8 1l.4 3h4l.4-3a6 6 0 0 0 1.8-1l2.4 1 2-3.5-2-1.5c.1-.3.1-.7.1-1Z" stroke={stroke} strokeWidth="1.2" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="3" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M19 12a7.4 7.4 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a6 6 0 0 0-1.8-1L14.4 3h-4l-.4 3a6 6 0 0 0-1.8 1L5.8 6l-2 3.5 2 1.5a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a6 6 0 0 0 1.8 1l.4 3h4l.4-3a6 6 0 0 0 1.8-1l2.4 1 2-3.5-2-1.5c.1-.3.1-.7.1-1Z"
+            stroke={stroke}
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "help":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="M9.8 9.3a2.4 2.4 0 0 1 4.6 1c0 1.8-2.4 2-2.4 3.5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M12 17.2h.01" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M9.8 9.3a2.4 2.4 0 0 1 4.6 1c0 1.8-2.4 2-2.4 3.5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M12 17.2h.01"
+            stroke={stroke}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "logout":
-      return <svg {...common}><path d="M10 5H6v14h4M14 8l4 4-4 4M18 12H9" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M10 5H6v14h4M14 8l4 4-4 4M18 12H9"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "moon":
-      return <svg {...common}><path d="M19 15.2A7.5 7.5 0 0 1 8.8 5a8 8 0 1 0 10.2 10.2Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M19 15.2A7.5 7.5 0 0 1 8.8 5a8 8 0 1 0 10.2 10.2Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "sun":
-      return <svg {...common}><circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth="1.7" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "crm":
-      return <svg {...common}><path d="M5 5h14v14H5V5Z" stroke={stroke} strokeWidth="1.7" /><path d="M8 9h8M8 13h5M8 17h8" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path d="M5 5h14v14H5V5Z" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M8 9h8M8 13h5M8 17h8"
+            stroke={stroke}
+            strokeWidth="1.6"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "lead":
-      return <svg {...common}><circle cx="9" cy="8" r="3" stroke={stroke} strokeWidth="1.7" /><path d="M3.8 19c.8-3 2.7-5 5.2-5s4.4 2 5.2 5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M16 8h5M18.5 5.5v5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="9" cy="8" r="3" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M3.8 19c.8-3 2.7-5 5.2-5s4.4 2 5.2 5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M16 8h5M18.5 5.5v5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "pipeline":
-      return <svg {...common}><path d="M4 7h5v5H4V7ZM15 4h5v5h-5V4ZM15 15h5v5h-5v-5ZM9 9.5h3a3 3 0 0 0 3-3M9 9.5h3a3 3 0 0 1 3 3v5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M4 7h5v5H4V7ZM15 4h5v5h-5V4ZM15 15h5v5h-5v-5ZM9 9.5h3a3 3 0 0 0 3-3M9 9.5h3a3 3 0 0 1 3 3v5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "money":
-      return <svg {...common}><path d="M4 7h16v10H4V7Z" stroke={stroke} strokeWidth="1.7" /><circle cx="12" cy="12" r="2.5" stroke={stroke} strokeWidth="1.7" /><path d="M7 10v4M17 10v4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path d="M4 7h16v10H4V7Z" stroke={stroke} strokeWidth="1.7" />
+          <circle cx="12" cy="12" r="2.5" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M7 10v4M17 10v4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "shield":
-      return <svg {...common}><path d="M12 3 19 6v5.5c0 4.5-2.8 7.8-7 9.5-4.2-1.7-7-5-7-9.5V6l7-3Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="m9.5 12 1.8 1.8 3.7-4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 3 19 6v5.5c0 4.5-2.8 7.8-7 9.5-4.2-1.7-7-5-7-9.5V6l7-3Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m9.5 12 1.8 1.8 3.7-4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "memory":
-      return <svg {...common}><rect x="5" y="5" width="14" height="14" rx="3" stroke={stroke} strokeWidth="1.7" /><path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <rect
+            x="5"
+            y="5"
+            width="14"
+            height="14"
+            rx="3"
+            stroke={stroke}
+            strokeWidth="1.7"
+          />
+          <path
+            d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "verify":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="m8.5 12.3 2.2 2.2 4.9-5.2" stroke={stroke} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="m8.5 12.3 2.2 2.2 4.9-5.2"
+            stroke={stroke}
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "plus":
-      return <svg {...common}><path d="M12 5v14M5 12h14" stroke={stroke} strokeWidth="1.9" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 5v14M5 12h14"
+            stroke={stroke}
+            strokeWidth="1.9"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "filter":
-      return <svg {...common}><path d="M4 6h16M7 12h10M10 18h4" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M4 6h16M7 12h10M10 18h4"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "more":
-      return <svg {...common}><path d="M6 12h.01M12 12h.01M18 12h.01" stroke={stroke} strokeWidth="3" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M6 12h.01M12 12h.01M18 12h.01"
+            stroke={stroke}
+            strokeWidth="3"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "spark":
-      return <svg {...common}><path d="M12 2.5 13.7 9l6.3 3-6.3 3L12 21.5 10.3 15 4 12l6.3-3L12 2.5Z" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 2.5 13.7 9l6.3 3-6.3 3L12 21.5 10.3 15 4 12l6.3-3L12 2.5Z"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "phone":
-      return <svg {...common}><path d="M8 5 6 7c-.8.8-.8 2 0 3.5 1.6 3 4.5 5.9 7.5 7.5 1.5.8 2.7.8 3.5 0l2-2-3.2-3.2-1.8 1.2c-1.4-.8-2.7-2.1-3.5-3.5l1.2-1.8L8 5Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M8 5 6 7c-.8.8-.8 2 0 3.5 1.6 3 4.5 5.9 7.5 7.5 1.5.8 2.7.8 3.5 0l2-2-3.2-3.2-1.8 1.2c-1.4-.8-2.7-2.1-3.5-3.5l1.2-1.8L8 5Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     default:
       return null;
   }
@@ -322,7 +669,9 @@ export default function Page() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [leads, setLeads] = useState<LeadRecord[]>([]);
   const [clients, setClients] = useState<ClientRecord[]>([]);
-  const [selectedStatus, setSelectedStatus] = useState<LeadStatus | "all">("all");
+  const [selectedStatus, setSelectedStatus] = useState<LeadStatus | "all">(
+    "all",
+  );
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreatingLead, setIsCreatingLead] = useState(false);
@@ -341,23 +690,50 @@ export default function Page() {
     setCheckingSession(false);
   }, [router]);
 
-  const canCreateLead = Boolean(session) && hasMinRole(session!.role, "manager") && hasMinPlan(session!.plan, "pro");
-  const canExportCrm = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "business");
-  const canViewSensitiveLead = Boolean(session) && hasMinRole(session!.role, "admin");
+  const canCreateLead =
+    Boolean(session) &&
+    hasMinRole(session!.role, "manager") &&
+    hasMinPlan(session!.plan, "pro");
+  const canExportCrm =
+    Boolean(session) &&
+    hasMinRole(session!.role, "admin") &&
+    hasMinPlan(session!.plan, "business");
+  const canViewSensitiveLead =
+    Boolean(session) && hasMinRole(session!.role, "admin");
 
   const stats = useMemo(() => {
     const totalLeads = leads.length;
     const pipelineValue = leads.reduce((sum, lead) => sum + lead.value, 0);
-    const wonValue = leads.filter((lead) => lead.status === "won").reduce((sum, lead) => sum + lead.value, 0);
-    const qualified = leads.filter((lead) => lead.status === "qualified" || lead.status === "proposal").length;
-    const avgScore = totalLeads ? Math.round(leads.reduce((sum, lead) => sum + lead.score, 0) / totalLeads) : 0;
-    const clientRevenue = clients.reduce((sum, client) => sum + client.revenue, 0);
+    const wonValue = leads
+      .filter((lead) => lead.status === "won")
+      .reduce((sum, lead) => sum + lead.value, 0);
+    const qualified = leads.filter(
+      (lead) => lead.status === "qualified" || lead.status === "proposal",
+    ).length;
+    const avgScore = totalLeads
+      ? Math.round(
+          leads.reduce((sum, lead) => sum + lead.score, 0) / totalLeads,
+        )
+      : 0;
+    const clientRevenue = clients.reduce(
+      (sum, client) => sum + client.revenue,
+      0,
+    );
 
-    return { totalLeads, pipelineValue, wonValue, qualified, avgScore, clientRevenue };
+    return {
+      totalLeads,
+      pipelineValue,
+      wonValue,
+      qualified,
+      avgScore,
+      clientRevenue,
+    };
   }, [leads, clients]);
 
   const pipelineStages: PipelineStage[] = useMemo(() => {
-    return (["new", "qualified", "proposal", "won", "lost"] as LeadStatus[]).map((status) => {
+    return (
+      ["new", "qualified", "proposal", "won", "lost"] as LeadStatus[]
+    ).map((status) => {
       const stageLeads = leads.filter((lead) => lead.status === status);
 
       return {
@@ -373,7 +749,8 @@ export default function Page() {
     const q = search.trim().toLowerCase();
 
     return leads.filter((lead) => {
-      const statusMatch = selectedStatus === "all" || lead.status === selectedStatus;
+      const statusMatch =
+        selectedStatus === "all" || lead.status === selectedStatus;
       const searchMatch =
         !q ||
         lead.id.toLowerCase().includes(q) ||
@@ -424,7 +801,9 @@ export default function Page() {
     }
 
     if (!leadResponse.success || !clientResponse.success) {
-      setError("CRM is not connected to a backend yet -- no CRM API exists in this deployment.");
+      setError(
+        "CRM is not connected to a backend yet -- no CRM API exists in this deployment.",
+      );
     }
 
     setIsLoading(false);
@@ -433,6 +812,10 @@ export default function Page() {
   useEffect(() => {
     if (mounted.current) return;
     mounted.current = true;
+    void loadCrm();
+  }, [loadCrm]);
+
+  const handleRetry = useCallback(() => {
     void loadCrm();
   }, [loadCrm]);
 
@@ -468,7 +851,9 @@ export default function Page() {
     if (response.success && response.data) {
       setLeads((current) => [response.data as LeadRecord, ...current]);
     } else {
-      setError("CRM is not connected to a backend yet -- no CRM API exists in this deployment.");
+      setError(
+        "CRM is not connected to a backend yet -- no CRM API exists in this deployment.",
+      );
     }
 
     setIsCreatingLead(false);
@@ -506,213 +891,284 @@ export default function Page() {
   if (checkingSession || !session) {
     return (
       <div className="dashboardPanel">
-        <p>Checking secure session...</p>
+        <LoadingState variant="light" title="Checking secure session..." />
       </div>
     );
   }
 
   return (
     <div className="dashboardPanel">
-        <div className="heroLine">
-          <div>
-            <h1>CRM, {session.name.split(" ")[0]}</h1>
-            <p>Manage leads, clients, pipeline value, memory context, security reviews, and verification-ready sales actions.</p>
-          </div>
-
-          <div className="heroActions">
-            <div className="tenantBadge">
-              <span>{session.role}</span>
-              <strong>{session.plan}</strong>
-            </div>
-            <button className="createBtn" onClick={createLead} disabled={!canCreateLead || isCreatingLead}>
-              <Icon name="plus" size={16} />
-              {isCreatingLead ? "Creating..." : "Add Lead"}
-            </button>
-          </div>
+      <div className="heroLine">
+        <div>
+          <h1>CRM, {session.name.split(" ")[0]}</h1>
+          <p>
+            Manage leads, clients, pipeline value, memory context, security
+            reviews, and verification-ready sales actions.
+          </p>
         </div>
 
-        {error ? (
-          <div className="errorBox" role="alert">
-            <Icon name="alert" />
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>Dismiss</button>
+        <div className="heroActions">
+          <div className="tenantBadge">
+            <span>{session.role}</span>
+            <strong>{session.plan}</strong>
           </div>
-        ) : null}
+          <button
+            className="createBtn"
+            onClick={createLead}
+            disabled={!canCreateLead || isCreatingLead}
+          >
+            <Icon name="plus" size={16} />
+            {isCreatingLead ? "Creating..." : "Add Lead"}
+          </button>
+        </div>
+      </div>
 
-        {isLoading ? (
-          <section className="stateBox">
-            <div className="loader" />
-            <strong>Loading CRM...</strong>
-            <p>Checking tenant-safe leads, clients, and pipeline records.</p>
-          </section>
-        ) : (
-          <>
-            <section className="overviewGrid">
-              <div className="balanceCard">
-                <div className="cardTop">
-                  <div>
-                    <p>Pipeline Value</p>
-                    <h2>{formatMoney(stats.pipelineValue)}</h2>
-                    <span className="greenText">↑ {formatMoney(stats.wonValue)} won value</span>
-                  </div>
-                  <button className="currencyBtn">USD</button>
-                </div>
+      {error ? (
+        <div className="mb-6">
+          <ErrorState variant="light" message={error} onRetry={handleRetry} />
+        </div>
+      ) : null}
 
-                <div className="actionRow">
-                  <button className="primaryBtn" onClick={createLead} disabled={!canCreateLead || isCreatingLead}>
-                    <Icon name="plus" size={16} />
-                    Add Lead
-                  </button>
-                  <button className="softBtn" onClick={exportCrm} disabled={!canExportCrm}>
-                    Export
-                  </button>
-                </div>
-
-                <div className="miniWallets">
-                  <div>
-                    <Icon name="lead" />
-                    <strong>{formatNumber(stats.totalLeads)}</strong>
-                    <span>Total Leads</span>
-                  </div>
-                  <div>
-                    <Icon name="pipeline" />
-                    <strong>{formatNumber(stats.qualified)}</strong>
-                    <span>Qualified</span>
-                  </div>
-                  <div>
-                    <Icon name="spark" />
-                    <strong>{stats.avgScore}</strong>
-                    <span>Avg Score</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="metricGrid">
-                <div className="metricCard hot">
-                  <div className="metricIcon"><Icon name="money" /></div>
-                  <span>Client Revenue</span>
-                  <strong>{formatMoney(stats.clientRevenue)}</strong>
-                  <p>Active client base</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="client" /></div>
-                  <span>Clients</span>
-                  <strong>{clients.length}</strong>
-                  <p>Workspace scoped</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="memory" /></div>
-                  <span>Memory Ready</span>
-                  <strong>{leads.filter((lead) => lead.memory_payload_ready).length}</strong>
-                  <p>Lead context saved</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="shield" /></div>
-                  <span>Security Reviews</span>
-                  <strong>{leads.filter((lead) => lead.security_review_required).length}</strong>
-                  <p>Sensitive actions</p>
-                </div>
-              </div>
-
-              <div className="chartCard">
-                <div className="cardTop">
-                  <div>
-                    <h3>Pipeline Chart</h3>
-                    <p>Lead value by current stage</p>
-                  </div>
-                  <div className="legend">
-                    <span><i className="orangeDot" /> Value</span>
-                    <span><i className="darkDot" /> Count</span>
-                  </div>
-                </div>
-
-                <div className="barChart">
-                  {pipelineStages.map((stage) => {
-                    const maxValue = Math.max(...pipelineStages.map((item) => item.value), 1);
-                    const valueHeight = Math.max(28, Math.round((stage.value / maxValue) * 140));
-                    const countHeight = Math.max(22, Math.min(112, stage.count * 28));
-
-                    return (
-                      <div className="barGroup" key={stage.id}>
-                        <div className="bars">
-                          <span className="bar barOrange" style={{ height: valueHeight }} />
-                          <span className="bar barDark" style={{ height: countHeight }} />
-                        </div>
-                        <span className="barLabel">{stage.title}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </section>
-
-            <section className="pipelineSection">
-              <div className="tableHeader">
+      {isLoading ? (
+        <section className="stateBox">
+          <LoadingState
+            variant="light"
+            title="Loading CRM..."
+            subtitle="Checking tenant-safe leads, clients, and pipeline records."
+          />
+        </section>
+      ) : (
+        <>
+          <section className="overviewGrid">
+            <div className="balanceCard">
+              <div className="cardTop">
                 <div>
-                  <h2>Sales Pipeline</h2>
-                  <p>Every card is filtered by current user and workspace only.</p>
+                  <p>Pipeline Value</p>
+                  <h2>{formatMoney(stats.pipelineValue)}</h2>
+                  <span className="greenText">
+                    ↑ {formatMoney(stats.wonValue)} won value
+                  </span>
                 </div>
-                <button className="filterBtn"><Icon name="pipeline" size={16} /> Manage</button>
+                <button className="currencyBtn">USD</button>
               </div>
 
-              <div className="pipelineGrid">
-                {pipelineStages.map((stage) => (
-                  <div className="pipelineColumn" key={stage.id}>
-                    <div className="pipelineTop">
-                      <strong>{stage.title}</strong>
-                      <span>{stage.count}</span>
-                    </div>
-                    <p>{formatMoney(stage.value)}</p>
-
-                    <div className="pipelineCards">
-                      {leads
-                        .filter((lead) => lead.status === stage.id)
-                        .slice(0, 3)
-                        .map((lead) => (
-                          <article className="pipelineLead" key={lead.id}>
-                            <div className="leadTop">
-                              <span className={cx("agentIcon", lead.sensitive && "sensitive")}>
-                                {lead.sensitive ? <Icon name="shield" size={15} /> : <Icon name="lead" size={15} />}
-                              </span>
-                              <button className="moreBtn" aria-label={`More actions for ${lead.id}`}>
-                                <Icon name="more" size={18} />
-                              </button>
-                            </div>
-                            <strong>{lead.name}</strong>
-                            <small>{lead.company}</small>
-                            <div className="pipelineMeta">
-                              <span>{formatMoney(lead.value)}</span>
-                              <b>{lead.score}</b>
-                            </div>
-                          </article>
-                        ))}
-                    </div>
-                  </div>
-                ))}
+              <div className="actionRow">
+                <button
+                  className="primaryBtn"
+                  onClick={createLead}
+                  disabled={!canCreateLead || isCreatingLead}
+                >
+                  <Icon name="plus" size={16} />
+                  Add Lead
+                </button>
+                <button
+                  className="softBtn"
+                  onClick={exportCrm}
+                  disabled={!canExportCrm}
+                >
+                  Export
+                </button>
               </div>
-            </section>
 
-            <section className="clientsAndRules">
-              <div className="clientsCard">
-                <div className="cardTop">
-                  <div>
-                    <h3>Client Accounts</h3>
-                    <p>Revenue, health, workflows, and open tasks</p>
-                  </div>
-                  <button className="smallSoft">+ Add client</button>
+              <div className="miniWallets">
+                <div>
+                  <Icon name="lead" />
+                  <strong>{formatNumber(stats.totalLeads)}</strong>
+                  <span>Total Leads</span>
                 </div>
+                <div>
+                  <Icon name="pipeline" />
+                  <strong>{formatNumber(stats.qualified)}</strong>
+                  <span>Qualified</span>
+                </div>
+                <div>
+                  <Icon name="spark" />
+                  <strong>{stats.avgScore}</strong>
+                  <span>Avg Score</span>
+                </div>
+              </div>
+            </div>
 
-                {clients.length === 0 ? (
-                  <p className="emptyNote">No CRM backend is connected in this deployment yet.</p>
-                ) : (
+            <div className="metricGrid">
+              <div className="metricCard hot">
+                <div className="metricIcon">
+                  <Icon name="money" />
+                </div>
+                <span>Client Revenue</span>
+                <strong>{formatMoney(stats.clientRevenue)}</strong>
+                <p>Active client base</p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="client" />
+                </div>
+                <span>Clients</span>
+                <strong>{clients.length}</strong>
+                <p>Workspace scoped</p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="memory" />
+                </div>
+                <span>Memory Ready</span>
+                <strong>
+                  {leads.filter((lead) => lead.memory_payload_ready).length}
+                </strong>
+                <p>Lead context saved</p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="shield" />
+                </div>
+                <span>Security Reviews</span>
+                <strong>
+                  {leads.filter((lead) => lead.security_review_required).length}
+                </strong>
+                <p>Sensitive actions</p>
+              </div>
+            </div>
+
+            <div className="chartCard">
+              <div className="cardTop">
+                <div>
+                  <h3>Pipeline Chart</h3>
+                  <p>Lead value by current stage</p>
+                </div>
+                <div className="legend">
+                  <span>
+                    <i className="orangeDot" /> Value
+                  </span>
+                  <span>
+                    <i className="darkDot" /> Count
+                  </span>
+                </div>
+              </div>
+
+              <div className="barChart">
+                {pipelineStages.map((stage) => {
+                  const maxValue = Math.max(
+                    ...pipelineStages.map((item) => item.value),
+                    1,
+                  );
+                  const valueHeight = Math.max(
+                    28,
+                    Math.round((stage.value / maxValue) * 140),
+                  );
+                  const countHeight = Math.max(
+                    22,
+                    Math.min(112, stage.count * 28),
+                  );
+
+                  return (
+                    <div className="barGroup" key={stage.id}>
+                      <div className="bars">
+                        <span
+                          className="bar barOrange"
+                          style={{ height: valueHeight }}
+                        />
+                        <span
+                          className="bar barDark"
+                          style={{ height: countHeight }}
+                        />
+                      </div>
+                      <span className="barLabel">{stage.title}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </section>
+
+          <section className="pipelineSection">
+            <div className="tableHeader">
+              <div>
+                <h2>Sales Pipeline</h2>
+                <p>
+                  Every card is filtered by current user and workspace only.
+                </p>
+              </div>
+              <button className="filterBtn">
+                <Icon name="pipeline" size={16} /> Manage
+              </button>
+            </div>
+
+            <div className="pipelineGrid">
+              {pipelineStages.map((stage) => (
+                <div className="pipelineColumn" key={stage.id}>
+                  <div className="pipelineTop">
+                    <strong>{stage.title}</strong>
+                    <span>{stage.count}</span>
+                  </div>
+                  <p>{formatMoney(stage.value)}</p>
+
+                  <div className="pipelineCards">
+                    {leads
+                      .filter((lead) => lead.status === stage.id)
+                      .slice(0, 3)
+                      .map((lead) => (
+                        <article className="pipelineLead" key={lead.id}>
+                          <div className="leadTop">
+                            <span
+                              className={cx(
+                                "agentIcon",
+                                lead.sensitive && "sensitive",
+                              )}
+                            >
+                              {lead.sensitive ? (
+                                <Icon name="shield" size={15} />
+                              ) : (
+                                <Icon name="lead" size={15} />
+                              )}
+                            </span>
+                            <button
+                              className="moreBtn"
+                              aria-label={`More actions for ${lead.id}`}
+                            >
+                              <Icon name="more" size={18} />
+                            </button>
+                          </div>
+                          <strong>{lead.name}</strong>
+                          <small>{lead.company}</small>
+                          <div className="pipelineMeta">
+                            <span>{formatMoney(lead.value)}</span>
+                            <b>{lead.score}</b>
+                          </div>
+                        </article>
+                      ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="clientsAndRules">
+            <div className="clientsCard">
+              <div className="cardTop">
+                <div>
+                  <h3>Client Accounts</h3>
+                  <p>Revenue, health, workflows, and open tasks</p>
+                </div>
+                <button className="smallSoft">+ Add client</button>
+              </div>
+
+              {clients.length === 0 ? (
+                <EmptyState
+                  variant="light"
+                  icon="◈"
+                  title="No clients"
+                  message="No CRM backend is connected in this deployment yet."
+                />
+              ) : (
                 <div className="clientGrid">
                   {clients.map((client) => (
                     <article className="clientCard" key={client.id}>
                       <div className="clientHeader">
-                        <div className="clientAvatar">{client.name.slice(0, 2).toUpperCase()}</div>
+                        <div className="clientAvatar">
+                          {client.name.slice(0, 2).toUpperCase()}
+                        </div>
                         <HealthPill health={client.health} />
                       </div>
                       <h3>{client.company}</h3>
@@ -733,143 +1189,198 @@ export default function Page() {
                         </div>
                       </div>
 
-                      <small>Last contact {formatDateTime(client.last_contact_at)}</small>
+                      <small>
+                        Last contact {formatDateTime(client.last_contact_at)}
+                      </small>
                     </article>
                   ))}
                 </div>
-                )}
-              </div>
-
-              <div className="contractCard">
-                <div className="cardTop">
-                  <h3>CRM Contracts</h3>
-                  <button className="smallSoft">Audit On</button>
-                </div>
-
-                <div className="contractCards">
-                  <div className="contract dark">
-                    <span>Memory Agent</span>
-                    <strong>Lead context saved per workspace</strong>
-                    <small>No cross-client leakage</small>
-                  </div>
-
-                  <div className="contract orange">
-                    <span>Security Agent</span>
-                    <strong>{canViewSensitiveLead ? "Sensitive contact actions routed" : "Admin-only visibility"}</strong>
-                    <small>Safe approval gate</small>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="tableCard">
-              <div className="tableHeader">
-                <div>
-                  <h2>Lead History</h2>
-                  <p>Leads, clients, pipeline movements, and agent-prepared CRM context.</p>
-                </div>
-
-                <div className="tableTools">
-                  <label className="searchBox">
-                    <Icon name="search" size={16} />
-                    <input
-                      value={search}
-                      onChange={(event) => setSearch(event.target.value)}
-                      placeholder="Search lead, company..."
-                    />
-                  </label>
-
-                  <select value={selectedStatus} onChange={(event) => setSelectedStatus(event.target.value as LeadStatus | "all")}>
-                    <option value="all">All Status</option>
-                    <option value="new">New</option>
-                    <option value="qualified">Qualified</option>
-                    <option value="proposal">Proposal</option>
-                    <option value="won">Won</option>
-                    <option value="lost">Lost</option>
-                  </select>
-
-                  <button className="filterBtn"><Icon name="filter" size={16} /> Filter</button>
-                </div>
-              </div>
-
-              {filteredLeads.length === 0 ? (
-                <div className="emptyBox">
-                  <Icon name="lead" size={34} />
-                  <strong>{leads.length === 0 ? "CRM not connected" : "No leads match your filters"}</strong>
-                  <p>
-                    {leads.length === 0
-                      ? "There is no CRM backend in this deployment yet -- leads and clients aren't available."
-                      : "Clear filters to see your existing leads."}
-                  </p>
-                </div>
-              ) : (
-                <div className="tableWrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Lead ID</th>
-                        <th>Lead</th>
-                        <th>Source</th>
-                        <th>Value</th>
-                        <th>Score</th>
-                        <th>Status</th>
-                        <th>Contracts</th>
-                        <th>Updated</th>
-                        <th />
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {filteredLeads.map((lead) => (
-                        <tr key={lead.id}>
-                          <td><strong className="mono">{lead.id}</strong></td>
-                          <td>
-                            <div className="activityCell">
-                              <span className={cx("agentIcon", lead.sensitive && "sensitive")}>
-                                {lead.sensitive ? <Icon name="shield" size={15} /> : <Icon name="lead" size={15} />}
-                              </span>
-                              <div>
-                                <strong>{lead.name}</strong>
-                                <small>{lead.company} · {lead.assigned_agent}</small>
-                              </div>
-                            </div>
-                          </td>
-                          <td>{lead.source}</td>
-                          <td>{formatMoney(lead.value)}</td>
-                          <td>
-                            <div className="rowProgress">
-                              <span style={{ width: `${lead.score}%` }} />
-                            </div>
-                            <small>{lead.score}/100</small>
-                          </td>
-                          <td><StatusPill status={lead.status} /></td>
-                          <td>
-                            <div className="contractMini">
-                              {lead.security_review_required ? <Icon name="shield" size={15} /> : null}
-                              {lead.memory_payload_ready ? <Icon name="memory" size={15} /> : null}
-                              {lead.verification_payload_ready ? <Icon name="verify" size={15} /> : null}
-                            </div>
-                          </td>
-                          <td>
-                            <span>{formatDateTime(lead.updated_at)}</span>
-                            <small>{lead.audit_event_id || "audit pending"}</small>
-                          </td>
-                          <td>
-                            <div className="rowActions">
-                              <button className="roundMini" aria-label={`Call ${lead.name}`}><Icon name="phone" size={15} /></button>
-                              <button className="roundMini" aria-label={`Email ${lead.name}`}><Icon name="mail2" size={15} /></button>
-                              <button className="moreBtn" aria-label={`More actions for ${lead.id}`}><Icon name="more" size={18} /></button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
               )}
-            </section>
-          </>
-        )}
+            </div>
+
+            <div className="contractCard">
+              <div className="cardTop">
+                <h3>CRM Contracts</h3>
+                <button className="smallSoft">Audit On</button>
+              </div>
+
+              <div className="contractCards">
+                <div className="contract dark">
+                  <span>Memory Agent</span>
+                  <strong>Lead context saved per workspace</strong>
+                  <small>No cross-client leakage</small>
+                </div>
+
+                <div className="contract orange">
+                  <span>Security Agent</span>
+                  <strong>
+                    {canViewSensitiveLead
+                      ? "Sensitive contact actions routed"
+                      : "Admin-only visibility"}
+                  </strong>
+                  <small>Safe approval gate</small>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="tableCard">
+            <div className="tableHeader">
+              <div>
+                <h2>Lead History</h2>
+                <p>
+                  Leads, clients, pipeline movements, and agent-prepared CRM
+                  context.
+                </p>
+              </div>
+
+              <div className="tableTools">
+                <label className="searchBox">
+                  <Icon name="search" size={16} />
+                  <input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search lead, company..."
+                  />
+                </label>
+
+                <select
+                  value={selectedStatus}
+                  onChange={(event) =>
+                    setSelectedStatus(event.target.value as LeadStatus | "all")
+                  }
+                >
+                  <option value="all">All Status</option>
+                  <option value="new">New</option>
+                  <option value="qualified">Qualified</option>
+                  <option value="proposal">Proposal</option>
+                  <option value="won">Won</option>
+                  <option value="lost">Lost</option>
+                </select>
+
+                <button className="filterBtn">
+                  <Icon name="filter" size={16} /> Filter
+                </button>
+              </div>
+            </div>
+
+            {filteredLeads.length === 0 ? (
+              <EmptyState
+                variant="light"
+                icon="◎"
+                title={leads.length === 0 ? "CRM not connected" : "No matches"}
+                message={
+                  leads.length === 0
+                    ? "There is no CRM backend in this deployment yet -- leads and clients aren't available."
+                    : "Clear filters to see your existing leads."
+                }
+              />
+            ) : (
+              <div className="tableWrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Lead ID</th>
+                      <th>Lead</th>
+                      <th>Source</th>
+                      <th>Value</th>
+                      <th>Score</th>
+                      <th>Status</th>
+                      <th>Contracts</th>
+                      <th>Updated</th>
+                      <th />
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {filteredLeads.map((lead) => (
+                      <tr key={lead.id}>
+                        <td>
+                          <strong className="mono">{lead.id}</strong>
+                        </td>
+                        <td>
+                          <div className="activityCell">
+                            <span
+                              className={cx(
+                                "agentIcon",
+                                lead.sensitive && "sensitive",
+                              )}
+                            >
+                              {lead.sensitive ? (
+                                <Icon name="shield" size={15} />
+                              ) : (
+                                <Icon name="lead" size={15} />
+                              )}
+                            </span>
+                            <div>
+                              <strong>{lead.name}</strong>
+                              <small>
+                                {lead.company} · {lead.assigned_agent}
+                              </small>
+                            </div>
+                          </div>
+                        </td>
+                        <td>{lead.source}</td>
+                        <td>{formatMoney(lead.value)}</td>
+                        <td>
+                          <div className="rowProgress">
+                            <span style={{ width: `${lead.score}%` }} />
+                          </div>
+                          <small>{lead.score}/100</small>
+                        </td>
+                        <td>
+                          <StatusPill status={lead.status} />
+                        </td>
+                        <td>
+                          <div className="contractMini">
+                            {lead.security_review_required ? (
+                              <Icon name="shield" size={15} />
+                            ) : null}
+                            {lead.memory_payload_ready ? (
+                              <Icon name="memory" size={15} />
+                            ) : null}
+                            {lead.verification_payload_ready ? (
+                              <Icon name="verify" size={15} />
+                            ) : null}
+                          </div>
+                        </td>
+                        <td>
+                          <span>{formatDateTime(lead.updated_at)}</span>
+                          <small>
+                            {lead.audit_event_id || "audit pending"}
+                          </small>
+                        </td>
+                        <td>
+                          <div className="rowActions">
+                            <button
+                              className="roundMini"
+                              aria-label={`Call ${lead.name}`}
+                            >
+                              <Icon name="phone" size={15} />
+                            </button>
+                            <button
+                              className="roundMini"
+                              aria-label={`Email ${lead.name}`}
+                            >
+                              <Icon name="mail2" size={15} />
+                            </button>
+                            <button
+                              className="moreBtn"
+                              aria-label={`More actions for ${lead.id}`}
+                            >
+                              <Icon name="more" size={18} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
+      )}
 
       <style jsx>{`
         :global(*) {
@@ -896,7 +1407,11 @@ export default function Page() {
           display: grid;
           grid-template-columns: 72px minmax(0, 1fr);
           background:
-            radial-gradient(circle at 50% 10%, rgba(255, 255, 255, 0.8), transparent 28%),
+            radial-gradient(
+              circle at 50% 10%,
+              rgba(255, 255, 255, 0.8),
+              transparent 28%
+            ),
             #e9e9e7;
         }
 
@@ -1318,7 +1833,7 @@ export default function Page() {
 
         .metricCard.hot span,
         .metricCard.hot p {
-          color: rgba(255,255,255,0.78);
+          color: rgba(255, 255, 255, 0.78);
         }
 
         .metricIcon {
@@ -1330,7 +1845,7 @@ export default function Page() {
           border-radius: 50%;
           display: grid;
           place-items: center;
-          background: rgba(0,0,0,0.06);
+          background: rgba(0, 0, 0, 0.06);
         }
 
         .metricCard strong {
@@ -1385,7 +1900,11 @@ export default function Page() {
           justify-content: space-between;
           gap: 10px;
           padding: 10px 0 0;
-          background-image: linear-gradient(to top, #ededeb 1px, transparent 1px);
+          background-image: linear-gradient(
+            to top,
+            #ededeb 1px,
+            transparent 1px
+          );
           background-size: 100% 42px;
         }
 
@@ -1411,7 +1930,13 @@ export default function Page() {
         }
 
         .barOrange {
-          background: repeating-linear-gradient(-45deg, #ff5438, #ff5438 4px, #ff765f 4px, #ff765f 8px);
+          background: repeating-linear-gradient(
+            -45deg,
+            #ff5438,
+            #ff5438 4px,
+            #ff765f 4px,
+            #ff765f 8px
+          );
         }
 
         .barDark {
@@ -1638,7 +2163,7 @@ export default function Page() {
           width: 110px;
           height: 110px;
           border-radius: 28px;
-          background: rgba(255,255,255,0.08);
+          background: rgba(255, 255, 255, 0.08);
           right: -28px;
           top: -24px;
           transform: rotate(18deg);
@@ -1654,7 +2179,7 @@ export default function Page() {
 
         .contract span,
         .contract small {
-          color: rgba(255,255,255,0.75);
+          color: rgba(255, 255, 255, 0.75);
           font-size: 12px;
           z-index: 1;
         }
@@ -1744,7 +2269,8 @@ export default function Page() {
         }
 
         .mono {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
           font-size: 12px;
         }
 

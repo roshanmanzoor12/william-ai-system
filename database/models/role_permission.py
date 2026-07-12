@@ -171,6 +171,16 @@ class PermissionCategory(str, enum.Enum):
     DEVICE = "device"
     SYSTEM = "system"
     API = "api"
+    # database/seeders/default_plans.py seeds "integrations.manage" and
+    # "plugins.manage" permissions with these two category strings; they had
+    # no matching enum member, so the SQLAlchemy Enum(PermissionCategory)
+    # column raised LookupError on SELECT for any row already inserted with
+    # this category (INSERT succeeds since SQLite doesn't enforce it, but
+    # the ORM-side read/lookup back does not) -- including inside
+    # _find_existing()'s duplicate check, which silently treated the lookup
+    # failure as "not found" and re-attempted an INSERT on every re-run.
+    INTEGRATIONS = "integrations"
+    PLUGINS = "plugins"
 
 
 class PermissionEffect(str, enum.Enum):

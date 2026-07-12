@@ -888,8 +888,15 @@ class TestBaseAgent:
         assert response_missing_user.get("success") is False
         assert response_missing_workspace.get("success") is False
 
-        assert "user_id" in str(response_missing_user.get("error", "")).lower()
-        assert "workspace_id" in str(response_missing_workspace.get("error", "")).lower()
+        # The real BaseAgent puts a short machine-readable code in "error"
+        # (e.g. "INVALID_TASK_CONTEXT") and the human-readable explanation
+        # in "message" -- check the field that actually names the missing
+        # field instead of assuming they're the same string.
+        missing_user_text = f"{response_missing_user.get('error', '')} {response_missing_user.get('message', '')}".lower()
+        missing_workspace_text = f"{response_missing_workspace.get('error', '')} {response_missing_workspace.get('message', '')}".lower()
+
+        assert "user_id" in missing_user_text
+        assert "workspace_id" in missing_workspace_text
 
     @pytest.mark.asyncio()
     async def test_successful_response_preserves_user_workspace_boundary(

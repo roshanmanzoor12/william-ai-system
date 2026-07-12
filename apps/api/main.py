@@ -30,7 +30,7 @@ import os
 import time
 import traceback
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
@@ -1259,6 +1259,7 @@ OPTIONAL_ROUTERS: List[Tuple[str, str, str]] = [
     ("apps.api.routes.billing", "router", "/billing"),
     ("apps.api.routes.subscriptions", "router", "/subscriptions"),
     ("apps.api.routes.files", "router", "/files"),
+    ("apps.api.routes.voice", "router", "/voice"),
     # No apps.api.routes.devices entry: no device-pairing concept exists
     # anywhere else in this codebase (no model, no agent, no worker
     # protocol for it) to build a real router against -- inventing one
@@ -1346,6 +1347,94 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     )
 
 
+SENSITIVE_FIELD_NAME_MARKERS = (
+    "password",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "private_key",
+)
+
+
+def _redact_sensitive_value(value: Any) -> Any:
+    """
+    Redact a validation error's echoed input, recursing into dicts/lists.
+
+    Sensitive keys are dropped entirely rather than replaced with a
+    "***REDACTED***" placeholder -- a placeholder value still leaves a key
+    literally named "password" in the response body, which is itself an
+    implementation-detail leak worth avoiding, not just the value.
+    """
+
+    if isinstance(value, dict):
+        redacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_lower = str(key).lower()
+            if any(marker in key_lower for marker in SENSITIVE_FIELD_NAME_MARKERS):
+                continue
+            redacted[key] = _redact_sensitive_value(item)
+        return redacted
+
+    if isinstance(value, list):
+        return [_redact_sensitive_value(item) for item in value]
+
+    if isinstance(value, BaseException):
+        # Pydantic v2 puts the raised exception instance itself (not a
+        # string) in "ctx"/"ctx.error" for custom @field_validator/@model_
+        # validator failures -- e.g. a `raise ValueError("invalid email")`
+        # inside a validator ends up as ctx={"error": ValueError(...)},
+        # which JSONResponse cannot serialize and turns a real 422 into an
+        # unhandled 500 (confirmed: this crashed on `email: "not-an-email"`
+        # in test_register_requires_email_password_and_workspace_context).
+        return str(value)
+
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+
+    return safe_json(value)
+
+
+def sanitize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Pydantic's default RequestValidationError.errors() includes the raw
+    submitted value for every failing field under "input" -- for a field
+    like "password" that means a 422 response echoes the caller's actual
+    plaintext password back to them (and into logs/proxies) whenever it
+    fails validation (too short, wrong type, etc). This also happens for
+    body-level errors (e.g. a missing required field elsewhere): "loc" is
+    something like ("body",) and "input" is the ENTIRE submitted payload
+    dict, password and all, not just the one field that failed -- so
+    checking only whether the failing field's own name looks sensitive
+    isn't enough; the echoed input itself has to be scanned recursively.
+    """
+
+    sanitized: List[Dict[str, Any]] = []
+
+    for error in errors:
+        entry = dict(error)
+        location = entry.get("loc") or ()
+        field_name = str(location[-1]) if location else ""
+        field_is_sensitive = any(marker in field_name.lower() for marker in SENSITIVE_FIELD_NAME_MARKERS)
+
+        if field_is_sensitive:
+            if "input" in entry:
+                entry["input"] = "***REDACTED***"
+            if "ctx" in entry:
+                entry["ctx"] = "***REDACTED***"
+        else:
+            if "input" in entry:
+                entry["input"] = _redact_sensitive_value(entry["input"])
+            if "ctx" in entry:
+                entry["ctx"] = _redact_sensitive_value(entry["ctx"])
+
+        sanitized.append(entry)
+
+    return sanitized
+
+
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     request_id = getattr(request.state, "request_id", None)
 
@@ -1354,7 +1443,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         code="VALIDATION_ERROR",
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         request_id=request_id,
-        details=exc.errors(),
+        details=sanitize_validation_errors(exc.errors()),
     )
 
 
@@ -1449,8 +1538,36 @@ class Main:
         app.include_router(dashboard_router, prefix=self.settings.api_prefix)
 
 
+def create_app(testing: bool = False) -> FastAPI:
+    """
+    Module-level app factory.
+
+    Used both for the real production app below (`create_app()`) and by
+    tests/conftest.py's `app` fixture (`create_app(testing=True)`), which
+    previously called a module-level `create_app` that didn't exist here --
+    only `Main.create_app(self)`, an instance method with no `testing`
+    parameter -- so the import always failed and every test using the
+    `app`/`client`/`async_client` fixtures silently ran against a fake stub
+    app instead of the real routed one.
+
+    `testing=True` forces the auth flags that gate the spoofable
+    X-User-ID/X-Workspace-ID header-trust fallback back to their secure
+    defaults (auth required, dev-auth-header-trust disabled) regardless of
+    whatever a developer's ambient .env has set -- a stray
+    WILLIAM_DEV_AUTH_ENABLED=true must never leak into a test run just
+    because pytest imported this module.
+    """
+    settings = SETTINGS
+    if testing:
+        settings = replace(SETTINGS, auth_required=True, dev_auth_enabled=False, debug=False)
+
+    application = Main(settings=settings).create_app()
+    application.state.testing = testing
+    return application
+
+
 main = Main()
-app = main.create_app()
+app = create_app()
 
 
 # =============================================================================

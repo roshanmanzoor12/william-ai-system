@@ -188,6 +188,20 @@ class Plan(str, Enum):
 ROLE_RANK: Dict[str, int] = {
     Role.VIEWER.value: 10,
     Role.USER.value: 20,
+    # "member" is not one of this enum's own values -- it is the real
+    # database-level WorkspaceMemberRole (database/models/workspace.py)
+    # string that flows straight into AuthContext.role for every real,
+    # JWT-authenticated request (see apps/api/routes/auth.py's
+    # get_current_auth_context: role=membership.role). Without this
+    # mapping, ROLE_RANK.get("member", 0) silently fell through to 0 --
+    # lower than even "viewer" -- so any real workspace member (the most
+    # common non-owner role) was denied every agent that only requires
+    # the baseline Role.USER tier (master, memory, security, verification,
+    # business, creator), even though workspace membership rules
+    # (default_member_agent_access in database/models/workspace.py)
+    # clearly intend members to reach those. "member" is the DB-level
+    # equivalent of this enum's "user" tier, so it gets the same rank.
+    "member": 20,
     Role.AGENT.value: 30,
     Role.ANALYST.value: 35,
     Role.DEVELOPER.value: 40,
@@ -1170,6 +1184,37 @@ def public_agent_definition(definition: AgentDefinition) -> Dict[str, Any]:
         capability.model_dump() if hasattr(capability, "model_dump") else capability.dict()
         for capability in definition.capabilities
     ]
+
+    # Full 50-capability futuristic manifest (agents/capability_manifest.py),
+    # additive alongside the short `capabilities` list above (which real
+    # permission-gate logic elsewhere in this file keys off of and must not
+    # change shape). Import-safe: agents outside the 14 capability-bearing
+    # keys (e.g. "master") or any capability_data import failure simply
+    # yield an empty manifest here rather than breaking this endpoint.
+    try:
+        from agents.capability_manifest import (
+            REQUIRED_CAPABILITY_COUNT,
+            get_capabilities_as_dicts,
+        )
+
+        manifest = get_capabilities_as_dicts(definition.agent_name)
+    except Exception as exc:  # noqa: BLE001 - import-safe by design
+        logger.warning("public_agent_definition: capability_manifest unavailable for %s: %s", definition.agent_name, exc)
+        manifest = []
+        REQUIRED_CAPABILITY_COUNT = 50
+
+    status_counts: Dict[str, int] = {}
+    for entry in manifest:
+        status_value = entry.get("status", "unknown")
+        status_counts[status_value] = status_counts.get(status_value, 0) + 1
+
+    data["capability_manifest"] = manifest
+    data["capability_manifest_meta"] = {
+        "count": len(manifest),
+        "expected_count": REQUIRED_CAPABILITY_COUNT,
+        "complete": len(manifest) == REQUIRED_CAPABILITY_COUNT,
+        "status_breakdown": status_counts,
+    }
     return data
 
 

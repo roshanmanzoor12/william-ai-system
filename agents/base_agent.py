@@ -227,6 +227,7 @@ class AgentTask:
     target_agent: Optional[str] = None
     created_at: str = field(default_factory=lambda: utc_now_iso())
     metadata: Dict[str, Any] = field(default_factory=dict)
+    task_id: Optional[str] = field(default_factory=lambda: safe_uuid("task"))
 
 
 @dataclass
@@ -238,6 +239,7 @@ class SecurityApprovalPayload:
     approval_id: str
     agent_name: str
     task_name: str
+    task_id: Optional[str]
     user_id: Optional[Union[str, int]]
     workspace_id: Optional[Union[str, int]]
     risk_level: str
@@ -264,12 +266,14 @@ class VerificationPayload:
     verification_id: str
     agent_name: str
     task_name: str
+    task_id: Optional[str]
     user_id: Optional[Union[str, int]]
     workspace_id: Optional[Union[str, int]]
     action_summary: str
     result_snapshot: Dict[str, Any]
     success: bool
     created_at: str
+    status: str = "completed"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -284,6 +288,7 @@ class MemoryPayload:
 
     memory_id: str
     agent_name: str
+    task_id: Optional[str]
     user_id: Optional[Union[str, int]]
     workspace_id: Optional[Union[str, int]]
     memory_type: str
@@ -435,7 +440,25 @@ def normalize_task(task: Union[AgentTask, Dict[str, Any], str]) -> AgentTask:
         return AgentTask(task_name=task)
 
     if isinstance(task, dict):
-        context = normalize_context(task.get("context"))
+        # A caller may put user_id/workspace_id directly on the task
+        # instead of nesting them under a "context" sub-object (e.g. a
+        # dashboard/API layer building a flat payload). Fold those into
+        # the context dict before normalizing so they aren't silently
+        # dropped just because "context" itself is absent.
+        raw_context = task.get("context")
+
+        if not raw_context and (task.get("user_id") or task.get("workspace_id")):
+            raw_context = {
+                "user_id": task.get("user_id"),
+                "workspace_id": task.get("workspace_id"),
+                "role": task.get("role"),
+                "subscription_plan": task.get("subscription_plan") or task.get("plan"),
+                "request_id": task.get("request_id"),
+                "session_id": task.get("session_id"),
+                "trace_id": task.get("trace_id"),
+            }
+
+        context = normalize_context(raw_context)
 
         raw_risk = task.get("risk_level", TaskRiskLevel.LOW)
 
@@ -444,18 +467,75 @@ def normalize_task(task: Union[AgentTask, Dict[str, Any], str]) -> AgentTask:
         except Exception:
             risk_level = TaskRiskLevel.LOW
 
+        requires_security = bool(task.get("requires_security", task.get("sensitive", False)))
+
+        task_metadata = ensure_dict(task.get("metadata"))
+        task_id = task.get("task_id") or task.get("id") or safe_uuid("task")
+
         return AgentTask(
-            task_name=str(task.get("task_name") or task.get("name") or "unnamed_task"),
+            task_name=str(
+                task.get("task_name") or task.get("name") or task.get("action") or "unnamed_task"
+            ),
             payload=ensure_dict(task.get("payload")),
             context=context,
             risk_level=risk_level,
-            requires_security=bool(task.get("requires_security", False)),
+            requires_security=requires_security,
             permissions=list(task.get("permissions") or []),
             source_agent=task.get("source_agent"),
             target_agent=task.get("target_agent"),
             created_at=str(task.get("created_at") or utc_now_iso()),
-            metadata=ensure_dict(task.get("metadata")),
+            metadata=task_metadata,
+            task_id=str(task_id),
         )
+
+    # Object-shaped task (dataclass, Pydantic model, or any other object
+    # exposing the same fields as attributes instead of dict keys) --
+    # previously fell straight through to the "unknown_task" stub below,
+    # silently discarding task_name/user_id/workspace_id/payload/etc. for
+    # any caller that didn't build a raw dict or the real AgentTask.
+    task_dict: Optional[Dict[str, Any]] = None
+
+    if hasattr(task, "model_dump") and callable(task.model_dump):
+        try:
+            task_dict = dict(task.model_dump())
+        except Exception:
+            task_dict = None
+    elif hasattr(task, "dict") and callable(task.dict):
+        try:
+            task_dict = dict(task.dict())
+        except Exception:
+            task_dict = None
+    elif hasattr(task, "__dataclass_fields__"):
+        task_dict = {name: getattr(task, name) for name in task.__dataclass_fields__.keys()}
+
+    if task_dict is None:
+        known_fields = (
+            "task_name",
+            "task_id",
+            "id",
+            "name",
+            "action",
+            "user_id",
+            "workspace_id",
+            "role",
+            "subscription_plan",
+            "plan",
+            "payload",
+            "context",
+            "risk_level",
+            "requires_security",
+            "sensitive",
+            "permissions",
+            "source_agent",
+            "target_agent",
+            "created_at",
+            "metadata",
+        )
+        attr_dict = {name: getattr(task, name) for name in known_fields if hasattr(task, name)}
+        task_dict = attr_dict or None
+
+    if task_dict:
+        return normalize_task(task_dict)
 
     return AgentTask(
         task_name="unknown_task",
@@ -747,6 +827,8 @@ class BaseAgent(ABC):
 
                 return result
 
+            security_review: Optional[Dict[str, Any]] = None
+
             if self._requires_security_check(normalized_task):
                 self.status = AgentStatus.WAITING_SECURITY_APPROVAL
 
@@ -757,6 +839,7 @@ class BaseAgent(ABC):
                 )
 
                 security_result = await self._request_security_approval(normalized_task)
+                security_review = security_result
 
                 if not security_result["success"]:
                     self.status = AgentStatus.FAILED
@@ -796,6 +879,15 @@ class BaseAgent(ABC):
 
             result = self._normalize_agent_output(raw_result, normalized_task)
 
+            if security_review is not None:
+                # Record that this action went through security review (real
+                # agent decision or the low/medium-risk fallback) so a
+                # completed sensitive action carries visible evidence of
+                # that review instead of looking identical to a task that
+                # never needed one.
+                result.setdefault("metadata", {})
+                result["metadata"]["security_review"] = security_review
+
             if result.get("success"):
                 self.status = AgentStatus.COMPLETED
                 self.successful_tasks += 1
@@ -811,6 +903,7 @@ class BaseAgent(ABC):
 
                 result.setdefault("metadata", {})
                 result["metadata"]["verification_payload"] = verification_payload
+                result["verification_payload"] = verification_payload
 
                 await self._emit_agent_event(
                     AgentEventType.VERIFICATION_PAYLOAD_PREPARED,
@@ -826,6 +919,7 @@ class BaseAgent(ABC):
 
                 result.setdefault("metadata", {})
                 result["metadata"]["memory_payload"] = memory_payload
+                result["memory_payload"] = memory_payload
 
                 await self._emit_agent_event(
                     AgentEventType.MEMORY_PAYLOAD_PREPARED,
@@ -1130,6 +1224,7 @@ class BaseAgent(ABC):
             approval_id=safe_uuid("security"),
             agent_name=self.agent_name,
             task_name=task.task_name,
+            task_id=task.task_id,
             user_id=task.context.user_id,
             workspace_id=task.context.workspace_id,
             risk_level=task.risk_level.value,
@@ -1238,7 +1333,19 @@ class BaseAgent(ABC):
             }
 
         if isinstance(decision, dict):
-            success = bool(decision.get("success", False))
+            # A Security Agent's decision dict may use "success" (generic
+            # result convention) or "approved" (the natural name for an
+            # approval decision, e.g. FakeSecurityAgent.approve_action() and
+            # this file's own SecurityDecision enum both use "approved").
+            # Only checking "success" meant a real security agent that
+            # returns {"approved": True, ...} with no "success" key was
+            # always treated as denied, regardless of its actual decision.
+            if "success" in decision:
+                success = bool(decision.get("success"))
+            elif "approved" in decision:
+                success = bool(decision.get("approved"))
+            else:
+                success = False
 
             raw_decision = (
                 decision.get("decision")
@@ -1289,6 +1396,7 @@ class BaseAgent(ABC):
             verification_id=safe_uuid("verify"),
             agent_name=self.agent_name,
             task_name=task.task_name,
+            task_id=task.task_id,
             user_id=task.context.user_id,
             workspace_id=task.context.workspace_id,
             action_summary=result.get("message", "Agent task completed."),
@@ -1302,6 +1410,7 @@ class BaseAgent(ABC):
             ),
             success=bool(result.get("success", False)),
             created_at=utc_now_iso(),
+            status="completed" if result.get("success") else "failed",
             metadata={
                 "request_id": task.context.request_id,
                 "session_id": task.context.session_id,
@@ -1397,6 +1506,7 @@ class BaseAgent(ABC):
         payload = MemoryPayload(
             memory_id=safe_uuid("memory"),
             agent_name=self.agent_name,
+            task_id=task.task_id,
             user_id=task.context.user_id,
             workspace_id=task.context.workspace_id,
             memory_type="agent_task_result",
@@ -1559,8 +1669,16 @@ class BaseAgent(ABC):
             "audit_id": safe_uuid("audit"),
             "agent_name": self.agent_name,
             "agent_type": self.agent_type,
-            "action": action,
+            # "action" is the task's own business action (e.g. "update",
+            # "analyze") -- what an auditor actually wants to know happened.
+            # The audit-lifecycle stage this event was logged at (e.g.
+            # "task_completed", "security_denied") is a separate concern,
+            # kept under "event_type" instead of overloading "action" with
+            # two different meanings.
+            "action": task.task_name if task else action,
+            "event_type": action,
             "timestamp": utc_now_iso(),
+            "task_id": task.task_id if task else None,
             "user_id": task.context.user_id if task else None,
             "workspace_id": task.context.workspace_id if task else None,
             "task_name": task.task_name if task else None,
@@ -1574,7 +1692,27 @@ class BaseAgent(ABC):
 
         if self.audit_logger:
             try:
-                response = await maybe_await(self.audit_logger(audit_payload))
+                # Audit loggers are commonly method-based objects (e.g.
+                # log_event()/log()/write()/record()), not plain callables --
+                # try the common method names before falling back to calling
+                # the object itself, matching the same defensive dispatch
+                # already used for security_agent/verification_agent/
+                # memory_agent elsewhere in this file.
+                audit_method = None
+                for method_name in ("log_event", "log", "write", "record", "emit"):
+                    candidate = getattr(self.audit_logger, method_name, None)
+                    if callable(candidate):
+                        audit_method = candidate
+                        break
+
+                if audit_method is not None:
+                    response = await maybe_await(audit_method(audit_payload))
+                elif callable(self.audit_logger):
+                    response = await maybe_await(self.audit_logger(audit_payload))
+                else:
+                    raise TypeError(
+                        f"{self.audit_logger!r} does not expose a callable audit method."
+                    )
 
                 return {
                     "success": True,
@@ -1713,6 +1851,15 @@ class BaseAgent(ABC):
             "message": message,
             "data": data or {},
             "error": None,
+            # Duplicated at the top level (in addition to metadata below,
+            # kept for backward compatibility with existing readers) so
+            # API/dashboard/test consumers that expect a flat
+            # {success, task_id, user_id, workspace_id, ...} contract don't
+            # have to reach into metadata for identity fields every caller
+            # already has to check for isolation purposes.
+            "task_id": task.task_id if task else None,
+            "user_id": task.context.user_id if task else None,
+            "workspace_id": task.context.workspace_id if task else None,
             "metadata": {
                 "agent_name": self.agent_name,
                 "agent_type": self.agent_type,
@@ -1748,6 +1895,9 @@ class BaseAgent(ABC):
             "message": message,
             "data": data or {},
             "error": str(error) if error is not None else message,
+            "task_id": task.task_id if task else None,
+            "user_id": task.context.user_id if task else None,
+            "workspace_id": task.context.workspace_id if task else None,
             "metadata": {
                 "agent_name": self.agent_name,
                 "agent_type": self.agent_type,
@@ -1780,6 +1930,10 @@ class BaseAgent(ABC):
                 "message": str(output.get("message", "Agent task completed.")),
                 "data": ensure_dict(output.get("data")),
                 "error": output.get("error"),
+                # Same top-level identity fields _safe_result()/_error_result()
+                "task_id": output.get("task_id") or (task.task_id if task else None),
+                "user_id": output.get("user_id") or (task.context.user_id if task else None),
+                "workspace_id": output.get("workspace_id") or (task.context.workspace_id if task else None),
                 "metadata": ensure_dict(output.get("metadata")),
             }
 

@@ -1985,8 +1985,7 @@ class BusinessAgent(BaseAgent):
     async def _emit_agent_event(
         self,
         event_name: str,
-        *,
-        context: Optional[TaskContext] = None,
+        context: Optional[Any] = None,
         data: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """
@@ -1994,6 +1993,13 @@ class BusinessAgent(BaseAgent):
 
         This method fails softly because business task success must not depend on
         dashboard telemetry availability.
+
+        Signature is positional-or-keyword (not keyword-only) so it stays
+        compatible with BaseAgent.execute_task()'s inherited call sites, which
+        invoke it as _emit_agent_event(event_type, task, payload) positionally
+        with an AgentTask in the second slot -- not just BusinessAgent's own
+        keyword-style calls with a TaskContext. `context` is therefore accessed
+        via getattr rather than assumed to be a TaskContext.
         """
         if not getattr(self.config, "dashboard_events_enabled", True):
             return
@@ -2003,10 +2009,10 @@ class BusinessAgent(BaseAgent):
             "event_name": event_name,
             "agent": self.agent_name,
             "agent_id": self.agent_id,
-            "user_id": context.user_id if context else None,
-            "workspace_id": context.workspace_id if context else None,
-            "request_id": context.request_id if context else None,
-            "data": dict(data or {}),
+            "user_id": getattr(context, "user_id", None),
+            "workspace_id": getattr(context, "workspace_id", None),
+            "request_id": getattr(context, "request_id", None),
+            "data": dict(data) if isinstance(data, Mapping) else {},
             "created_at": utc_now_iso(),
         }
 

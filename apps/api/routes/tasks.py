@@ -200,6 +200,14 @@ class Plan(str, Enum):
 ROLE_RANK: Dict[str, int] = {
     Role.VIEWER.value: 10,
     Role.USER.value: 20,
+    # "member" is the real database-level WorkspaceMemberRole (see the
+    # identical mapping + comment in apps/api/routes/agents.py's own
+    # ROLE_RANK) that flows straight into AuthContext.role for every real
+    # request. Without this entry, ROLE_RANK.get("member", 0) fell
+    # through to 0 -- below even "viewer" -- so every real non-owner
+    # workspace member was denied task creation (_enforce_task_create_policy
+    # requires only Role.USER) even on the free plan.
+    "member": 20,
     Role.AGENT.value: 30,
     Role.ANALYST.value: 35,
     Role.DEVELOPER.value: 40,
@@ -488,7 +496,16 @@ MASTER_AGENT = OptionalHook(
         ("agents.master_agent.master_agent", "MasterAgent"),
         ("agents.master.master_agent", "MasterAgent"),
     ],
-    method_candidates=["handle_task", "handle_api_task", "handle_request", "execute", "run", "route_task"],
+    # "execute" must come before "handle_request": OptionalHook.call() always
+    # invokes whichever method it finds with a single dict positional arg
+    # (method(payload)). The real core.master_agent.MasterAgent has both --
+    # handle_request(message, user_id, workspace_id, ...) takes three
+    # required keyword args and cannot accept a single dict, while
+    # execute(task: dict) is the BaseAgent-compatible entrypoint specifically
+    # built to unpack a dict and call handle_request() correctly. Trying
+    # handle_request first (the old order) always raised "missing 2 required
+    # positional arguments: 'user_id' and 'workspace_id'" for every task.
+    method_candidates=["handle_task", "handle_api_task", "execute", "handle_request", "run", "route_task"],
 )
 
 SECURITY_AGENT = OptionalHook(
@@ -498,7 +515,15 @@ SECURITY_AGENT = OptionalHook(
         ("agents.security_agent.security_agent", "SecurityAgent"),
         ("agents.security.security_agent", "SecurityAgent"),
     ],
-    method_candidates=["approve_task_action", "approve_api_action", "approve_action", "check_permission", "execute", "run"],
+    # "run_task" (real agents.security_agent.security_agent.SecurityAgent's
+    # actual, bespoke, sync entrypoint) and "execute_task" (BaseAgent's own
+    # safe dict-normalizing entrypoint) must come before "execute"/"run":
+    # neither of the hopeful approve_*/check_permission names exist on the
+    # real class, so OptionalHook.call() fell through to "run" -- which
+    # SecurityAgent never overrides, hitting BaseAgent.run()'s placeholder
+    # body and crashing with "'dict' object has no attribute 'task_name'"
+    # instead of reaching real logic.
+    method_candidates=["run_task", "execute_task", "approve_task_action", "approve_api_action", "approve_action", "check_permission", "execute", "run"],
 )
 
 MEMORY_AGENT = OptionalHook(
@@ -508,9 +533,22 @@ MEMORY_AGENT = OptionalHook(
         ("agents.memory_agent.memory_agent", "MemoryAgent"),
         ("agents.memory.memory_agent", "MemoryAgent"),
     ],
-    method_candidates=["record_task_context", "record_api_context", "save_context", "remember", "execute", "run"],
+    # Same root cause/fix as SECURITY_AGENT above: agents.memory_agent.
+    # memory_agent.MemoryAgent's real entrypoint is run_task(), not any of
+    # the hopeful record_*/save_context/remember names.
+    method_candidates=["run_task", "execute_task", "record_task_context", "record_api_context", "save_context", "remember", "execute", "run"],
 )
 
+# NOTE (honest, documented gap -- not fixed here): the real
+# agents.verification_agent.verification_agent.VerificationAgent has no
+# run_task()/execute_task()/single-dict-argument entrypoint. Its real method
+# is verify_task(context, task_payload, expected_state=None, ...) -- TWO
+# required positional arguments, not one. OptionalHook.call() always invokes
+# method(payload) with a single dict, so verify_task can never be dispatched
+# through this generic mechanism without a purpose-built adapter that splits
+# one payload into (context=, task_payload=). Real, separate adapter work,
+# out of scope for this runtime-verification pass -- verification_result
+# will keep failing honestly (not silently) until that adapter is built.
 VERIFICATION_AGENT = OptionalHook(
     component_name="Verification Agent",
     import_candidates=[
@@ -518,7 +556,7 @@ VERIFICATION_AGENT = OptionalHook(
         ("agents.verification_agent.verification_agent", "VerificationAgent"),
         ("agents.verification.verification_agent", "VerificationAgent"),
     ],
-    method_candidates=["prepare_task_confirmation", "prepare_confirmation", "verify_result", "confirm", "execute", "run"],
+    method_candidates=["execute_task", "prepare_task_confirmation", "prepare_confirmation", "verify_result", "confirm", "execute", "run"],
 )
 
 
@@ -1012,7 +1050,18 @@ async def run_task_through_master(task: TaskRecord, context: AuthContext, runtim
 
     master_result = await MASTER_AGENT.call(master_payload)
 
-    if master_result.get("success") is False and master_result.get("error", {}).get("code") == "OPTIONAL_COMPONENT_UNAVAILABLE":
+    # core.master_agent.MasterAgent's own _error_result() always puts a
+    # plain string in "error" (its consistent internal convention across
+    # the whole class) -- only OptionalHook.call()'s own "component never
+    # loaded" short-circuit uses the {"code": ...} dict shape this check is
+    # actually looking for. Calling .get() unconditionally on "error"
+    # crashed with AttributeError as soon as the real MasterAgent ran and
+    # returned a normal string-shaped failure instead of the "unavailable"
+    # dict shape.
+    master_error = master_result.get("error")
+    master_error_code = master_error.get("code") if isinstance(master_error, dict) else None
+
+    if master_result.get("success") is False and master_error_code == "OPTIONAL_COMPONENT_UNAVAILABLE":
         return {
             "success": True,
             "message": "Task accepted and marked complete by fallback executor because Master Agent is not connected yet.",

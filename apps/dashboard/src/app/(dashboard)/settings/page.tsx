@@ -36,11 +36,17 @@ import {
   Users,
   WalletCards,
   Workflow,
-  Zap
+  Zap,
 } from "lucide-react";
+import { VoiceControlSettings } from "@/components/voice/VoiceControlSettings";
+import { TrustedVoiceProfiles } from "@/components/voice/TrustedVoiceProfiles";
 
 type RoleLevel = "owner" | "admin" | "manager" | "member" | "viewer";
-type PermissionStatus = "enabled" | "approval_required" | "limited" | "disabled";
+type PermissionStatus =
+  | "enabled"
+  | "approval_required"
+  | "limited"
+  | "disabled";
 type IntegrationStatus = "connected" | "available" | "restricted";
 
 type MetricCard = {
@@ -83,26 +89,27 @@ const metrics: MetricCard[] = [
     label: "Workspace",
     value: "Digital Promotix",
     description: "Primary workspace for William/Jarvis dashboard operations.",
-    icon: BriefcaseBusiness
+    icon: BriefcaseBusiness,
   },
   {
     label: "Team Seats",
     value: "5",
     description: "Role-based access preview for team and workspace members.",
-    icon: Users
+    icon: Users,
   },
   {
     label: "Agent Rules",
     value: "14",
     description: "Agent permission controls prepared for all William agents.",
-    icon: Bot
+    icon: Bot,
   },
   {
     label: "Integrations",
     value: "8",
-    description: "External app connections can be linked through backend routes.",
-    icon: PlugZap
-  }
+    description:
+      "External app connections can be linked through backend routes.",
+    icon: PlugZap,
+  },
 ];
 
 const teamMembers: TeamMember[] = [
@@ -111,119 +118,133 @@ const teamMembers: TeamMember[] = [
     email: "owner@digitalpromotix.com",
     role: "owner",
     status: "Active",
-    access: "Full access"
+    access: "Full access",
   },
   {
     name: "Admin User",
     email: "admin@digitalpromotix.com",
     role: "admin",
     status: "Active",
-    access: "Security + billing"
+    access: "Security + billing",
   },
   {
     name: "Marketing Manager",
     email: "marketing@digitalpromotix.com",
     role: "manager",
     status: "Active",
-    access: "Campaign + CRM"
+    access: "Campaign + CRM",
   },
   {
     name: "Team Member",
     email: "member@digitalpromotix.com",
     role: "member",
     status: "Invited",
-    access: "Limited workspace"
-  }
+    access: "Limited workspace",
+  },
 ];
 
 const agentPermissions: AgentPermission[] = [
   {
     agent: "Master Agent",
-    description: "Planning, routing, response building, and multi-agent coordination.",
+    description:
+      "Planning, routing, response building, and multi-agent coordination.",
     status: "enabled",
-    icon: Bot
+    icon: Bot,
   },
   {
     agent: "Security Agent",
-    description: "Risk scoring, approvals, audit logs, emergency lock, and privacy checks.",
+    description:
+      "Risk scoring, approvals, audit logs, emergency lock, and privacy checks.",
     status: "enabled",
-    icon: Fingerprint
+    icon: Fingerprint,
   },
   {
     agent: "Memory Agent",
-    description: "Private, project, client, team, and workspace memory controls.",
+    description:
+      "Private, project, client, team, and workspace memory controls.",
     status: "approval_required",
-    icon: Brain
+    icon: Brain,
   },
   {
     agent: "Code Agent",
-    description: "Project files, code edits, dependencies, builds, tests, and terminal runs.",
+    description:
+      "Project files, code edits, dependencies, builds, tests, and terminal runs.",
     status: "approval_required",
-    icon: Code2
+    icon: Code2,
   },
   {
     agent: "System Agent",
-    description: "Apps, files, OS commands, device controls, and local automation.",
+    description:
+      "Apps, files, OS commands, device controls, and local automation.",
     status: "approval_required",
-    icon: TerminalSquare
+    icon: TerminalSquare,
   },
   {
     agent: "Browser Agent",
-    description: "Search, scraping, page analysis, forms, downloads, and screenshots.",
+    description:
+      "Search, scraping, page analysis, forms, downloads, and screenshots.",
     status: "limited",
-    icon: Globe2
+    icon: Globe2,
   },
   {
     agent: "Finance Agent",
-    description: "Invoices, budgets, receipts, reports, and finance drafts only.",
+    description:
+      "Invoices, budgets, receipts, reports, and finance drafts only.",
     status: "approval_required",
-    icon: WalletCards
+    icon: WalletCards,
   },
   {
     agent: "Hologram Agent",
-    description: "AR overlays, gestures, spatial mapping, and device bridge features.",
+    description:
+      "AR overlays, gestures, spatial mapping, and device bridge features.",
     status: "disabled",
-    icon: Eye
-  }
+    icon: Eye,
+  },
 ];
 
 const integrations: Integration[] = [
   {
     name: "FastAPI Backend",
-    description: "Connect dashboard pages to backend routes and agent execution APIs.",
+    description:
+      "Connect dashboard pages to backend routes and agent execution APIs.",
     status: "available",
-    icon: Network
+    icon: Network,
   },
   {
     name: "Database",
-    description: "Store users, workspaces, tasks, memory, billing, and audit logs.",
+    description:
+      "Store users, workspaces, tasks, memory, billing, and audit logs.",
     status: "available",
-    icon: Database
+    icon: Database,
   },
   {
     name: "WebSocket Events",
-    description: "Stream task progress, approvals, verification reports, and agent events.",
+    description:
+      "Stream task progress, approvals, verification reports, and agent events.",
     status: "available",
-    icon: Zap
+    icon: Zap,
   },
   {
     name: "Email",
-    description: "Send approved alerts, reports, invitations, and workspace notifications.",
+    description:
+      "Send approved alerts, reports, invitations, and workspace notifications.",
     status: "restricted",
-    icon: Mail
+    icon: Mail,
   },
   {
     name: "Billing Provider",
-    description: "Manage subscriptions, invoices, payment methods, and usage limits.",
+    description:
+      "Manage subscriptions, invoices, payment methods, and usage limits.",
     status: "restricted",
-    icon: CreditCard
+    icon: CreditCard,
   },
   {
     name: "Verification Reports",
-    description: "Attach proof, screenshots, logs, confidence, and completion summaries.",
+    description:
+      "Attach proof, screenshots, logs, confidence, and completion summaries.",
     status: "connected",
-    icon: FileCheck2
-  }
+    icon: FileCheck2,
+  },
 ];
 
 const settingsRules: SettingsRule[] = [
@@ -231,26 +252,26 @@ const settingsRules: SettingsRule[] = [
     title: "Workspace Isolation",
     description:
       "Every setting must stay scoped to workspace_id so one workspace cannot affect another.",
-    icon: Network
+    icon: Network,
   },
   {
     title: "Role-Based Access",
     description:
       "Owner, admin, manager, member, and viewer roles should control page and agent access.",
-    icon: UserCog
+    icon: UserCog,
   },
   {
     title: "Approval Before Risk",
     description:
       "Dangerous actions such as payments, terminal commands, messages, calls, and deletes need approval.",
-    icon: ShieldCheck
+    icon: ShieldCheck,
   },
   {
     title: "No Hardcoded Secrets",
     description:
       "API keys, tokens, credentials, and billing secrets must stay in protected environment variables.",
-    icon: Lock
-  }
+    icon: Lock,
+  },
 ];
 
 function getRoleStyles(role: RoleLevel): string {
@@ -302,12 +323,7 @@ function formatStatus(value: string): string {
   return value.replaceAll("_", " ");
 }
 
-function MetricCardItem({
-  label,
-  value,
-  description,
-  icon: Icon
-}: MetricCard) {
+function MetricCardItem({ label, value, description, icon: Icon }: MetricCard) {
   return (
     <div className="rounded-[28px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.28)] transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
       <div className="mb-5 flex items-center justify-between gap-4">
@@ -341,7 +357,7 @@ function TeamMemberCard({ member }: { member: TeamMember }) {
 
         <span
           className={`rounded-full border px-2.5 py-1 text-[11px] font-bold capitalize ${getRoleStyles(
-            member.role
+            member.role,
           )}`}
         >
           {member.role}
@@ -398,7 +414,7 @@ function AgentPermissionCard({ permission }: { permission: AgentPermission }) {
 
       <span
         className={`mt-4 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold capitalize ${getPermissionStyles(
-          permission.status
+          permission.status,
         )}`}
       >
         {formatStatus(permission.status)}
@@ -419,7 +435,7 @@ function IntegrationCard({ integration }: { integration: Integration }) {
 
         <span
           className={`rounded-full border px-2.5 py-1 text-[11px] font-bold capitalize ${getIntegrationStyles(
-            integration.status
+            integration.status,
           )}`}
         >
           {integration.status}
@@ -453,7 +469,9 @@ function SettingsRuleCard({ rule }: { rule: SettingsRule }) {
 
       <div>
         <p className="text-sm font-bold text-white">{rule.title}</p>
-        <p className="mt-1 text-sm leading-6 text-zinc-500">{rule.description}</p>
+        <p className="mt-1 text-sm leading-6 text-zinc-500">
+          {rule.description}
+        </p>
       </div>
     </div>
   );
@@ -461,15 +479,15 @@ function SettingsRuleCard({ rule }: { rule: SettingsRule }) {
 
 export default function SettingsPage() {
   const approvalRequiredAgents = agentPermissions.filter(
-    (permission) => permission.status === "approval_required"
+    (permission) => permission.status === "approval_required",
   ).length;
 
   const connectedIntegrations = integrations.filter(
-    (integration) => integration.status === "connected"
+    (integration) => integration.status === "connected",
   ).length;
 
   const activeMembers = teamMembers.filter(
-    (member) => member.status === "Active"
+    (member) => member.status === "Active",
   ).length;
 
   return (
@@ -490,9 +508,9 @@ export default function SettingsPage() {
             </h1>
 
             <p className="mt-5 max-w-3xl text-base leading-8 text-zinc-400 md:text-lg">
-              Manage workspace identity, team roles, agent permissions, integration
-              access, privacy behavior, notification preferences, and SaaS-safe
-              security rules for William/Jarvis.
+              Manage workspace identity, team roles, agent permissions,
+              integration access, privacy behavior, notification preferences,
+              and SaaS-safe security rules for William/Jarvis.
             </p>
 
             <div className="mt-7 flex flex-wrap gap-3">
@@ -619,7 +637,7 @@ export default function SettingsPage() {
                 "Integrations",
                 "Privacy",
                 "Notifications",
-                "Security"
+                "Security",
               ].map((item, index) => (
                 <button
                   key={item}
@@ -665,9 +683,9 @@ export default function SettingsPage() {
               </p>
             </div>
             <p className="text-sm leading-7 text-zinc-400">
-              Later, connect this page to auth routes, workspace models, team roles,
-              agent permissions, integration secrets, audit logs, and subscription
-              access control.
+              Later, connect this page to auth routes, workspace models, team
+              roles, agent permissions, integration secrets, audit logs, and
+              subscription access control.
             </p>
           </div>
         </aside>
@@ -725,6 +743,10 @@ export default function SettingsPage() {
             </div>
           </section>
 
+          <VoiceControlSettings />
+
+          <TrustedVoiceProfiles />
+
           <section className="rounded-[32px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_30px_100px_rgba(0,0,0,0.32)] md:p-6">
             <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -761,14 +783,16 @@ export default function SettingsPage() {
                 <Bell className="mb-4 h-6 w-6 text-orange-300" />
                 <p className="text-sm font-bold text-white">Notifications</p>
                 <p className="mt-2 text-sm leading-6 text-zinc-500">
-                  Configure task alerts, security approvals, billing updates, and
-                  verification reports.
+                  Configure task alerts, security approvals, billing updates,
+                  and verification reports.
                 </p>
               </div>
 
               <div className="rounded-[26px] border border-white/10 bg-white/[0.035] p-5">
                 <Palette className="mb-4 h-6 w-6 text-orange-300" />
-                <p className="text-sm font-bold text-white">Brand Preferences</p>
+                <p className="text-sm font-bold text-white">
+                  Brand Preferences
+                </p>
                 <p className="mt-2 text-sm leading-6 text-zinc-500">
                   Store workspace theme, tone, content style, and dashboard
                   appearance preferences.
@@ -779,8 +803,8 @@ export default function SettingsPage() {
                 <Layers3 className="mb-4 h-6 w-6 text-orange-300" />
                 <p className="text-sm font-bold text-white">Module Settings</p>
                 <p className="mt-2 text-sm leading-6 text-zinc-500">
-                  Future settings can enable or restrict modules per plan, role, and
-                  workspace policy.
+                  Future settings can enable or restrict modules per plan, role,
+                  and workspace policy.
                 </p>
               </div>
             </div>
@@ -799,9 +823,9 @@ export default function SettingsPage() {
             </div>
             <p className="max-w-4xl text-sm leading-7 text-zinc-400">
               This frontend page does not actually save workspace, team, agent,
-              billing, integration, or security settings yet. Real changes must be
-              connected later through protected backend routes, role checks, audit
-              logs, and Security Agent approval where needed.
+              billing, integration, or security settings yet. Real changes must
+              be connected later through protected backend routes, role checks,
+              audit logs, and Security Agent approval where needed.
             </p>
           </div>
 

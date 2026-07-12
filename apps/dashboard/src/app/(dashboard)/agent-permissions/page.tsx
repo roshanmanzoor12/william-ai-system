@@ -1,7 +1,16 @@
 "use client";
 
-import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
+import { EmptyState } from "@/components/state/EmptyState";
+import { ErrorState } from "@/components/state/ErrorState";
+import { LoadingState } from "@/components/state/LoadingState";
 
 type UserRole = "owner" | "admin" | "member" | "viewer";
 type UserPlan = "free" | "starter" | "pro" | "enterprise";
@@ -134,8 +143,19 @@ const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "agent_permissions:write",
     "audit:read",
   ],
-  member: ["dashboard:read", "workspace:read", "agents:read", "agents:run", "agent_permissions:read"],
-  viewer: ["dashboard:read", "workspace:read", "agents:read", "agent_permissions:read"],
+  member: [
+    "dashboard:read",
+    "workspace:read",
+    "agents:read",
+    "agents:run",
+    "agent_permissions:read",
+  ],
+  viewer: [
+    "dashboard:read",
+    "workspace:read",
+    "agents:read",
+    "agent_permissions:read",
+  ],
 };
 
 const PLAN_ORDER: Record<UserPlan, number> = {
@@ -237,7 +257,8 @@ const DEFAULT_AGENTS: AgentItem[] = [
     key: "memory_agent",
     name: "Memory Agent",
     category: "memory",
-    description: "Stores and recalls useful context inside workspace boundaries.",
+    description:
+      "Stores and recalls useful context inside workspace boundaries.",
     enabled: true,
     status: "active",
     requires_security_approval: true,
@@ -250,7 +271,8 @@ const DEFAULT_AGENTS: AgentItem[] = [
     key: "code_agent",
     name: "Code Agent",
     category: "execution",
-    description: "Builds, reviews, and fixes code through controlled workflows.",
+    description:
+      "Builds, reviews, and fixes code through controlled workflows.",
     enabled: true,
     status: "active",
     requires_security_approval: true,
@@ -263,7 +285,8 @@ const DEFAULT_AGENTS: AgentItem[] = [
     key: "browser_agent",
     name: "Browser Agent",
     category: "execution",
-    description: "Handles browser operations with sensitive-action approval gates.",
+    description:
+      "Handles browser operations with sensitive-action approval gates.",
     enabled: true,
     status: "active",
     requires_security_approval: true,
@@ -289,7 +312,8 @@ const DEFAULT_AGENTS: AgentItem[] = [
     key: "system_agent",
     name: "System Agent",
     category: "device",
-    description: "Runs local/system actions only after strict security approval.",
+    description:
+      "Runs local/system actions only after strict security approval.",
     enabled: false,
     status: "blocked",
     requires_security_approval: true,
@@ -354,7 +378,8 @@ const DEFAULT_AGENTS: AgentItem[] = [
     key: "finance_agent",
     name: "Finance Agent",
     category: "finance",
-    description: "Handles finance summaries, usage reports, and billing insights.",
+    description:
+      "Handles finance summaries, usage reports, and billing insights.",
     enabled: true,
     status: "active",
     requires_security_approval: true,
@@ -367,7 +392,8 @@ const DEFAULT_AGENTS: AgentItem[] = [
     key: "creator_agent",
     name: "Creator Agent",
     category: "creative",
-    description: "Creates content, campaign ideas, briefs, and marketing assets.",
+    description:
+      "Creates content, campaign ideas, briefs, and marketing assets.",
     enabled: true,
     status: "active",
     requires_security_approval: false,
@@ -660,85 +686,34 @@ function StatCard({
       ].join(" ")}
     >
       <div className="mb-6 flex items-center justify-between">
-        <p className={["text-sm font-bold", highlight ? "text-white/80" : "text-neutral-500"].join(" ")}>
+        <p
+          className={[
+            "text-sm font-bold",
+            highlight ? "text-white/80" : "text-neutral-500",
+          ].join(" ")}
+        >
           {title}
         </p>
         <span
           className={[
             "grid h-9 w-9 place-items-center rounded-full text-sm",
-            highlight ? "bg-white/15 text-white" : "bg-neutral-100 text-neutral-500",
+            highlight
+              ? "bg-white/15 text-white"
+              : "bg-neutral-100 text-neutral-500",
           ].join(" ")}
         >
           {icon}
         </span>
       </div>
       <p className="text-4xl font-black tracking-[-0.05em]">{value}</p>
-      <p className={["mt-2 text-xs font-bold", highlight ? "text-white/75" : "text-emerald-600"].join(" ")}>
+      <p
+        className={[
+          "mt-2 text-xs font-bold",
+          highlight ? "text-white/75" : "text-emerald-600",
+        ].join(" ")}
+      >
         {subtitle}
       </p>
-    </div>
-  );
-}
-
-function LoadingPanel() {
-  return (
-    <div className="grid min-h-[420px] place-items-center rounded-[2rem] bg-white shadow-sm">
-      <div className="text-center">
-        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-neutral-200 border-t-[#ff5a3d]" />
-        <p className="mt-4 text-sm font-black text-neutral-950">
-          Loading permission matrix...
-        </p>
-        <p className="mt-1 text-xs font-medium text-neutral-500">
-          Checking users, roles, plans, and workspace-safe assignments.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function ErrorPanel({
-  message,
-  onRetry,
-}: {
-  message: string;
-  onRetry: () => void;
-}) {
-  return (
-    <div className="grid min-h-[420px] place-items-center rounded-[2rem] border border-red-100 bg-red-50 p-8 text-center">
-      <div>
-        <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-white text-2xl shadow-sm">
-          !
-        </div>
-        <h2 className="mt-5 text-2xl font-black tracking-[-0.04em] text-red-900">
-          Permissions could not load
-        </h2>
-        <p className="mt-2 max-w-md text-sm font-medium text-red-700">{message}</p>
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-6 rounded-2xl bg-red-600 px-5 py-3 text-sm font-black text-white transition hover:bg-red-700"
-        >
-          Retry
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function EmptyPanel() {
-  return (
-    <div className="grid min-h-[320px] place-items-center rounded-[1.6rem] border border-dashed border-neutral-200 bg-white p-8 text-center">
-      <div>
-        <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-neutral-100 text-xl">
-          ∅
-        </div>
-        <h3 className="mt-4 text-xl font-black tracking-[-0.03em] text-neutral-950">
-          No workspace users found
-        </h3>
-        <p className="mt-2 max-w-md text-sm font-medium text-neutral-500">
-          Invite users into this workspace and assign agent access by role, plan, and user-level overrides.
-        </p>
-      </div>
     </div>
   );
 }
@@ -749,7 +724,8 @@ export default function Page() {
   const [session, setSession] = useState<SessionData | null>(null);
   const [users, setUsers] = useState<WorkspaceUser[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
-  const [roleMatrix, setRoleMatrix] = useState<RolePermissionMatrix>(DEFAULT_ROLE_MATRIX);
+  const [roleMatrix, setRoleMatrix] =
+    useState<RolePermissionMatrix>(DEFAULT_ROLE_MATRIX);
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [state, setState] = useState<LoadState>("checking_session");
   const [errorMessage, setErrorMessage] = useState("");
@@ -801,7 +777,9 @@ export default function Page() {
     return new Set(roleMatrix[selectedUser.role] || []);
   }, [roleMatrix, selectedUser]);
 
-  const selectedPlanLimit = selectedUser ? PLAN_AGENT_LIMITS[selectedUser.plan] : 0;
+  const selectedPlanLimit = selectedUser
+    ? PLAN_AGENT_LIMITS[selectedUser.plan]
+    : 0;
   const selectedAssignedCount = selectedUser?.assigned_agents.length || 0;
 
   const sensitiveAssignedCount = useMemo(() => {
@@ -862,7 +840,9 @@ export default function Page() {
         }
 
         setState("error");
-        setErrorMessage(response.error?.message || "Could not load agent permissions.");
+        setErrorMessage(
+          response.error?.message || "Could not load agent permissions.",
+        );
         return;
       }
 
@@ -938,7 +918,10 @@ export default function Page() {
       ? selectedUser.assigned_agents.filter((key) => key !== agent.key)
       : [...selectedUser.assigned_agents, agent.key];
 
-    if (!currentlyAssigned && nextAssigned.length > PLAN_AGENT_LIMITS[selectedUser.plan]) {
+    if (
+      !currentlyAssigned &&
+      nextAssigned.length > PLAN_AGENT_LIMITS[selectedUser.plan]
+    ) {
       setNotice({
         type: "error",
         message: `${selectedUser.plan} plan allows ${PLAN_AGENT_LIMITS[selectedUser.plan]} assigned agent(s).`,
@@ -1027,7 +1010,8 @@ export default function Page() {
         method: "PUT",
         headers: {
           "X-Action": "agent_permissions.update",
-          "X-Sensitive-Action": selectedSensitiveAgents.length > 0 ? "true" : "false",
+          "X-Sensitive-Action":
+            selectedSensitiveAgents.length > 0 ? "true" : "false",
         },
         body: JSON.stringify({
           user_id: session.user_id,
@@ -1065,7 +1049,8 @@ export default function Page() {
 
       setNotice({
         type: "error",
-        message: response.error?.message || "Permission changes could not be saved.",
+        message:
+          response.error?.message || "Permission changes could not be saved.",
       });
       setBusy(false);
       return;
@@ -1076,7 +1061,8 @@ export default function Page() {
         user.user_id === selectedUser.user_id
           ? {
               ...user,
-              assigned_agents: response.data?.assigned_agents || selectedUser.assigned_agents,
+              assigned_agents:
+                response.data?.assigned_agents || selectedUser.assigned_agents,
             }
           : user,
       ),
@@ -1114,7 +1100,10 @@ export default function Page() {
         user.user_id === selectedUser.user_id
           ? {
               ...user,
-              assigned_agents: allowedByPlan.slice(0, PLAN_AGENT_LIMITS[selectedUser.plan]),
+              assigned_agents: allowedByPlan.slice(
+                0,
+                PLAN_AGENT_LIMITS[selectedUser.plan],
+              ),
             }
           : user,
       ),
@@ -1154,7 +1143,8 @@ export default function Page() {
 
     setNotice({
       type: "info",
-      message: "Optional assignments cleared. Protected core agents remain assigned.",
+      message:
+        "Optional assignments cleared. Protected core agents remain assigned.",
     });
   }
 
@@ -1166,395 +1156,416 @@ export default function Page() {
   if (state === "checking_session" || !session) {
     return (
       <div className="grid min-h-[420px] place-items-center text-neutral-950">
-        <div className="rounded-[2rem] bg-white px-8 py-7 text-center shadow-2xl shadow-black/10">
-          <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-neutral-200 border-t-[#ff5a3d]" />
-          <p className="mt-4 text-sm font-black">Checking permissions access...</p>
-          <p className="mt-1 text-xs font-medium text-neutral-500">
-            Validating user_id and workspace_id.
-          </p>
-        </div>
+        <LoadingState
+          variant="light"
+          title="Checking permissions access..."
+          subtitle="Validating user_id and workspace_id."
+        />
       </div>
     );
   }
 
   return (
     <div className="text-neutral-950">
-        <section className="flex min-w-0 flex-1 flex-col px-0">
-          <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h1 className="text-4xl font-black tracking-[-0.055em] text-neutral-950 lg:text-5xl">
-                Agent Permissions
-              </h1>
-              <p className="mt-2 text-sm font-medium text-neutral-500">
-                Assign William/Jarvis agents by user, role, and plan with secure workspace isolation.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="relative w-full max-w-md">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400">
-                  ⌕
-                </span>
-                <input
-                  type="search"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search agents, plans, roles, permissions..."
-                  className="h-12 w-full rounded-full border border-neutral-200 bg-white px-11 text-sm font-semibold outline-none transition placeholder:text-neutral-400 focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
-                />
-              </div>
-              <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
-                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-neutral-400">
-                  Workspace
-                </p>
-                <p className="mt-1 text-sm font-black text-neutral-950">
-                  {session.workspace_name}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="rounded-2xl bg-white px-4 py-3 text-xs font-black text-neutral-500 shadow-sm transition hover:text-[#ff5a3d]"
-                aria-label="Logout"
-              >
-                ↩ Logout
-              </button>
-            </div>
+      <section className="flex min-w-0 flex-1 flex-col px-0">
+        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h1 className="text-4xl font-black tracking-[-0.055em] text-neutral-950 lg:text-5xl">
+              Agent Permissions
+            </h1>
+            <p className="mt-2 text-sm font-medium text-neutral-500">
+              Assign William/Jarvis agents by user, role, and plan with secure
+              workspace isolation.
+            </p>
           </div>
 
-          {notice ? (
-            <div
-              className={[
-                "mb-5 rounded-2xl px-4 py-3 text-sm font-bold",
-                notice.type === "success"
-                  ? "border border-emerald-100 bg-emerald-50 text-emerald-700"
-                  : notice.type === "error"
-                    ? "border border-red-100 bg-red-50 text-red-700"
-                    : "border border-amber-100 bg-amber-50 text-amber-800",
-              ].join(" ")}
-            >
-              {notice.message}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative w-full max-w-md">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400">
+                ⌕
+              </span>
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search agents, plans, roles, permissions..."
+                className="h-12 w-full rounded-full border border-neutral-200 bg-white px-11 text-sm font-semibold outline-none transition placeholder:text-neutral-400 focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
+              />
             </div>
-          ) : null}
+            <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+              <p className="text-[11px] font-black uppercase tracking-[0.18em] text-neutral-400">
+                Workspace
+              </p>
+              <p className="mt-1 text-sm font-black text-neutral-950">
+                {session.workspace_name}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-2xl bg-white px-4 py-3 text-xs font-black text-neutral-500 shadow-sm transition hover:text-[#ff5a3d]"
+              aria-label="Logout"
+            >
+              ↩ Logout
+            </button>
+          </div>
+        </div>
 
-          {state === "loading" ? (
-            <LoadingPanel />
-          ) : state === "error" ? (
-            <ErrorPanel
-              message={errorMessage}
-              onRetry={() => {
-                if (session) void loadPageData(session);
-              }}
-            />
-          ) : state === "empty" ? (
-            <EmptyPanel />
-          ) : (
-            <form onSubmit={handleSave} className="space-y-5">
-              <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                <StatCard
-                  title="Workspace Users"
-                  value={String(users.length)}
-                  subtitle="Same workspace only"
-                  icon="◎"
-                  highlight
-                />
-                <StatCard
-                  title="Agents"
-                  value={String(agents.length)}
-                  subtitle="Registry compatible"
-                  icon="▦"
-                />
-                <StatCard
-                  title="Assigned"
-                  value={String(selectedAssignedCount)}
-                  subtitle={`${selectedPlanLimit} plan limit`}
-                  icon="✓"
-                />
-                <StatCard
-                  title="Sensitive"
-                  value={String(sensitiveAssignedCount)}
-                  subtitle="Security routed"
-                  icon="▣"
-                />
-                <StatCard
-                  title="Plan"
-                  value={(selectedUser?.plan || session.plan).toUpperCase()}
-                  subtitle="Role + plan checked"
-                  icon="$"
-                />
-              </section>
+        {notice ? (
+          <div
+            className={[
+              "mb-5 rounded-2xl px-4 py-3 text-sm font-bold",
+              notice.type === "success"
+                ? "border border-emerald-100 bg-emerald-50 text-emerald-700"
+                : notice.type === "error"
+                  ? "border border-red-100 bg-red-50 text-red-700"
+                  : "border border-amber-100 bg-amber-50 text-amber-800",
+            ].join(" ")}
+          >
+            {notice.message}
+          </div>
+        ) : null}
 
-              <section className="grid gap-5 xl:grid-cols-[0.75fr_1.25fr]">
-                <div className="space-y-5">
-                  <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
-                    <div className="mb-5 flex items-center justify-between">
-                      <div>
-                        <p className="text-base font-black text-neutral-950">
-                          Workspace Users
-                        </p>
-                        <p className="text-xs font-medium text-neutral-500">
-                          Select user to assign agents.
-                        </p>
-                      </div>
-                      <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-black text-neutral-600">
-                        {users.length}
-                      </span>
+        {state === "loading" ? (
+          <LoadingState
+            variant="light"
+            title="Loading permission matrix..."
+            subtitle="Checking users, roles, plans, and workspace-safe assignments."
+          />
+        ) : state === "error" ? (
+          <ErrorState
+            variant="light"
+            title="Permissions could not load"
+            message={errorMessage}
+            onRetry={() => {
+              if (session) void loadPageData(session);
+            }}
+          />
+        ) : state === "empty" ? (
+          <EmptyState
+            variant="light"
+            icon="∅"
+            title="No workspace users found"
+            message="Invite users into this workspace and assign agent access by role, plan, and user-level overrides."
+          />
+        ) : (
+          <form onSubmit={handleSave} className="space-y-5">
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+              <StatCard
+                title="Workspace Users"
+                value={String(users.length)}
+                subtitle="Same workspace only"
+                icon="◎"
+                highlight
+              />
+              <StatCard
+                title="Agents"
+                value={String(agents.length)}
+                subtitle="Registry compatible"
+                icon="▦"
+              />
+              <StatCard
+                title="Assigned"
+                value={String(selectedAssignedCount)}
+                subtitle={`${selectedPlanLimit} plan limit`}
+                icon="✓"
+              />
+              <StatCard
+                title="Sensitive"
+                value={String(sensitiveAssignedCount)}
+                subtitle="Security routed"
+                icon="▣"
+              />
+              <StatCard
+                title="Plan"
+                value={(selectedUser?.plan || session.plan).toUpperCase()}
+                subtitle="Role + plan checked"
+                icon="$"
+              />
+            </section>
+
+            <section className="grid gap-5 xl:grid-cols-[0.75fr_1.25fr]">
+              <div className="space-y-5">
+                <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
+                  <div className="mb-5 flex items-center justify-between">
+                    <div>
+                      <p className="text-base font-black text-neutral-950">
+                        Workspace Users
+                      </p>
+                      <p className="text-xs font-medium text-neutral-500">
+                        Select user to assign agents.
+                      </p>
                     </div>
-
-                    <div className="space-y-3">
-                      {users.map((user) => (
-                        <button
-                          key={user.user_id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedUserId(user.user_id);
-                            setNotice(null);
-                          }}
-                          className={[
-                            "w-full rounded-2xl border p-4 text-left transition",
-                            selectedUserId === user.user_id
-                              ? "border-[#ff5a3d] bg-[#fff3ed]"
-                              : "border-neutral-100 bg-neutral-50 hover:bg-white",
-                          ].join(" ")}
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-black text-neutral-950">
-                                {user.name}
-                              </p>
-                              <p className="truncate text-xs font-medium text-neutral-500">
-                                {user.email}
-                              </p>
-                            </div>
-                            <span
-                              className={[
-                                "rounded-full px-3 py-1 text-[11px] font-black capitalize",
-                                getRoleStyle(user.role),
-                              ].join(" ")}
-                            >
-                              {user.role}
-                            </span>
-                          </div>
-
-                          <div className="mt-3 flex items-center justify-between text-xs font-bold text-neutral-500">
-                            <span>{user.assigned_agents.length} agents</span>
-                            <span>{formatDate(user.last_active_at)}</span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
+                    <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-black text-neutral-600">
+                      {users.length}
+                    </span>
                   </div>
 
-                  <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
-                    <p className="text-base font-black text-neutral-950">
-                      Assignment Actions
-                    </p>
-                    <p className="mt-1 text-xs font-medium text-neutral-500">
-                      Apply safe role defaults or clear optional permissions.
-                    </p>
-
-                    <div className="mt-5 grid gap-3">
+                  <div className="space-y-3">
+                    {users.map((user) => (
                       <button
+                        key={user.user_id}
                         type="button"
-                        disabled={!selectedUser || !canWritePermissions || busy}
-                        onClick={applyRoleDefaults}
-                        className="rounded-2xl bg-neutral-950 px-4 py-3 text-sm font-black text-white transition hover:bg-[#ff5a3d] disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => {
+                          setSelectedUserId(user.user_id);
+                          setNotice(null);
+                        }}
+                        className={[
+                          "w-full rounded-2xl border p-4 text-left transition",
+                          selectedUserId === user.user_id
+                            ? "border-[#ff5a3d] bg-[#fff3ed]"
+                            : "border-neutral-100 bg-neutral-50 hover:bg-white",
+                        ].join(" ")}
                       >
-                        Apply Role Defaults
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!selectedUser || !canWritePermissions || busy}
-                        onClick={clearAssignments}
-                        className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm font-black text-neutral-700 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Clear Optional Assignments
-                      </button>
-                    </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-black text-neutral-950">
+                              {user.name}
+                            </p>
+                            <p className="truncate text-xs font-medium text-neutral-500">
+                              {user.email}
+                            </p>
+                          </div>
+                          <span
+                            className={[
+                              "rounded-full px-3 py-1 text-[11px] font-black capitalize",
+                              getRoleStyle(user.role),
+                            ].join(" ")}
+                          >
+                            {user.role}
+                          </span>
+                        </div>
 
-                    {!canWritePermissions ? (
-                      <div className="mt-5 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
-                        View-only mode: your role cannot change agent assignments.
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
-                    <label
-                      htmlFor="notes"
-                      className="block text-base font-black text-neutral-950"
-                    >
-                      Change Notes
-                    </label>
-                    <p className="mt-1 text-xs font-medium text-neutral-500">
-                      Saved with audit and verification metadata.
-                    </p>
-                    <textarea
-                      id="notes"
-                      value={notes}
-                      disabled={busy}
-                      onChange={(event) => setNotes(event.target.value)}
-                      placeholder="Example: Enabled Code Agent for project build workflow."
-                      className="mt-4 min-h-28 w-full resize-none rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm font-semibold outline-none transition placeholder:text-neutral-400 focus:border-[#ff5a3d] focus:bg-white focus:ring-4 focus:ring-[#ff5a3d]/10 disabled:cursor-not-allowed disabled:opacity-60"
-                    />
+                        <div className="mt-3 flex items-center justify-between text-xs font-bold text-neutral-500">
+                          <span>{user.assigned_agents.length} agents</span>
+                          <span>{formatDate(user.last_active_at)}</span>
+                        </div>
+                      </button>
+                    ))}
                   </div>
                 </div>
 
                 <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
-                  <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                    <div>
-                      <p className="text-lg font-black tracking-[-0.03em] text-neutral-950">
-                        Agent Assignment Matrix
-                      </p>
-                      <p className="text-sm font-medium text-neutral-500">
-                        {selectedUser
-                          ? `Assigning agents for ${selectedUser.name} (${selectedUser.role}, ${selectedUser.plan})`
-                          : "Select a user to manage agent assignments."}
-                      </p>
-                    </div>
+                  <p className="text-base font-black text-neutral-950">
+                    Assignment Actions
+                  </p>
+                  <p className="mt-1 text-xs font-medium text-neutral-500">
+                    Apply safe role defaults or clear optional permissions.
+                  </p>
 
+                  <div className="mt-5 grid gap-3">
                     <button
-                      type="submit"
+                      type="button"
                       disabled={!selectedUser || !canWritePermissions || busy}
-                      className="rounded-full bg-[#ff5a3d] px-5 py-3 text-xs font-black text-white shadow-lg shadow-[#ff5a3d]/20 transition hover:bg-neutral-950 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={applyRoleDefaults}
+                      className="rounded-2xl bg-neutral-950 px-4 py-3 text-sm font-black text-white transition hover:bg-[#ff5a3d] disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {busy ? "Saving..." : "Save Permissions"}
+                      Apply Role Defaults
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!selectedUser || !canWritePermissions || busy}
+                      onClick={clearAssignments}
+                      className="rounded-2xl border border-neutral-200 bg-white px-4 py-3 text-sm font-black text-neutral-700 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Clear Optional Assignments
                     </button>
                   </div>
 
-                  {!selectedUser ? (
-                    <EmptyPanel />
-                  ) : (
-                    <div className="grid gap-4 xl:grid-cols-2">
-                      {filteredAgents.map((agent) => {
-                        const isAssigned = selectedAssignedAgents.has(agent.key);
-                        const isRoleAllowed = roleAllowsAgent(selectedUser.role, agent);
-                        const isPlanAllowed = planAllowsAgent(
-                          selectedUser.plan,
-                          agent.minimum_plan,
-                        );
-                        const isRoleDefault = selectedAllowedByRole.has(agent.key);
-                        const isLocked =
-                          agent.key === "master_agent" ||
-                          agent.key === "verification_agent";
-                        const disabled =
-                          busy ||
-                          !canWritePermissions ||
-                          isLocked ||
-                          !isRoleAllowed ||
-                          !isPlanAllowed ||
-                          (agent.requires_security_approval && !canApproveSecurity);
+                  {!canWritePermissions ? (
+                    <div className="mt-5 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
+                      View-only mode: your role cannot change agent assignments.
+                    </div>
+                  ) : null}
+                </div>
 
-                        return (
-                          <article
-                            key={agent.agent_id}
-                            className={[
-                              "rounded-[1.5rem] border p-4 transition",
-                              isAssigned
-                                ? "border-[#ff5a3d]/40 bg-[#fff3ed]"
-                                : "border-neutral-100 bg-neutral-50 hover:bg-white",
-                            ].join(" ")}
-                          >
-                            <div className="mb-4 flex items-start justify-between gap-4">
-                              <div className="flex min-w-0 items-start gap-3">
-                                <div
-                                  className={[
-                                    "grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-lg font-black",
-                                    isAssigned
-                                      ? "bg-[#ff5a3d] text-white shadow-lg shadow-[#ff5a3d]/25"
-                                      : "bg-white text-neutral-500",
-                                  ].join(" ")}
-                                >
-                                  {getAgentIcon(agent.category)}
-                                </div>
+                <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
+                  <label
+                    htmlFor="notes"
+                    className="block text-base font-black text-neutral-950"
+                  >
+                    Change Notes
+                  </label>
+                  <p className="mt-1 text-xs font-medium text-neutral-500">
+                    Saved with audit and verification metadata.
+                  </p>
+                  <textarea
+                    id="notes"
+                    value={notes}
+                    disabled={busy}
+                    onChange={(event) => setNotes(event.target.value)}
+                    placeholder="Example: Enabled Code Agent for project build workflow."
+                    className="mt-4 min-h-28 w-full resize-none rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm font-semibold outline-none transition placeholder:text-neutral-400 focus:border-[#ff5a3d] focus:bg-white focus:ring-4 focus:ring-[#ff5a3d]/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </div>
+              </div>
 
-                                <div className="min-w-0">
-                                  <h2 className="truncate text-base font-black text-neutral-950">
-                                    {agent.name}
-                                  </h2>
-                                  <p className="truncate text-xs font-bold text-neutral-400">
-                                    {agent.key}
-                                  </p>
-                                </div>
+              <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
+                <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-lg font-black tracking-[-0.03em] text-neutral-950">
+                      Agent Assignment Matrix
+                    </p>
+                    <p className="text-sm font-medium text-neutral-500">
+                      {selectedUser
+                        ? `Assigning agents for ${selectedUser.name} (${selectedUser.role}, ${selectedUser.plan})`
+                        : "Select a user to manage agent assignments."}
+                    </p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={!selectedUser || !canWritePermissions || busy}
+                    className="rounded-full bg-[#ff5a3d] px-5 py-3 text-xs font-black text-white shadow-lg shadow-[#ff5a3d]/20 transition hover:bg-neutral-950 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {busy ? "Saving..." : "Save Permissions"}
+                  </button>
+                </div>
+
+                {!selectedUser ? (
+                  <EmptyState
+                    variant="light"
+                    icon="∅"
+                    title="No workspace users found"
+                    message="Invite users into this workspace and assign agent access by role, plan, and user-level overrides."
+                  />
+                ) : (
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    {filteredAgents.map((agent) => {
+                      const isAssigned = selectedAssignedAgents.has(agent.key);
+                      const isRoleAllowed = roleAllowsAgent(
+                        selectedUser.role,
+                        agent,
+                      );
+                      const isPlanAllowed = planAllowsAgent(
+                        selectedUser.plan,
+                        agent.minimum_plan,
+                      );
+                      const isRoleDefault = selectedAllowedByRole.has(
+                        agent.key,
+                      );
+                      const isLocked =
+                        agent.key === "master_agent" ||
+                        agent.key === "verification_agent";
+                      const disabled =
+                        busy ||
+                        !canWritePermissions ||
+                        isLocked ||
+                        !isRoleAllowed ||
+                        !isPlanAllowed ||
+                        (agent.requires_security_approval &&
+                          !canApproveSecurity);
+
+                      return (
+                        <article
+                          key={agent.agent_id}
+                          className={[
+                            "rounded-[1.5rem] border p-4 transition",
+                            isAssigned
+                              ? "border-[#ff5a3d]/40 bg-[#fff3ed]"
+                              : "border-neutral-100 bg-neutral-50 hover:bg-white",
+                          ].join(" ")}
+                        >
+                          <div className="mb-4 flex items-start justify-between gap-4">
+                            <div className="flex min-w-0 items-start gap-3">
+                              <div
+                                className={[
+                                  "grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-lg font-black",
+                                  isAssigned
+                                    ? "bg-[#ff5a3d] text-white shadow-lg shadow-[#ff5a3d]/25"
+                                    : "bg-white text-neutral-500",
+                                ].join(" ")}
+                              >
+                                {getAgentIcon(agent.category)}
                               </div>
 
-                              <button
-                                type="button"
-                                disabled={disabled}
-                                onClick={() => toggleLocalAgent(agent)}
-                                className={[
-                                  "relative h-8 w-14 rounded-full transition disabled:cursor-not-allowed disabled:opacity-50",
-                                  isAssigned ? "bg-[#ff5a3d]" : "bg-neutral-300",
-                                ].join(" ")}
-                                aria-label={`Toggle ${agent.name}`}
-                              >
-                                <span
-                                  className={[
-                                    "absolute top-1 h-6 w-6 rounded-full bg-white shadow transition",
-                                    isAssigned ? "left-7" : "left-1",
-                                  ].join(" ")}
-                                />
-                              </button>
+                              <div className="min-w-0">
+                                <h2 className="truncate text-base font-black text-neutral-950">
+                                  {agent.name}
+                                </h2>
+                                <p className="truncate text-xs font-bold text-neutral-400">
+                                  {agent.key}
+                                </p>
+                              </div>
                             </div>
 
-                            <p className="min-h-10 text-sm font-medium leading-5 text-neutral-500">
-                              {agent.description}
-                            </p>
-
-                            <div className="mt-4 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={disabled}
+                              onClick={() => toggleLocalAgent(agent)}
+                              className={[
+                                "relative h-8 w-14 rounded-full transition disabled:cursor-not-allowed disabled:opacity-50",
+                                isAssigned ? "bg-[#ff5a3d]" : "bg-neutral-300",
+                              ].join(" ")}
+                              aria-label={`Toggle ${agent.name}`}
+                            >
                               <span
                                 className={[
-                                  "rounded-full px-3 py-1 text-[11px] font-black capitalize",
-                                  getRiskStyle(agent.risk_level),
+                                  "absolute top-1 h-6 w-6 rounded-full bg-white shadow transition",
+                                  isAssigned ? "left-7" : "left-1",
                                 ].join(" ")}
-                              >
-                                {agent.risk_level} risk
+                              />
+                            </button>
+                          </div>
+
+                          <p className="min-h-10 text-sm font-medium leading-5 text-neutral-500">
+                            {agent.description}
+                          </p>
+
+                          <div className="mt-4 flex flex-wrap items-center gap-2">
+                            <span
+                              className={[
+                                "rounded-full px-3 py-1 text-[11px] font-black capitalize",
+                                getRiskStyle(agent.risk_level),
+                              ].join(" ")}
+                            >
+                              {agent.risk_level} risk
+                            </span>
+
+                            <span className="rounded-full bg-neutral-100 px-3 py-1 text-[11px] font-black text-neutral-600">
+                              {agent.minimum_plan}+ plan
+                            </span>
+
+                            {isRoleDefault ? (
+                              <span className="rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-black text-emerald-700">
+                                Role default
                               </span>
+                            ) : null}
 
-                              <span className="rounded-full bg-neutral-100 px-3 py-1 text-[11px] font-black text-neutral-600">
-                                {agent.minimum_plan}+ plan
+                            {agent.requires_security_approval ? (
+                              <span className="rounded-full bg-[#fff3ed] px-3 py-1 text-[11px] font-black text-[#ff5a3d]">
+                                Security routed
                               </span>
-
-                              {isRoleDefault ? (
-                                <span className="rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-black text-emerald-700">
-                                  Role default
-                                </span>
-                              ) : null}
-
-                              {agent.requires_security_approval ? (
-                                <span className="rounded-full bg-[#fff3ed] px-3 py-1 text-[11px] font-black text-[#ff5a3d]">
-                                  Security routed
-                                </span>
-                              ) : null}
-                            </div>
-
-                            {!isRoleAllowed ? (
-                              <p className="mt-3 rounded-2xl bg-red-50 px-3 py-2 text-[11px] font-bold text-red-700">
-                                Blocked by role: {selectedUser.role}
-                              </p>
                             ) : null}
+                          </div>
 
-                            {!isPlanAllowed ? (
-                              <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800">
-                                Requires {agent.minimum_plan} plan or higher.
-                              </p>
-                            ) : null}
+                          {!isRoleAllowed ? (
+                            <p className="mt-3 rounded-2xl bg-red-50 px-3 py-2 text-[11px] font-bold text-red-700">
+                              Blocked by role: {selectedUser.role}
+                            </p>
+                          ) : null}
 
-                            {isLocked ? (
-                              <p className="mt-3 rounded-2xl bg-neutral-100 px-3 py-2 text-[11px] font-bold text-neutral-600">
-                                Protected core assignment cannot be removed.
-                              </p>
-                            ) : null}
-                          </article>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </section>
-            </form>
-          )}
-        </section>
+                          {!isPlanAllowed ? (
+                            <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800">
+                              Requires {agent.minimum_plan} plan or higher.
+                            </p>
+                          ) : null}
+
+                          {isLocked ? (
+                            <p className="mt-3 rounded-2xl bg-neutral-100 px-3 py-2 text-[11px] font-bold text-neutral-600">
+                              Protected core assignment cannot be removed.
+                            </p>
+                          ) : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </section>
+          </form>
+        )}
+      </section>
     </div>
   );
 }

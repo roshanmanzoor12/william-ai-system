@@ -13,16 +13,32 @@
  * - Includes loading, error, empty states, role/plan visibility, safe errors, and audit-ready actions.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { SessionData, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
+import { EmptyState } from "@/components/state/EmptyState";
+import { ErrorState } from "@/components/state/ErrorState";
+import { LoadingState } from "@/components/state/LoadingState";
 
 // Matches apps/api/routes/tasks.py's real TaskStatus/TaskPriority enums and
 // TaskRecord model exactly (confirmed by reading the source). The old
 // vocabulary here ("rejected" status, "critical" priority, plus a `progress`
 // percentage, `duration_ms`, and `cost_units` that have no backend field at
 // all) was fabricated and never matched what the API actually returns.
-type TaskStatus = "created" | "queued" | "running" | "waiting_security" | "completed" | "failed" | "cancelled";
+type TaskStatus =
+  | "created"
+  | "queued"
+  | "running"
+  | "waiting_security"
+  | "completed"
+  | "failed"
+  | "cancelled";
 type TaskPriority = "low" | "normal" | "high" | "urgent";
 
 type TaskRecord = {
@@ -48,7 +64,11 @@ type TaskRecord = {
 type TaskListResponse = {
   tasks: TaskRecord[];
   pagination: { limit: number; offset: number; returned: number };
-  filters: { status: string | null; agent: string | null; include_workspace_tasks: boolean };
+  filters: {
+    status: string | null;
+    agent: string | null;
+    include_workspace_tasks: boolean;
+  };
   isolation: { user_id: string; workspace_id: string };
 };
 
@@ -64,16 +84,21 @@ function taskAgentLabel(task: TaskRecord): string {
  * number) until the task has both started and completed. */
 function taskDurationMs(task: TaskRecord): number | null {
   if (!task.started_at || !task.completed_at) return null;
-  return new Date(task.completed_at).getTime() - new Date(task.started_at).getTime();
+  return (
+    new Date(task.completed_at).getTime() - new Date(task.started_at).getTime()
+  );
 }
 
 function taskIsSensitive(task: TaskRecord): boolean {
   return task.status === "waiting_security" || task.security_result !== null;
 }
 
-function taskSecurityReviewStatus(task: TaskRecord): "not_required" | "pending" | "approved" | "rejected" {
+function taskSecurityReviewStatus(
+  task: TaskRecord,
+): "not_required" | "pending" | "approved" | "rejected" {
   if (task.status === "waiting_security") return "pending";
-  if (task.security_result !== null) return task.approved_by_security ? "approved" : "rejected";
+  if (task.security_result !== null)
+    return task.approved_by_security ? "approved" : "rejected";
   return "not_required";
 }
 
@@ -131,8 +156,17 @@ function nowIso(): string {
 }
 
 function safeError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error || "Unknown error");
-  const blocked = ["secret", "token", "password", "apikey", "api_key", "database_url", "jwt"];
+  const message =
+    error instanceof Error ? error.message : String(error || "Unknown error");
+  const blocked = [
+    "secret",
+    "token",
+    "password",
+    "apikey",
+    "api_key",
+    "database_url",
+    "jwt",
+  ];
   const lower = message.toLowerCase();
 
   if (blocked.some((word) => lower.includes(word))) {
@@ -180,7 +214,8 @@ async function dashboardFetch<T>(
   if (!API_BASE_URL) {
     return {
       success: false,
-      error: "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
+      error:
+        "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
     };
   }
 
@@ -201,7 +236,9 @@ async function dashboardFetch<T>(
     if (!response.ok) {
       return {
         success: false,
-        error: safeError(json.error || `Request failed with status ${response.status}`),
+        error: safeError(
+          json.error || `Request failed with status ${response.status}`,
+        ),
       };
     }
 
@@ -263,7 +300,10 @@ function Icon({
       return (
         <svg {...common} viewBox="0 0 32 32">
           <rect width="32" height="32" rx="12" fill="url(#logoGradient)" />
-          <path d="M10 21.5V16h5.7c1.1 0 2-.9 2-2v-1.8H12V8h10v6.1c0 3.3-2.6 5.9-5.9 5.9h-1.3v1.5H10Z" fill="white" />
+          <path
+            d="M10 21.5V16h5.7c1.1 0 2-.9 2-2v-1.8H12V8h10v6.1c0 3.3-2.6 5.9-5.9 5.9h-1.3v1.5H10Z"
+            fill="white"
+          />
           <path d="M19.3 24v-5.7H24V24h-4.7Z" fill="white" />
           <defs>
             <linearGradient id="logoGradient" x1="4" x2="28" y1="4" y2="28">
@@ -276,14 +316,30 @@ function Icon({
     case "search":
       return (
         <svg {...common}>
-          <path d="M11 19a8 8 0 1 1 5.3-2l3.4 3.3" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" />
+          <path
+            d="M11 19a8 8 0 1 1 5.3-2l3.4 3.3"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "bell":
       return (
         <svg {...common}>
-          <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M13.7 21a2 2 0 0 1-3.4 0" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
+          <path
+            d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M13.7 21a2 2 0 0 1-3.4 0"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
           <circle cx="18.5" cy="5.5" r="2.5" fill="#ff5438" />
         </svg>
       );
@@ -291,153 +347,316 @@ function Icon({
       return (
         <svg {...common}>
           <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
-          <path d="M12 7v6" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
-          <path d="M12 16.8h.01" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" />
+          <path
+            d="M12 7v6"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M12 16.8h.01"
+            stroke={stroke}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "grid":
       return (
         <svg {...common}>
-          <path d="M8.5 4.5h-3v3h3v-3ZM18.5 4.5h-3v3h3v-3ZM8.5 16.5h-3v3h3v-3ZM18.5 16.5h-3v3h3v-3ZM13.5 10.5h-3v3h3v-3Z" stroke={stroke} strokeWidth="1.5" />
+          <path
+            d="M8.5 4.5h-3v3h3v-3ZM18.5 4.5h-3v3h3v-3ZM8.5 16.5h-3v3h3v-3ZM18.5 16.5h-3v3h3v-3ZM13.5 10.5h-3v3h3v-3Z"
+            stroke={stroke}
+            strokeWidth="1.5"
+          />
         </svg>
       );
     case "calendar":
       return (
         <svg {...common}>
-          <path d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
+          <path
+            d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "mail":
       return (
         <svg {...common}>
           <path d="M4 6.5h16v11H4v-11Z" stroke={stroke} strokeWidth="1.7" />
-          <path d="m4 7 8 6 8-6" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+          <path
+            d="m4 7 8 6 8-6"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "doc":
       return (
         <svg {...common}>
-          <path d="M7 3.8h7l3 3V20H7V3.8Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" />
-          <path d="M14 4v3h3M9.5 11h5M9.5 15h5" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" />
+          <path
+            d="M7 3.8h7l3 3V20H7V3.8Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M14 4v3h3M9.5 11h5M9.5 15h5"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "users":
       return (
         <svg {...common}>
-          <path d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
+          <path
+            d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
           <circle cx="12" cy="9" r="3" stroke={stroke} strokeWidth="1.7" />
-          <path d="M20 18c0-1.8-1.1-3.3-2.7-3.8M16.8 6.3a2.5 2.5 0 0 1 0 4.4" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" />
+          <path
+            d="M20 18c0-1.8-1.1-3.3-2.7-3.8M16.8 6.3a2.5 2.5 0 0 1 0 4.4"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "layers":
       return (
         <svg {...common}>
-          <path d="m12 3 8 4-8 4-8-4 8-4Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" />
-          <path d="m4 12 8 4 8-4M4 17l8 4 8-4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+          <path
+            d="m12 3 8 4-8 4-8-4 8-4Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m4 12 8 4 8-4M4 17l8 4 8-4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "settings":
       return (
         <svg {...common}>
           <circle cx="12" cy="12" r="3" stroke={stroke} strokeWidth="1.7" />
-          <path d="M19 12a7.4 7.4 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a6 6 0 0 0-1.8-1L14.4 3h-4l-.4 3a6 6 0 0 0-1.8 1L5.8 6l-2 3.5 2 1.5a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a6 6 0 0 0 1.8 1l.4 3h4l.4-3a6 6 0 0 0 1.8-1l2.4 1 2-3.5-2-1.5c.1-.3.1-.7.1-1Z" stroke={stroke} strokeWidth="1.2" strokeLinejoin="round" />
+          <path
+            d="M19 12a7.4 7.4 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a6 6 0 0 0-1.8-1L14.4 3h-4l-.4 3a6 6 0 0 0-1.8 1L5.8 6l-2 3.5 2 1.5a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a6 6 0 0 0 1.8 1l.4 3h4l.4-3a6 6 0 0 0 1.8-1l2.4 1 2-3.5-2-1.5c.1-.3.1-.7.1-1Z"
+            stroke={stroke}
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "help":
       return (
         <svg {...common}>
           <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
-          <path d="M9.8 9.3a2.4 2.4 0 0 1 4.6 1c0 1.8-2.4 2-2.4 3.5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
-          <path d="M12 17.2h.01" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" />
+          <path
+            d="M9.8 9.3a2.4 2.4 0 0 1 4.6 1c0 1.8-2.4 2-2.4 3.5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M12 17.2h.01"
+            stroke={stroke}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "logout":
       return (
         <svg {...common}>
-          <path d="M10 5H6v14h4M14 8l4 4-4 4M18 12H9" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+          <path
+            d="M10 5H6v14h4M14 8l4 4-4 4M18 12H9"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "moon":
       return (
         <svg {...common}>
-          <path d="M19 15.2A7.5 7.5 0 0 1 8.8 5a8 8 0 1 0 10.2 10.2Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" />
+          <path
+            d="M19 15.2A7.5 7.5 0 0 1 8.8 5a8 8 0 1 0 10.2 10.2Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "sun":
       return (
         <svg {...common}>
           <circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth="1.7" />
-          <path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
+          <path
+            d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "play":
       return (
         <svg {...common}>
-          <path d="M8 5.5v13l11-6.5-11-6.5Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" />
+          <path
+            d="M8 5.5v13l11-6.5-11-6.5Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "shield":
       return (
         <svg {...common}>
-          <path d="M12 3 19 6v5.5c0 4.5-2.8 7.8-7 9.5-4.2-1.7-7-5-7-9.5V6l7-3Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" />
-          <path d="m9.5 12 1.8 1.8 3.7-4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+          <path
+            d="M12 3 19 6v5.5c0 4.5-2.8 7.8-7 9.5-4.2-1.7-7-5-7-9.5V6l7-3Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m9.5 12 1.8 1.8 3.7-4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "check":
       return (
         <svg {...common}>
-          <path d="m5 12 4 4L19 6" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          <path
+            d="m5 12 4 4L19 6"
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "clock":
       return (
         <svg {...common}>
           <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
-          <path d="M12 7v5l3 2" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+          <path
+            d="M12 7v5l3 2"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "x":
       return (
         <svg {...common}>
-          <path d="m7 7 10 10M17 7 7 17" stroke={stroke} strokeWidth="2" strokeLinecap="round" />
+          <path
+            d="m7 7 10 10M17 7 7 17"
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "filter":
       return (
         <svg {...common}>
-          <path d="M4 6h16M7 12h10M10 18h4" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" />
+          <path
+            d="M4 6h16M7 12h10M10 18h4"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "more":
       return (
         <svg {...common}>
-          <path d="M6 12h.01M12 12h.01M18 12h.01" stroke={stroke} strokeWidth="3" strokeLinecap="round" />
+          <path
+            d="M6 12h.01M12 12h.01M18 12h.01"
+            stroke={stroke}
+            strokeWidth="3"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "bolt":
       return (
         <svg {...common}>
-          <path d="M13 2 5 13h6l-1 9 8-12h-6l1-8Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" />
+          <path
+            d="M13 2 5 13h6l-1 9 8-12h-6l1-8Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case "memory":
       return (
         <svg {...common}>
-          <rect x="5" y="5" width="14" height="14" rx="3" stroke={stroke} strokeWidth="1.7" />
-          <path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" />
+          <rect
+            x="5"
+            y="5"
+            width="14"
+            height="14"
+            rx="3"
+            stroke={stroke}
+            strokeWidth="1.7"
+          />
+          <path
+            d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "chart":
       return (
         <svg {...common}>
-          <path d="M4 19V5M4 19h16" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" />
-          <path d="M8 16v-5M12 16V8M16 16v-7" stroke={stroke} strokeWidth="2" strokeLinecap="round" />
+          <path
+            d="M4 19V5M4 19h16"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M8 16v-5M12 16V8M16 16v-7"
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
         </svg>
       );
     case "spark":
       return (
         <svg {...common}>
-          <path d="M12 2.5 13.7 9l6.3 3-6.3 3L12 21.5 10.3 15 4 12l6.3-3L12 2.5Z" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" />
+          <path
+            d="M12 2.5 13.7 9l6.3 3-6.3 3L12 21.5 10.3 15 4 12l6.3-3L12 2.5Z"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     default:
@@ -447,11 +666,22 @@ function Icon({
 
 function MiniBarChart({ tasks }: { tasks: TaskRecord[] }) {
   const bars = useMemo(() => {
-    const labels = ["Master", "Security", "Memory", "Workflow", "Verify", "Code"];
+    const labels = [
+      "Master",
+      "Security",
+      "Memory",
+      "Workflow",
+      "Verify",
+      "Code",
+    ];
     const counts = labels.map((label) => {
-      const total = tasks.filter((task) => taskAgentLabel(task).toLowerCase().includes(label.toLowerCase())).length;
+      const total = tasks.filter((task) =>
+        taskAgentLabel(task).toLowerCase().includes(label.toLowerCase()),
+      ).length;
       const completed = tasks.filter(
-        (task) => taskAgentLabel(task).toLowerCase().includes(label.toLowerCase()) && task.status === "completed",
+        (task) =>
+          taskAgentLabel(task).toLowerCase().includes(label.toLowerCase()) &&
+          task.status === "completed",
       ).length;
 
       return {
@@ -459,7 +689,9 @@ function MiniBarChart({ tasks }: { tasks: TaskRecord[] }) {
         total: Math.max(total, 1),
         completed,
         failed: tasks.filter(
-          (task) => taskAgentLabel(task).toLowerCase().includes(label.toLowerCase()) && task.status === "failed",
+          (task) =>
+            taskAgentLabel(task).toLowerCase().includes(label.toLowerCase()) &&
+            task.status === "failed",
         ).length,
       };
     });
@@ -475,21 +707,37 @@ function MiniBarChart({ tasks }: { tasks: TaskRecord[] }) {
           <p>Live completion ratio by agent lane</p>
         </div>
         <div className="legend">
-          <span><i className="orangeDot" /> Completed</span>
-          <span><i className="darkDot" /> Active</span>
+          <span>
+            <i className="orangeDot" /> Completed
+          </span>
+          <span>
+            <i className="darkDot" /> Active
+          </span>
         </div>
       </div>
 
       <div className="barChart" aria-label="Agent task flow chart">
         {bars.map((bar) => {
-          const completedHeight = Math.max(24, Math.min(112, 36 + bar.completed * 20));
-          const activeHeight = Math.max(18, Math.min(90, 26 + (bar.total - bar.completed + bar.failed) * 18));
+          const completedHeight = Math.max(
+            24,
+            Math.min(112, 36 + bar.completed * 20),
+          );
+          const activeHeight = Math.max(
+            18,
+            Math.min(90, 26 + (bar.total - bar.completed + bar.failed) * 18),
+          );
 
           return (
             <div className="barGroup" key={bar.label}>
               <div className="bars">
-                <span className="bar barOrange" style={{ height: completedHeight }} />
-                <span className="bar barDark" style={{ height: activeHeight }} />
+                <span
+                  className="bar barOrange"
+                  style={{ height: completedHeight }}
+                />
+                <span
+                  className="bar barDark"
+                  style={{ height: activeHeight }}
+                />
               </div>
               <span className="barLabel">{bar.label}</span>
             </div>
@@ -510,7 +758,11 @@ function StatusPill({ status }: { status: TaskStatus }) {
 }
 
 function PriorityPill({ priority }: { priority: TaskPriority }) {
-  return <span className={cx("priorityPill", `priority-${priority}`)}>{PRIORITY_LABELS[priority]}</span>;
+  return (
+    <span className={cx("priorityPill", `priority-${priority}`)}>
+      {PRIORITY_LABELS[priority]}
+    </span>
+  );
 }
 
 export default function Page() {
@@ -518,7 +770,9 @@ export default function Page() {
   const [session, setSession] = useState<SessionData | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
-  const [selectedStatus, setSelectedStatus] = useState<TaskStatus | "all">("all");
+  const [selectedStatus, setSelectedStatus] = useState<TaskStatus | "all">(
+    "all",
+  );
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreatingTask, setIsCreatingTask] = useState(false);
@@ -538,16 +792,29 @@ export default function Page() {
     setCheckingSession(false);
   }, [router]);
 
-  const canCreateTask = Boolean(session) && hasMinRole(session!.role, "manager") && hasMinPlan(session!.plan, "pro");
-  const canApproveSecurity = Boolean(session) && hasMinRole(session!.role, "admin");
-  const canExport = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "business");
+  const canCreateTask =
+    Boolean(session) &&
+    hasMinRole(session!.role, "manager") &&
+    hasMinPlan(session!.plan, "pro");
+  const canApproveSecurity =
+    Boolean(session) && hasMinRole(session!.role, "admin");
+  const canExport =
+    Boolean(session) &&
+    hasMinRole(session!.role, "admin") &&
+    hasMinPlan(session!.plan, "business");
 
   const stats: TaskStats = useMemo(() => {
     const total = tasks.length;
-    const completed = tasks.filter((task) => task.status === "completed").length;
+    const completed = tasks.filter(
+      (task) => task.status === "completed",
+    ).length;
     const running = tasks.filter((task) => task.status === "running").length;
-    const failed = tasks.filter((task) => task.status === "failed" || task.status === "cancelled").length;
-    const securityPending = tasks.filter((task) => task.status === "waiting_security").length;
+    const failed = tasks.filter(
+      (task) => task.status === "failed" || task.status === "cancelled",
+    ).length;
+    const securityPending = tasks.filter(
+      (task) => task.status === "waiting_security",
+    ).length;
 
     return { total, completed, running, failed, securityPending };
   }, [tasks]);
@@ -556,7 +823,8 @@ export default function Page() {
     const q = search.trim().toLowerCase();
 
     return tasks.filter((task) => {
-      const statusMatch = selectedStatus === "all" || task.status === selectedStatus;
+      const statusMatch =
+        selectedStatus === "all" || task.status === selectedStatus;
       const searchMatch =
         !q ||
         task.task_id.toLowerCase().includes(q) ||
@@ -568,7 +836,11 @@ export default function Page() {
   }, [tasks, selectedStatus, search]);
 
   const liveTask = useMemo(() => {
-    return tasks.find((task) => task.status === "running") || tasks.find((task) => task.status === "waiting_security") || tasks[0];
+    return (
+      tasks.find((task) => task.status === "running") ||
+      tasks.find((task) => task.status === "waiting_security") ||
+      tasks[0]
+    );
   }, [tasks]);
 
   const loadTasks = useCallback(
@@ -601,6 +873,11 @@ export default function Page() {
     mounted.current = true;
     void loadTasks("initial");
   }, [loadTasks, session]);
+
+  const handleRetry = useCallback(() => {
+    setError(null);
+    void loadTasks("initial");
+  }, [loadTasks]);
 
   // "Live" polls the real /tasks endpoint on an interval instead of
   // fabricating progress ticks client-side -- there is no progress field
@@ -660,7 +937,9 @@ export default function Page() {
     if (!session) return;
 
     if (!canApproveSecurity) {
-      setError("Only admins or owners can approve sensitive Security Agent tasks.");
+      setError(
+        "Only admins or owners can approve sensitive Security Agent tasks.",
+      );
       return;
     }
 
@@ -670,19 +949,26 @@ export default function Page() {
     // waiting_security task is unblocked by re-running it with
     // approved_by_security: true (apps/api/routes/tasks.py's
     // TaskRunRequest, handled by POST /tasks/{task_id}/run).
-    const response = await dashboardFetch<{ task: TaskRecord }>(`/tasks/${encodeURIComponent(task.task_id)}/run`, {
-      method: "POST",
-      accessToken: session.accessToken,
-      audit_action: "security_task_approve",
-      body: JSON.stringify({
-        approved_by_security: true,
-        runtime_input: {},
-        metadata: { source: "dashboard_security_approval" },
-      }),
-    });
+    const response = await dashboardFetch<{ task: TaskRecord }>(
+      `/tasks/${encodeURIComponent(task.task_id)}/run`,
+      {
+        method: "POST",
+        accessToken: session.accessToken,
+        audit_action: "security_task_approve",
+        body: JSON.stringify({
+          approved_by_security: true,
+          runtime_input: {},
+          metadata: { source: "dashboard_security_approval" },
+        }),
+      },
+    );
 
     if (response.success && response.data) {
-      setTasks((current) => current.map((item) => (item.task_id === task.task_id ? response.data!.task : item)));
+      setTasks((current) =>
+        current.map((item) =>
+          item.task_id === task.task_id ? response.data!.task : item,
+        ),
+      );
     } else if (response.error) {
       setError(response.error);
     }
@@ -692,17 +978,34 @@ export default function Page() {
     if (!session) return;
 
     if (!canExport) {
-      setError("Task export requires admin access and Business plan or higher.");
+      setError(
+        "Task export requires admin access and Business plan or higher.",
+      );
       return;
     }
 
     const isolatedTasks = tasks.filter(
-      (task) => task.user_id === session.user_id && task.workspace_id === session.workspace_id,
+      (task) =>
+        task.user_id === session.user_id &&
+        task.workspace_id === session.workspace_id,
     );
 
-    const blob = new Blob([JSON.stringify({ user_id: session.user_id, workspace_id: session.workspace_id, tasks: isolatedTasks }, null, 2)], {
-      type: "application/json",
-    });
+    const blob = new Blob(
+      [
+        JSON.stringify(
+          {
+            user_id: session.user_id,
+            workspace_id: session.workspace_id,
+            tasks: isolatedTasks,
+          },
+          null,
+          2,
+        ),
+      ],
+      {
+        type: "application/json",
+      },
+    );
 
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -715,251 +1018,329 @@ export default function Page() {
   if (checkingSession || !session) {
     return (
       <div className="dashboardPanel">
-        <p>Checking secure session...</p>
+        <LoadingState variant="light" title="Checking secure session..." />
       </div>
     );
   }
 
   return (
     <div className="dashboardPanel">
-        <div className="heroLine">
-          <div>
-            <h1>Good morning, {session.name.split(" ")[0]}</h1>
-            <p>Track agent tasks, live progress, security reviews, memory context, and verification status.</p>
+      <div className="heroLine">
+        <div>
+          <h1>Good morning, {session.name.split(" ")[0]}</h1>
+          <p>
+            Track agent tasks, live progress, security reviews, memory context,
+            and verification status.
+          </p>
+        </div>
+
+        <div className="tenantBadge">
+          <span>{session.role}</span>
+          <strong>{session.plan}</strong>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="mb-4">
+          <ErrorState variant="light" message={error} onRetry={handleRetry} />
+        </div>
+      ) : null}
+
+      <section className="overviewGrid">
+        <div className="balanceCard">
+          <div className="cardTop">
+            <div>
+              <p>Total Tasks</p>
+              <h2>{stats.total}</h2>
+              <span className="greenText">↑ {stats.completed} completed</span>
+            </div>
+            <button className="currencyBtn">Live</button>
           </div>
 
-          <div className="tenantBadge">
-            <span>{session.role}</span>
-            <strong>{session.plan}</strong>
+          <div className="actionRow">
+            <button
+              className="primaryBtn"
+              onClick={createTask}
+              disabled={!canCreateTask || isCreatingTask}
+            >
+              <Icon name="play" size={16} />
+              {isCreatingTask ? "Creating..." : "Run Task"}
+            </button>
+            <button
+              className="softBtn"
+              onClick={exportTasks}
+              disabled={!canExport}
+            >
+              Export
+            </button>
+          </div>
+
+          <div className="miniWallets">
+            <div>
+              <Icon name="bolt" />
+              <strong>{stats.running}</strong>
+              <span>Running</span>
+            </div>
+            <div>
+              <Icon name="shield" />
+              <strong>{stats.securityPending}</strong>
+              <span>Security</span>
+            </div>
+            <div>
+              <Icon name="check" />
+              <strong>{stats.completed}</strong>
+              <span>Completed</span>
+            </div>
           </div>
         </div>
 
-        {error ? (
-          <div className="errorBox" role="alert">
-            <Icon name="alert" />
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>Dismiss</button>
+        <div className="metricGrid">
+          <div className="metricCard hot">
+            <div className="metricIcon">
+              <Icon name="spark" />
+            </div>
+            <span>Total Completed</span>
+            <strong>{stats.completed}</strong>
+            <p>↑ Verification ready</p>
           </div>
-        ) : null}
-
-        <section className="overviewGrid">
-          <div className="balanceCard">
-            <div className="cardTop">
-              <div>
-                <p>Total Tasks</p>
-                <h2>{stats.total}</h2>
-                <span className="greenText">↑ {stats.completed} completed</span>
-              </div>
-              <button className="currencyBtn">Live</button>
+          <div className="metricCard">
+            <div className="metricIcon">
+              <Icon name="clock" />
             </div>
-
-            <div className="actionRow">
-              <button className="primaryBtn" onClick={createTask} disabled={!canCreateTask || isCreatingTask}>
-                <Icon name="play" size={16} />
-                {isCreatingTask ? "Creating..." : "Run Task"}
-              </button>
-              <button className="softBtn" onClick={exportTasks} disabled={!canExport}>
-                Export
-              </button>
-            </div>
-
-            <div className="miniWallets">
-              <div>
-                <Icon name="bolt" />
-                <strong>{stats.running}</strong>
-                <span>Running</span>
-              </div>
-              <div>
-                <Icon name="shield" />
-                <strong>{stats.securityPending}</strong>
-                <span>Security</span>
-              </div>
-              <div>
-                <Icon name="check" />
-                <strong>{stats.completed}</strong>
-                <span>Completed</span>
-              </div>
-            </div>
+            <span>Active Progress</span>
+            <strong>{stats.running}</strong>
+            <p>Live this session</p>
           </div>
-
-          <div className="metricGrid">
-            <div className="metricCard hot">
-              <div className="metricIcon"><Icon name="spark" /></div>
-              <span>Total Completed</span>
-              <strong>{stats.completed}</strong>
-              <p>↑ Verification ready</p>
+          <div className="metricCard">
+            <div className="metricIcon">
+              <Icon name="memory" />
             </div>
-            <div className="metricCard">
-              <div className="metricIcon"><Icon name="clock" /></div>
-              <span>Active Progress</span>
-              <strong>{stats.running}</strong>
-              <p>Live this session</p>
-            </div>
-            <div className="metricCard">
-              <div className="metricIcon"><Icon name="memory" /></div>
-              <span>Memory Ready</span>
-              <strong>{tasks.filter((task) => task.memory_result !== null).length}</strong>
-              <p>Context safe</p>
-            </div>
-            <div className="metricCard">
-              <div className="metricIcon"><Icon name="chart" /></div>
-              <span>Failed / Cancelled</span>
-              <strong>{stats.failed}</strong>
-              <p>Needs review</p>
-            </div>
+            <span>Memory Ready</span>
+            <strong>
+              {tasks.filter((task) => task.memory_result !== null).length}
+            </strong>
+            <p>Context safe</p>
           </div>
-
-          <MiniBarChart tasks={tasks} />
-        </section>
-
-        <section className="progressAndCards">
-          <div className="progressCard">
-            <div className="cardTop">
-              <div>
-                <h3>Most Active Task</h3>
-                <p>{liveTask ? taskTitle(liveTask) : "No active task yet"}</p>
-              </div>
-              <button className={cx("liveToggle", liveEnabled && "on")} onClick={() => setLiveEnabled((value) => !value)}>
-                {liveEnabled ? "Live On" : "Paused"}
-              </button>
+          <div className="metricCard">
+            <div className="metricIcon">
+              <Icon name="chart" />
             </div>
-
-            <div className="progressTrack">
-              <span style={{ width: `${liveTask ? STATUS_STAGE_WIDTH[liveTask.status] : 0}%` }} />
-            </div>
-
-            <div className="progressMeta">
-              <span>{liveTask ? formatDateTime(liveTask.updated_at) : "No recent activity"}</span>
-              <strong>{liveTask ? STATUS_LABELS[liveTask.status] : "Empty"}</strong>
-            </div>
+            <span>Failed / Cancelled</span>
+            <strong>{stats.failed}</strong>
+            <p>Needs review</p>
           </div>
+        </div>
 
-          <div className="cardsCard">
-            <div className="cardTop">
-              <h3>Agent Contracts</h3>
-              <button className="smallSoft">+ Add rule</button>
-            </div>
+        <MiniBarChart tasks={tasks} />
+      </section>
 
-            <div className="contractCards">
-              <div className="contract dark">
-                <span>Security</span>
-                <strong>Required for sensitive actions</strong>
-                <small>Approval gate active</small>
-              </div>
-              <div className="contract orange">
-                <span>Verification</span>
-                <strong>Completion payload ready</strong>
-                <small>Confirmation layer</small>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className="tableCard">
-          <div className="tableHeader">
+      <section className="progressAndCards">
+        <div className="progressCard">
+          <div className="cardTop">
             <div>
-              <h2>Task History</h2>
-              <p>All rows are scoped to current user and workspace only.</p>
+              <h3>Most Active Task</h3>
+              <p>{liveTask ? taskTitle(liveTask) : "No active task yet"}</p>
             </div>
-
-            <div className="tableTools">
-              <label className="searchBox">
-                <Icon name="search" size={16} />
-                <input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search task, agent..."
-                />
-              </label>
-
-              <select value={selectedStatus} onChange={(event) => setSelectedStatus(event.target.value as TaskStatus | "all")}>
-                <option value="all">All Status</option>
-                <option value="created">Created</option>
-                <option value="queued">Queued</option>
-                <option value="running">Running</option>
-                <option value="waiting_security">Security Review</option>
-                <option value="completed">Completed</option>
-                <option value="failed">Failed</option>
-                <option value="cancelled">Cancelled</option>
-              </select>
-
-              <button className="filterBtn"><Icon name="filter" size={16} /> Filter</button>
-            </div>
+            <button
+              className={cx("liveToggle", liveEnabled && "on")}
+              onClick={() => setLiveEnabled((value) => !value)}
+            >
+              {liveEnabled ? "Live On" : "Paused"}
+            </button>
           </div>
 
-          {isLoading ? (
-            <div className="stateBox">
-              <div className="loader" />
-              <strong>Loading task history...</strong>
-              <p>Checking workspace-safe records.</p>
-            </div>
-          ) : filteredTasks.length === 0 ? (
-            <div className="stateBox">
-              <Icon name="doc" size={34} />
-              <strong>No tasks found</strong>
-              <p>Create a task or clear your filters. Clean slate, very main-character energy.</p>
-            </div>
-          ) : (
-            <div className="tableWrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th><input type="checkbox" aria-label="Select all tasks" /></th>
-                    <th>Task ID</th>
-                    <th>Activity</th>
-                    <th>Agent</th>
-                    <th>Duration</th>
-                    <th>Status</th>
-                    <th>Priority</th>
-                    <th>Updated</th>
-                    <th />
-                  </tr>
-                </thead>
+          <div className="progressTrack">
+            <span
+              style={{
+                width: `${liveTask ? STATUS_STAGE_WIDTH[liveTask.status] : 0}%`,
+              }}
+            />
+          </div>
 
-                <tbody>
-                  {filteredTasks.map((task) => (
-                    <tr key={task.task_id}>
-                      <td><input type="checkbox" aria-label={`Select ${task.task_id}`} /></td>
-                      <td><strong className="mono">{task.task_id}</strong></td>
-                      <td>
-                        <div className="activityCell">
-                          <span className={cx("agentIcon", taskIsSensitive(task) && "sensitive")}>
-                            {taskIsSensitive(task) ? <Icon name="shield" size={15} /> : <Icon name="bolt" size={15} />}
-                          </span>
-                          <div>
-                            <strong>{taskTitle(task)}</strong>
-                            <small>
-                              {task.memory_result !== null ? "Memory-ready" : "Memory pending"} ·{" "}
-                              {task.verification_result !== null ? "Verified" : "Verification pending"}
-                            </small>
-                          </div>
-                        </div>
-                      </td>
-                      <td>{taskAgentLabel(task)}</td>
-                      <td>{formatDuration(taskDurationMs(task))}</td>
-                      <td><StatusPill status={task.status} /></td>
-                      <td><PriorityPill priority={task.priority} /></td>
-                      <td>
-                        <span>{formatDateTime(task.updated_at)}</span>
-                      </td>
-                      <td>
-                        {task.status === "waiting_security" ? (
-                          <button className="approveBtn" onClick={() => approveSecurityTask(task)} disabled={!canApproveSecurity}>
-                            Approve
-                          </button>
-                        ) : (
-                          <button className="moreBtn" aria-label={`More actions for ${task.task_id}`}>
-                            <Icon name="more" size={18} />
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="progressMeta">
+            <span>
+              {liveTask
+                ? formatDateTime(liveTask.updated_at)
+                : "No recent activity"}
+            </span>
+            <strong>
+              {liveTask ? STATUS_LABELS[liveTask.status] : "Empty"}
+            </strong>
+          </div>
+        </div>
+
+        <div className="cardsCard">
+          <div className="cardTop">
+            <h3>Agent Contracts</h3>
+            <button className="smallSoft">+ Add rule</button>
+          </div>
+
+          <div className="contractCards">
+            <div className="contract dark">
+              <span>Security</span>
+              <strong>Required for sensitive actions</strong>
+              <small>Approval gate active</small>
             </div>
-          )}
-        </section>
+            <div className="contract orange">
+              <span>Verification</span>
+              <strong>Completion payload ready</strong>
+              <small>Confirmation layer</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="tableCard">
+        <div className="tableHeader">
+          <div>
+            <h2>Task History</h2>
+            <p>All rows are scoped to current user and workspace only.</p>
+          </div>
+
+          <div className="tableTools">
+            <label className="searchBox">
+              <Icon name="search" size={16} />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search task, agent..."
+              />
+            </label>
+
+            <select
+              value={selectedStatus}
+              onChange={(event) =>
+                setSelectedStatus(event.target.value as TaskStatus | "all")
+              }
+            >
+              <option value="all">All Status</option>
+              <option value="created">Created</option>
+              <option value="queued">Queued</option>
+              <option value="running">Running</option>
+              <option value="waiting_security">Security Review</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+
+            <button className="filterBtn">
+              <Icon name="filter" size={16} /> Filter
+            </button>
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="stateBox">
+            <LoadingState
+              variant="light"
+              title="Loading task history..."
+              subtitle="Checking workspace-safe records."
+            />
+          </div>
+        ) : filteredTasks.length === 0 ? (
+          <div className="stateBox">
+            <EmptyState
+              variant="light"
+              icon="◈"
+              title="No tasks found"
+              message="Create a task or clear your filters. Clean slate, very main-character energy."
+            />
+          </div>
+        ) : (
+          <div className="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>
+                    <input type="checkbox" aria-label="Select all tasks" />
+                  </th>
+                  <th>Task ID</th>
+                  <th>Activity</th>
+                  <th>Agent</th>
+                  <th>Duration</th>
+                  <th>Status</th>
+                  <th>Priority</th>
+                  <th>Updated</th>
+                  <th />
+                </tr>
+              </thead>
+
+              <tbody>
+                {filteredTasks.map((task) => (
+                  <tr key={task.task_id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${task.task_id}`}
+                      />
+                    </td>
+                    <td>
+                      <strong className="mono">{task.task_id}</strong>
+                    </td>
+                    <td>
+                      <div className="activityCell">
+                        <span
+                          className={cx(
+                            "agentIcon",
+                            taskIsSensitive(task) && "sensitive",
+                          )}
+                        >
+                          {taskIsSensitive(task) ? (
+                            <Icon name="shield" size={15} />
+                          ) : (
+                            <Icon name="bolt" size={15} />
+                          )}
+                        </span>
+                        <div>
+                          <strong>{taskTitle(task)}</strong>
+                          <small>
+                            {task.memory_result !== null
+                              ? "Memory-ready"
+                              : "Memory pending"}{" "}
+                            ·{" "}
+                            {task.verification_result !== null
+                              ? "Verified"
+                              : "Verification pending"}
+                          </small>
+                        </div>
+                      </div>
+                    </td>
+                    <td>{taskAgentLabel(task)}</td>
+                    <td>{formatDuration(taskDurationMs(task))}</td>
+                    <td>
+                      <StatusPill status={task.status} />
+                    </td>
+                    <td>
+                      <PriorityPill priority={task.priority} />
+                    </td>
+                    <td>
+                      <span>{formatDateTime(task.updated_at)}</span>
+                    </td>
+                    <td>
+                      {task.status === "waiting_security" ? (
+                        <button
+                          className="approveBtn"
+                          onClick={() => approveSecurityTask(task)}
+                          disabled={!canApproveSecurity}
+                        >
+                          Approve
+                        </button>
+                      ) : (
+                        <button
+                          className="moreBtn"
+                          aria-label={`More actions for ${task.task_id}`}
+                        >
+                          <Icon name="more" size={18} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <style jsx>{`
         :global(*) {
@@ -987,7 +1368,11 @@ export default function Page() {
           grid-template-columns: 72px minmax(0, 1fr);
           gap: 0;
           background:
-            radial-gradient(circle at 50% 10%, rgba(255, 255, 255, 0.8), transparent 28%),
+            radial-gradient(
+              circle at 50% 10%,
+              rgba(255, 255, 255, 0.8),
+              transparent 28%
+            ),
             #e9e9e7;
         }
 
@@ -1110,7 +1495,7 @@ export default function Page() {
         .navTabs button.active {
           background: linear-gradient(180deg, #343430, #151512);
           color: white;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.15);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
         }
 
         .topActions {
@@ -1393,7 +1778,7 @@ export default function Page() {
 
         .metricCard.hot span,
         .metricCard.hot p {
-          color: rgba(255,255,255,0.78);
+          color: rgba(255, 255, 255, 0.78);
         }
 
         .metricIcon {
@@ -1405,7 +1790,7 @@ export default function Page() {
           border-radius: 50%;
           display: grid;
           place-items: center;
-          background: rgba(0,0,0,0.06);
+          background: rgba(0, 0, 0, 0.06);
         }
 
         .metricCard strong {
@@ -1460,7 +1845,11 @@ export default function Page() {
           justify-content: space-between;
           gap: 10px;
           padding: 10px 0 0;
-          background-image: linear-gradient(to top, #ededeb 1px, transparent 1px);
+          background-image: linear-gradient(
+            to top,
+            #ededeb 1px,
+            transparent 1px
+          );
           background-size: 100% 42px;
         }
 
@@ -1514,14 +1903,13 @@ export default function Page() {
         .progressTrack {
           margin-top: 22px;
           height: 14px;
-          background:
-            repeating-linear-gradient(
-              -45deg,
-              #f0f0ee,
-              #f0f0ee 4px,
-              #e6e6e3 4px,
-              #e6e6e3 8px
-            );
+          background: repeating-linear-gradient(
+            -45deg,
+            #f0f0ee,
+            #f0f0ee 4px,
+            #e6e6e3 4px,
+            #e6e6e3 8px
+          );
           border-radius: 999px;
           overflow: hidden;
         }
@@ -1577,7 +1965,7 @@ export default function Page() {
           width: 110px;
           height: 110px;
           border-radius: 28px;
-          background: rgba(255,255,255,0.08);
+          background: rgba(255, 255, 255, 0.08);
           right: -28px;
           top: -24px;
           transform: rotate(18deg);
@@ -1593,7 +1981,7 @@ export default function Page() {
 
         .contract span,
         .contract small {
-          color: rgba(255,255,255,0.75);
+          color: rgba(255, 255, 255, 0.75);
           font-size: 12px;
           z-index: 1;
         }
@@ -1703,7 +2091,8 @@ export default function Page() {
         }
 
         .mono {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
           font-size: 12px;
         }
 

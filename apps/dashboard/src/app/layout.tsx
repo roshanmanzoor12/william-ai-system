@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: {
     default: "William / Jarvis Dashboard | Digital Promotix",
-    template: "%s | William / Jarvis Dashboard"
+    template: "%s | William / Jarvis Dashboard",
   },
   description:
     "William / Jarvis Multi-Agent AI SaaS Dashboard by Digital Promotix for agent control, security, memory, workflow automation, analytics, and workspace operations.",
@@ -14,11 +14,11 @@ export const metadata: Metadata = {
   publisher: "Digital Promotix",
   robots: {
     index: false,
-    follow: false
+    follow: false,
   },
   icons: {
-    icon: "/favicon.ico"
-  }
+    icon: "/favicon.ico",
+  },
 };
 
 export const viewport: Viewport = {
@@ -26,7 +26,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   themeColor: "#f2f2f0",
-  colorScheme: "light"
+  colorScheme: "light",
 };
 
 type RootLayoutProps = {

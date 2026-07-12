@@ -669,6 +669,76 @@ class VisualAgent(BaseAgent):
             metadata={"checked_at": _utc_now()},
         )
 
+    def run(self, task: Mapping[str, Any]) -> Dict[str, Any]:
+        """
+        Generic task-dispatch entrypoint for MasterAgent/AgentExecutionAdapter.
+
+        VisualAgent's real capabilities (analyze_screenshot/analyze_image/
+        analyze_video) each require actual image/video input, not just a text
+        message -- there is no generic "do a visual task" operation to fake.
+        This dispatcher routes to whichever real method the task's input_data
+        actually supplies input for, and otherwise returns an honest
+        structured response (never a fake success, never an unhandled crash)
+        naming what input was required and missing.
+        """
+        task = task or {}
+        input_data = task.get("input_data") or {}
+        action = str(task.get("action") or "").strip().lower()
+
+        context = {
+            "user_id": task.get("user_id"),
+            "workspace_id": task.get("workspace_id"),
+            "request_id": task.get("request_id"),
+            "task_id": task.get("task_id"),
+        }
+
+        if action in {"health_check", "status", "health"}:
+            return self.health_check()
+
+        task_goal = task.get("message") or input_data.get("task_goal")
+
+        if action == "analyze_screenshot" or input_data.get("screenshot"):
+            return self.analyze_screenshot(
+                context=context,
+                screenshot=input_data.get("screenshot"),
+                task_goal=task_goal,
+                ocr_text=input_data.get("ocr_text"),
+                observed_elements=input_data.get("observed_elements"),
+                privacy_mode=input_data.get("privacy_mode", "safe"),
+            )
+
+        if action == "analyze_image" or input_data.get("image"):
+            return self.analyze_image(
+                context=context,
+                image=input_data.get("image"),
+                task_goal=task_goal,
+                ocr_text=input_data.get("ocr_text"),
+                privacy_mode=input_data.get("privacy_mode", "safe"),
+            )
+
+        if action == "analyze_video" or input_data.get("video"):
+            return self.analyze_video(
+                context=context,
+                video=input_data.get("video"),
+                task_goal=task_goal,
+                privacy_mode=input_data.get("privacy_mode", "safe"),
+            )
+
+        return self._error_result(
+            message=(
+                "Visual Agent needs a screenshot, image, or video in input_data "
+                "to perform visual analysis -- a text-only request has no "
+                "visual capability to route to."
+            ),
+            error="capability_unavailable",
+            metadata={
+                "capability_status": "capability_unavailable",
+                "accepted_input_keys": ["screenshot", "image", "video"],
+                "accepted_actions": ["health_check", "analyze_screenshot", "analyze_image", "analyze_video"],
+                "received_action": action or None,
+            },
+        )
+
     # ----------------------------------------------------------------------------------
     # Main public visual methods
     # ----------------------------------------------------------------------------------

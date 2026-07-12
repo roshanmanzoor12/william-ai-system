@@ -4,17 +4,31 @@ tests/api_tests/test_memory.py
 Memory API tests for the William / Jarvis Multi-Agent AI SaaS System.
 
 Purpose:
-    - Validate memory API behavior.
+    - Validate memory API behavior against the REAL apps/api/routes/memory.py
+      backend (prefix /api/v1/memory), not an imagined contract.
     - Enforce strict user_id and workspace_id isolation.
-    - Verify role, subscription, and permission-style access checks.
-    - Confirm sensitive/state-changing memory actions trigger audit hooks.
-    - Confirm completed memory actions can produce verification payloads.
-    - Keep imports safe even when the production API is not fully implemented yet.
+    - Verify role-based access checks (write/delete/export gates).
+    - Confirm state-changing memory actions produce verification payloads.
+    - Keep imports safe even when FastAPI/TestClient are not installed.
 
-Design:
-    These tests prefer the real FastAPI app if available, but include a realistic
-    fallback app so the test file itself imports and runs safely during early
-    development.
+Auth:
+    Every request in this file authenticates with a real, JWT-verified
+    Bearer token minted through tests/api_tests/conftest.py's make_owner /
+    make_member / set_plan fixtures (which drive the real
+    POST /api/v1/auth/register endpoint and the real WorkspaceMembership
+    model) -- apps/api/routes/memory.py's get_actor_context dependency now
+    resolves identity exclusively from get_current_auth_context
+    (apps/api/routes/auth.py), so the old spoofable X-User-Id/X-Workspace-Id/
+    X-Role/X-Plan headers plus a static fake bearer token are gone; they are
+    silently ignored by the real app and every request built with them used
+    to 401 or hit the wrong URL (/api/memory instead of /api/v1/memory).
+
+Data model:
+    memory_type: short | long | project | client
+    sensitivity: public | internal | confidential | restricted
+    source: user | master_agent | memory_agent | system | api
+    Response envelope: {"ok": bool, "message": str, "data"/"records": ...,
+    "verification": {...}, "request_id": str} -- NOT {"success": ...}.
 
 Run:
     pytest tests/api_tests/test_memory.py -q
@@ -22,29 +36,15 @@ Run:
 
 from __future__ import annotations
 
-import importlib
-import os
-import time
 import uuid
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import pytest
 
 try:
-    from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-    from fastapi.testclient import TestClient
-    from pydantic import BaseModel, Field
+    from fastapi.testclient import TestClient  # noqa: F401
 except Exception as exc:  # pragma: no cover - dependency guard
-    FastAPI = None  # type: ignore[assignment]
     TestClient = None  # type: ignore[assignment]
-    Depends = None  # type: ignore[assignment]
-    Header = None  # type: ignore[assignment]
-    HTTPException = None  # type: ignore[assignment]
-    Request = None  # type: ignore[assignment]
-    status = None  # type: ignore[assignment]
-    BaseModel = object  # type: ignore[assignment]
-    Field = None  # type: ignore[assignment]
     FASTAPI_IMPORT_ERROR = exc
 else:
     FASTAPI_IMPORT_ERROR = None
@@ -56,685 +56,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# ---------------------------------------------------------------------------
-# Test constants
-# ---------------------------------------------------------------------------
-
-TEST_API_TOKEN = os.getenv("WILLIAM_TEST_API_TOKEN", "test-token-memory-api")
-MEMORY_AGENT_NAME = "memory_agent"
-SECURITY_AGENT_NAME = "security_agent"
-VERIFICATION_AGENT_NAME = "verification_agent"
-MASTER_AGENT_NAME = "master_agent"
-
-
-# ---------------------------------------------------------------------------
-# In-memory fallback services used only when the real app is unavailable.
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class TestIdentity:
-    user_id: str
-    workspace_id: str
-    role: str = "owner"
-    plan: str = "pro"
-
-
-@dataclass
-class MemoryRecord:
-    memory_id: str
-    user_id: str
-    workspace_id: str
-    content: str
-    tags: List[str]
-    source_agent: str
-    sensitivity: str
-    created_at: float
-    updated_at: float
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class AuditRecord:
-    action: str
-    user_id: str
-    workspace_id: str
-    resource_type: str
-    resource_id: str
-    decision: str
-    source_agent: str
-    created_at: float
-    details: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class VerificationPayload:
-    action: str
-    user_id: str
-    workspace_id: str
-    resource_type: str
-    resource_id: str
-    verification_agent: str
-    status: str
-    created_at: float
-    checks: Dict[str, Any] = field(default_factory=dict)
-
-
-class FakeMemoryStore:
-    """Small deterministic in-memory store for fallback API tests."""
-
-    def __init__(self) -> None:
-        self.memories: Dict[str, MemoryRecord] = {}
-        self.audit_logs: List[AuditRecord] = []
-        self.verification_payloads: List[VerificationPayload] = []
-
-    def reset(self) -> None:
-        self.memories.clear()
-        self.audit_logs.clear()
-        self.verification_payloads.clear()
-
-    def create_memory(
-        self,
-        *,
-        identity: TestIdentity,
-        content: str,
-        tags: Optional[List[str]],
-        source_agent: str,
-        sensitivity: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> MemoryRecord:
-        now = time.time()
-        memory_id = f"mem_{uuid.uuid4().hex}"
-        record = MemoryRecord(
-            memory_id=memory_id,
-            user_id=identity.user_id,
-            workspace_id=identity.workspace_id,
-            content=content,
-            tags=list(tags or []),
-            source_agent=source_agent,
-            sensitivity=sensitivity,
-            created_at=now,
-            updated_at=now,
-            metadata=metadata or {},
-        )
-        self.memories[memory_id] = record
-        self.log_audit(
-            action="memory.create",
-            identity=identity,
-            resource_id=memory_id,
-            decision="allowed",
-            source_agent=source_agent,
-            details={"sensitivity": sensitivity, "tags": record.tags},
-        )
-        self.add_verification_payload(
-            action="memory.create",
-            identity=identity,
-            resource_id=memory_id,
-            checks={
-                "user_workspace_bound": True,
-                "memory_agent_compatible": True,
-                "security_reviewed": sensitivity in {"normal", "internal", "sensitive"},
-            },
-        )
-        return record
-
-    def list_memories(self, *, identity: TestIdentity, query: Optional[str] = None) -> List[MemoryRecord]:
-        records = [
-            record
-            for record in self.memories.values()
-            if record.user_id == identity.user_id and record.workspace_id == identity.workspace_id
-        ]
-        if query:
-            lowered = query.lower()
-            records = [
-                record
-                for record in records
-                if lowered in record.content.lower()
-                or any(lowered in tag.lower() for tag in record.tags)
-            ]
-        return sorted(records, key=lambda item: item.created_at, reverse=True)
-
-    def get_memory(self, *, identity: TestIdentity, memory_id: str) -> MemoryRecord:
-        record = self.memories.get(memory_id)
-        if record is None:
-            raise KeyError("memory_not_found")
-        if record.user_id != identity.user_id or record.workspace_id != identity.workspace_id:
-            raise PermissionError("memory_cross_workspace_access_denied")
-        return record
-
-    def delete_memory(self, *, identity: TestIdentity, memory_id: str, source_agent: str) -> None:
-        record = self.get_memory(identity=identity, memory_id=memory_id)
-        del self.memories[record.memory_id]
-        self.log_audit(
-            action="memory.delete",
-            identity=identity,
-            resource_id=memory_id,
-            decision="allowed",
-            source_agent=source_agent,
-            details={"sensitivity": record.sensitivity},
-        )
-        self.add_verification_payload(
-            action="memory.delete",
-            identity=identity,
-            resource_id=memory_id,
-            checks={
-                "user_workspace_bound": True,
-                "deleted_from_visible_store": True,
-                "verification_agent_notified": True,
-            },
-        )
-
-    def log_audit(
-        self,
-        *,
-        action: str,
-        identity: TestIdentity,
-        resource_id: str,
-        decision: str,
-        source_agent: str,
-        details: Optional[Dict[str, Any]] = None,
-    ) -> AuditRecord:
-        audit = AuditRecord(
-            action=action,
-            user_id=identity.user_id,
-            workspace_id=identity.workspace_id,
-            resource_type="memory",
-            resource_id=resource_id,
-            decision=decision,
-            source_agent=source_agent,
-            created_at=time.time(),
-            details=details or {},
-        )
-        self.audit_logs.append(audit)
-        return audit
-
-    def add_verification_payload(
-        self,
-        *,
-        action: str,
-        identity: TestIdentity,
-        resource_id: str,
-        checks: Optional[Dict[str, Any]] = None,
-    ) -> VerificationPayload:
-        payload = VerificationPayload(
-            action=action,
-            user_id=identity.user_id,
-            workspace_id=identity.workspace_id,
-            resource_type="memory",
-            resource_id=resource_id,
-            verification_agent=VERIFICATION_AGENT_NAME,
-            status="prepared",
-            created_at=time.time(),
-            checks=checks or {},
-        )
-        self.verification_payloads.append(payload)
-        return payload
-
-
-class MemoryCreateRequest(BaseModel):  # type: ignore[misc]
-    content: str = Field(..., min_length=1, max_length=5000)  # type: ignore[misc]
-    tags: List[str] = Field(default_factory=list)  # type: ignore[misc]
-    source_agent: str = Field(default=MEMORY_AGENT_NAME, min_length=1)  # type: ignore[misc]
-    sensitivity: str = Field(default="normal", pattern="^(normal|internal|sensitive)$")  # type: ignore[misc]
-    metadata: Dict[str, Any] = Field(default_factory=dict)  # type: ignore[misc]
-
-
-class MemorySearchRequest(BaseModel):  # type: ignore[misc]
-    query: Optional[str] = Field(default=None, max_length=512)  # type: ignore[misc]
-
-
-def _record_to_response(record: MemoryRecord) -> Dict[str, Any]:
-    return {
-        "memory_id": record.memory_id,
-        "user_id": record.user_id,
-        "workspace_id": record.workspace_id,
-        "content": record.content,
-        "tags": record.tags,
-        "source_agent": record.source_agent,
-        "sensitivity": record.sensitivity,
-        "created_at": record.created_at,
-        "updated_at": record.updated_at,
-        "metadata": record.metadata,
-    }
-
-
-def _audit_to_response(record: AuditRecord) -> Dict[str, Any]:
-    return {
-        "action": record.action,
-        "user_id": record.user_id,
-        "workspace_id": record.workspace_id,
-        "resource_type": record.resource_type,
-        "resource_id": record.resource_id,
-        "decision": record.decision,
-        "source_agent": record.source_agent,
-        "created_at": record.created_at,
-        "details": record.details,
-    }
-
-
-def _verification_to_response(record: VerificationPayload) -> Dict[str, Any]:
-    return {
-        "action": record.action,
-        "user_id": record.user_id,
-        "workspace_id": record.workspace_id,
-        "resource_type": record.resource_type,
-        "resource_id": record.resource_id,
-        "verification_agent": record.verification_agent,
-        "status": record.status,
-        "created_at": record.created_at,
-        "checks": record.checks,
-    }
-
-
-def _identity_from_headers(
-    x_user_id: str = Header(..., alias="X-User-Id"),  # type: ignore[misc]
-    x_workspace_id: str = Header(..., alias="X-Workspace-Id"),  # type: ignore[misc]
-    x_role: str = Header("owner", alias="X-Role"),  # type: ignore[misc]
-    x_plan: str = Header("pro", alias="X-Plan"),  # type: ignore[misc]
-    authorization: Optional[str] = Header(default=None, alias="Authorization"),  # type: ignore[misc]
-) -> TestIdentity:
-    if authorization != f"Bearer {TEST_API_TOKEN}":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "success": False,
-                "error": {
-                    "code": "unauthorized",
-                    "message": "A valid bearer token is required.",
-                },
-            },
-        )
-
-    if not x_user_id.strip() or not x_workspace_id.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "success": False,
-                "error": {
-                    "code": "missing_identity_scope",
-                    "message": "user_id and workspace_id are required.",
-                },
-            },
-        )
-
-    return TestIdentity(
-        user_id=x_user_id.strip(),
-        workspace_id=x_workspace_id.strip(),
-        role=x_role.strip().lower(),
-        plan=x_plan.strip().lower(),
-    )
-
-
-def _require_memory_access(identity: TestIdentity) -> None:
-    allowed_roles = {"owner", "admin", "member"}
-    allowed_plans = {"pro", "business", "enterprise"}
-
-    if identity.role not in allowed_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "success": False,
-                "error": {
-                    "code": "role_not_allowed",
-                    "message": "Your role does not allow memory API access.",
-                },
-            },
-        )
-
-    if identity.plan not in allowed_plans:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "success": False,
-                "error": {
-                    "code": "plan_memory_access_required",
-                    "message": "Memory API requires an active Pro, Business, or Enterprise plan.",
-                },
-            },
-        )
-
-
-def _build_fallback_app(store: FakeMemoryStore) -> FastAPI:
-    app = FastAPI(title="William Jarvis Memory API Test App", version="test")
-
-    @app.post("/api/memory")
-    def create_memory(
-        payload: MemoryCreateRequest,
-        identity: TestIdentity = Depends(_identity_from_headers),
-    ) -> Dict[str, Any]:
-        _require_memory_access(identity)
-
-        if payload.sensitivity == "sensitive" and payload.source_agent != SECURITY_AGENT_NAME:
-            store.log_audit(
-                action="memory.create",
-                identity=identity,
-                resource_id="pending",
-                decision="denied",
-                source_agent=payload.source_agent,
-                details={"reason": "sensitive_memory_requires_security_agent"},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "success": False,
-                    "error": {
-                        "code": "security_agent_required",
-                        "message": "Sensitive memory writes must route through Security Agent.",
-                    },
-                },
-            )
-
-        record = store.create_memory(
-            identity=identity,
-            content=payload.content,
-            tags=payload.tags,
-            source_agent=payload.source_agent,
-            sensitivity=payload.sensitivity,
-            metadata=payload.metadata,
-        )
-        verification_payload = store.verification_payloads[-1]
-
-        return {
-            "success": True,
-            "data": {
-                "memory": _record_to_response(record),
-                "audit_logged": True,
-                "verification_payload": _verification_to_response(verification_payload),
-                "agents": {
-                    "master_agent_ready": True,
-                    "memory_agent_ready": True,
-                    "security_agent_ready": payload.sensitivity == "sensitive",
-                    "verification_agent_ready": True,
-                },
-            },
-            "error": None,
-        }
-
-    @app.get("/api/memory")
-    def list_memories(
-        query: Optional[str] = None,
-        identity: TestIdentity = Depends(_identity_from_headers),
-    ) -> Dict[str, Any]:
-        _require_memory_access(identity)
-        records = store.list_memories(identity=identity, query=query)
-        return {
-            "success": True,
-            "data": {
-                "memories": [_record_to_response(record) for record in records],
-                "count": len(records),
-                "scope": {
-                    "user_id": identity.user_id,
-                    "workspace_id": identity.workspace_id,
-                },
-            },
-            "error": None,
-        }
-
-    @app.get("/api/memory/{memory_id}")
-    def get_memory(
-        memory_id: str,
-        identity: TestIdentity = Depends(_identity_from_headers),
-    ) -> Dict[str, Any]:
-        _require_memory_access(identity)
-
-        try:
-            record = store.get_memory(identity=identity, memory_id=memory_id)
-        except KeyError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "success": False,
-                    "error": {
-                        "code": "memory_not_found",
-                        "message": "Memory was not found.",
-                    },
-                },
-            )
-        except PermissionError:
-            store.log_audit(
-                action="memory.read",
-                identity=identity,
-                resource_id=memory_id,
-                decision="denied",
-                source_agent=MEMORY_AGENT_NAME,
-                details={"reason": "cross_user_or_workspace_access"},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "success": False,
-                    "error": {
-                        "code": "memory_not_found",
-                        "message": "Memory was not found.",
-                    },
-                },
-            )
-
-        return {
-            "success": True,
-            "data": {
-                "memory": _record_to_response(record),
-            },
-            "error": None,
-        }
-
-    @app.delete("/api/memory/{memory_id}")
-    def delete_memory(
-        memory_id: str,
-        identity: TestIdentity = Depends(_identity_from_headers),
-    ) -> Dict[str, Any]:
-        _require_memory_access(identity)
-
-        if identity.role not in {"owner", "admin"}:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "success": False,
-                    "error": {
-                        "code": "delete_role_not_allowed",
-                        "message": "Only owner or admin roles can delete memory.",
-                    },
-                },
-            )
-
-        try:
-            store.delete_memory(identity=identity, memory_id=memory_id, source_agent=SECURITY_AGENT_NAME)
-        except KeyError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "success": False,
-                    "error": {
-                        "code": "memory_not_found",
-                        "message": "Memory was not found.",
-                    },
-                },
-            )
-        except PermissionError:
-            store.log_audit(
-                action="memory.delete",
-                identity=identity,
-                resource_id=memory_id,
-                decision="denied",
-                source_agent=SECURITY_AGENT_NAME,
-                details={"reason": "cross_user_or_workspace_delete_attempt"},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "success": False,
-                    "error": {
-                        "code": "memory_not_found",
-                        "message": "Memory was not found.",
-                    },
-                },
-            )
-
-        verification_payload = store.verification_payloads[-1]
-
-        return {
-            "success": True,
-            "data": {
-                "deleted": True,
-                "memory_id": memory_id,
-                "audit_logged": True,
-                "verification_payload": _verification_to_response(verification_payload),
-            },
-            "error": None,
-        }
-
-    @app.get("/api/audit/memory")
-    def list_memory_audit_logs(
-        identity: TestIdentity = Depends(_identity_from_headers),
-    ) -> Dict[str, Any]:
-        if identity.role not in {"owner", "admin"}:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "success": False,
-                    "error": {
-                        "code": "audit_role_not_allowed",
-                        "message": "Only owner or admin roles can view audit logs.",
-                    },
-                },
-            )
-
-        records = [
-            record
-            for record in store.audit_logs
-            if record.user_id == identity.user_id and record.workspace_id == identity.workspace_id
-        ]
-
-        return {
-            "success": True,
-            "data": {
-                "audit_logs": [_audit_to_response(record) for record in records],
-                "count": len(records),
-            },
-            "error": None,
-        }
-
-    return app
-
-
-def _try_load_real_app() -> Optional[Any]:
-    """
-    Attempt to load the production FastAPI app without making the test file depend
-    on a finalized module path.
-
-    Supported future module paths:
-        - apps.api.main:app
-        - app.main:app
-        - backend.main:app
-        - main:app
-    """
-    candidate_paths = (
-        "apps.api.main",
-        "app.main",
-        "backend.main",
-        "main",
-    )
-
-    for module_path in candidate_paths:
-        try:
-            module = importlib.import_module(module_path)
-        except Exception:
-            continue
-
-        app = getattr(module, "app", None)
-        if app is not None:
-            return app
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def memory_store() -> FakeMemoryStore:
-    store = FakeMemoryStore()
-    store.reset()
-    return store
-
-
-@pytest.fixture()
-def app(memory_store: FakeMemoryStore) -> Any:
-    real_app = _try_load_real_app()
-    if real_app is not None:
-        return real_app
-    return _build_fallback_app(memory_store)
-
-
-@pytest.fixture()
-def client(app: Any) -> TestClient:
-    return TestClient(app)
-
-
-@pytest.fixture()
-def user_a_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {TEST_API_TOKEN}",
-        "X-User-Id": "user_alpha",
-        "X-Workspace-Id": "workspace_alpha",
-        "X-Role": "owner",
-        "X-Plan": "pro",
-    }
-
-
-@pytest.fixture()
-def user_a_member_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {TEST_API_TOKEN}",
-        "X-User-Id": "user_alpha",
-        "X-Workspace-Id": "workspace_alpha",
-        "X-Role": "member",
-        "X-Plan": "pro",
-    }
-
-
-@pytest.fixture()
-def user_b_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {TEST_API_TOKEN}",
-        "X-User-Id": "user_beta",
-        "X-Workspace-Id": "workspace_beta",
-        "X-Role": "owner",
-        "X-Plan": "pro",
-    }
-
-
-@pytest.fixture()
-def same_user_other_workspace_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {TEST_API_TOKEN}",
-        "X-User-Id": "user_alpha",
-        "X-Workspace-Id": "workspace_secondary",
-        "X-Role": "owner",
-        "X-Plan": "pro",
-    }
-
-
-@pytest.fixture()
-def viewer_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {TEST_API_TOKEN}",
-        "X-User-Id": "user_viewer",
-        "X-Workspace-Id": "workspace_alpha",
-        "X-Role": "viewer",
-        "X-Plan": "pro",
-    }
-
-
-@pytest.fixture()
-def free_plan_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {TEST_API_TOKEN}",
-        "X-User-Id": "user_free",
-        "X-Workspace-Id": "workspace_free",
-        "X-Role": "owner",
-        "X-Plan": "free",
-    }
+MEMORY_PREFIX = "/api/v1/memory"
 
 
 # ---------------------------------------------------------------------------
@@ -748,45 +70,96 @@ def _json(response: Any) -> Dict[str, Any]:
         pytest.fail(f"Response did not contain valid JSON. Status={response.status_code}. Error={exc}")
 
 
-def _assert_structured_success(payload: Dict[str, Any]) -> None:
-    assert payload["success"] is True
-    assert "data" in payload
-    assert payload.get("error") is None
+def _error_code(payload: Dict[str, Any]) -> Optional[str]:
+    """
+    Real error payloads take one of two shapes depending on which layer
+    raised the HTTPException, both surfaced as-is by apps/api/main.py's
+    http_exception_handler (which passes exc.detail straight through when
+    it is already a dict):
+
+    - apps/api/routes/memory.py's own raise_safe_error() -> a flat
+      ErrorDetail dict: {"code": ..., "message": ..., "request_id": ...,
+      "details": {...}}.
+    - apps/api/routes/auth.py's raise_api_error() / apps/api/main.py's
+      response_error() (used for 401s and 422 validation errors) ->
+      {"success": False, "message": ..., "error": {"code": ..., "details":
+      ...}, ...}.
+    """
+    if "code" in payload:
+        return payload["code"]
+    error = payload.get("error")
+    if isinstance(error, dict):
+        return error.get("code")
+    return None
 
 
-def _assert_structured_error(payload: Dict[str, Any]) -> None:
-    normalized = payload.get("detail", payload)
-    assert normalized["success"] is False
-    assert "error" in normalized
-    assert "code" in normalized["error"]
-    assert "message" in normalized["error"]
-
-
-def _create_memory(
-    client: TestClient,
-    headers: Dict[str, str],
+def _save_memory(
+    client: Any,
+    actor: Any,
     *,
+    memory_type: str = "long",
     content: str = "Remember that the user prefers workspace-safe summaries.",
+    title: Optional[str] = None,
     tags: Optional[List[str]] = None,
-    source_agent: str = MEMORY_AGENT_NAME,
-    sensitivity: str = "normal",
+    source: str = "user",
+    sensitivity: str = "internal",
+    project_id: Optional[str] = None,
+    client_id: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     response = client.post(
-        "/api/memory",
-        headers=headers,
+        f"{MEMORY_PREFIX}/save",
+        headers=actor.headers,
         json={
+            "memory_type": memory_type,
             "content": content,
-            "tags": tags or ["preference", "workspace-safe"],
-            "source_agent": source_agent,
+            "title": title,
+            "tags": tags if tags is not None else ["preference", "workspace-safe"],
+            "source": source,
             "sensitivity": sensitivity,
+            "project_id": project_id,
+            "client_id": client_id,
             "metadata": metadata or {"origin": "api_test"},
         },
     )
-    assert response.status_code in {200, 201}, response.text
+    assert response.status_code == 201, response.text
     payload = _json(response)
-    _assert_structured_success(payload)
+    assert payload["ok"] is True
     return payload["data"]["memory"]
+
+
+def _login(client: Any, *, email: str, password: str, workspace_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Log the same real account in a second time, optionally selecting a
+    specific workspace membership.
+
+    tests/api_tests/conftest.py's make_owner/make_member fixtures always
+    mint a *new* user, so neither can produce "one real user, two real
+    workspace memberships" on its own. add_member_with_role (behind
+    make_member) does create exactly that as a side effect, though: it
+    registers its new user through a real POST /api/v1/auth/register call
+    first (which gives that user their own throwaway "scratch" workspace as
+    owner) and *then* adds them as a member of the target workspace. So a
+    make_member(..., email=..., password=...) actor's underlying account
+    already holds two distinct real workspace memberships; this helper logs
+    that same account in again through the real POST /api/v1/auth/login
+    endpoint, selecting the other membership by workspace_id, to get a
+    second, differently-scoped, genuinely valid JWT for it -- exactly how a
+    real multi-workspace user's browser session would switch context.
+    """
+    body: Dict[str, Any] = {"email": email, "password": password}
+    if workspace_id:
+        body["workspace_id"] = workspace_id
+
+    response = client.post("/api/v1/auth/login", json=body)
+    assert response.status_code == 200, response.text
+    data = _json(response)["data"]
+
+    return {
+        "user_id": data["user"]["user_id"],
+        "workspace_id": data["workspace"]["workspace_id"],
+        "headers": {"Authorization": f"Bearer {data['tokens']['access_token']}"},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -794,21 +167,24 @@ def _create_memory(
 # ---------------------------------------------------------------------------
 
 class TestMemory:
-    """Memory API tests with strict tenant isolation and agent compatibility checks."""
+    """Memory API tests with strict tenant isolation and real-contract checks."""
 
-    def test_create_memory_returns_structured_response_with_scope(
+    def test_save_memory_returns_structured_response_with_scope(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
+        owner = make_owner()
+
         response = client.post(
-            "/api/memory",
-            headers=user_a_headers,
+            f"{MEMORY_PREFIX}/save",
+            headers=owner.headers,
             json={
+                "memory_type": "long",
                 "content": "User prefers concise but complete Jarvis task summaries.",
                 "tags": ["preference", "summary"],
-                "source_agent": MEMORY_AGENT_NAME,
-                "sensitivity": "normal",
+                "source": "user",
+                "sensitivity": "internal",
                 "metadata": {
                     "master_agent_context": True,
                     "workspace_safe": True,
@@ -816,573 +192,632 @@ class TestMemory:
             },
         )
 
-        assert response.status_code in {200, 201}, response.text
+        assert response.status_code == 201, response.text
         payload = _json(response)
-        _assert_structured_success(payload)
+        assert payload["ok"] is True
 
         memory = payload["data"]["memory"]
-        assert memory["memory_id"]
-        assert memory["user_id"] == "user_alpha"
-        assert memory["workspace_id"] == "workspace_alpha"
+        assert memory["id"]
+        assert memory["user_id"] == owner.user_id
+        assert memory["workspace_id"] == owner.workspace_id
         assert memory["content"] == "User prefers concise but complete Jarvis task summaries."
         assert memory["tags"] == ["preference", "summary"]
-        assert memory["source_agent"] == MEMORY_AGENT_NAME
-        assert memory["sensitivity"] == "normal"
+        assert memory["memory_type"] == "long"
+        assert memory["source"] == "user"
+        assert memory["sensitivity"] == "internal"
 
-        assert payload["data"]["audit_logged"] is True
-        assert payload["data"]["verification_payload"]["status"] == "prepared"
-        assert payload["data"]["verification_payload"]["verification_agent"] == VERIFICATION_AGENT_NAME
-        assert payload["data"]["agents"]["master_agent_ready"] is True
-        assert payload["data"]["agents"]["memory_agent_ready"] is True
-        assert payload["data"]["agents"]["verification_agent_ready"] is True
+        verification = payload["verification"]
+        assert verification["action"] == "memory.save"
+        assert verification["user_id"] == owner.user_id
+        assert verification["workspace_id"] == owner.workspace_id
+        assert verification["result"]["memory_id"] == memory["id"]
 
     def test_list_memory_only_returns_current_user_and_workspace_records(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-        user_b_headers: Dict[str, str],
-        same_user_other_workspace_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        alpha_memory = _create_memory(
+        owner = make_owner()
+        other = make_owner()
+
+        mine = _save_memory(
             client,
-            user_a_headers,
-            content="Alpha workspace memory should stay isolated.",
-            tags=["alpha"],
+            owner,
+            content="My workspace memory should stay isolated.",
+            tags=["mine"],
         )
-        _create_memory(
+        _save_memory(
             client,
-            user_b_headers,
-            content="Beta user memory must never leak to Alpha.",
-            tags=["beta"],
-        )
-        _create_memory(
-            client,
-            same_user_other_workspace_headers,
-            content="Same user but different workspace memory must stay isolated.",
-            tags=["secondary-workspace"],
+            other,
+            content="Other workspace memory must never leak.",
+            tags=["theirs"],
         )
 
-        response = client.get("/api/memory", headers=user_a_headers)
+        response = client.get(MEMORY_PREFIX, headers=owner.headers)
         assert response.status_code == 200, response.text
         payload = _json(response)
-        _assert_structured_success(payload)
+        assert payload["ok"] is True
 
-        memories = payload["data"]["memories"]
-        assert payload["data"]["scope"] == {
-            "user_id": "user_alpha",
-            "workspace_id": "workspace_alpha",
-        }
-        assert len(memories) == 1
-        assert memories[0]["memory_id"] == alpha_memory["memory_id"]
-        assert memories[0]["user_id"] == "user_alpha"
-        assert memories[0]["workspace_id"] == "workspace_alpha"
-        assert "Beta user memory" not in str(memories)
-        assert "different workspace memory" not in str(memories)
+        records = payload["records"]
+        assert len(records) == 1
+        assert records[0]["id"] == mine["id"]
+        assert records[0]["user_id"] == owner.user_id
+        assert records[0]["workspace_id"] == owner.workspace_id
+        assert "Other workspace memory" not in str(records)
 
-    def test_get_memory_denies_cross_user_access_without_leaking_existence(
+    def test_get_memory_denies_cross_workspace_access_without_leaking_existence(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-        user_b_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        alpha_memory = _create_memory(
-            client,
-            user_a_headers,
-            content="Alpha private memory.",
-            tags=["private"],
-        )
+        owner = make_owner()
+        other = make_owner()
 
-        response = client.get(f"/api/memory/{alpha_memory['memory_id']}", headers=user_b_headers)
+        created = _save_memory(client, owner, content="Private memory.", tags=["private"])
+
+        response = client.get(f"{MEMORY_PREFIX}/{created['id']}", headers=other.headers)
         assert response.status_code == 404, response.text
 
         payload = _json(response)
-        _assert_structured_error(payload)
-        normalized = payload.get("detail", payload)
-        assert normalized["error"]["code"] == "memory_not_found"
+        assert _error_code(payload) == "memory_not_found"
 
     def test_get_memory_denies_cross_workspace_access_for_same_user(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-        same_user_other_workspace_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
+        make_member: Any,
     ) -> None:
-        alpha_memory = _create_memory(
+        """
+        Note the memory record must be created by `member` (not `owner`),
+        so record.user_id equals member.user_id. That isolates exactly what
+        this test claims to check: the SAME user_id but a DIFFERENT
+        workspace_id must still be denied. Creating it as `owner` instead
+        would make this indistinguishable from the plain cross-user test
+        above (own_workspace's user_id would already differ from the
+        record's creator, so the workspace_id check would never actually
+        be exercised).
+        """
+        owner = make_owner()
+        email = f"multi-workspace-{uuid.uuid4().hex[:10]}@example.test"
+        password = "Sup3rSecure!Pass1"
+
+        # This user is now a "member" of owner's workspace *and* (via the
+        # real registration side effect described in _login's docstring)
+        # the owner of their own separate scratch workspace.
+        member = make_member(owner, role="member", email=email, password=password)
+
+        own_workspace = _login(client, email=email, password=password, workspace_id=None)
+        assert own_workspace["user_id"] == member.user_id
+        assert own_workspace["workspace_id"] != owner.workspace_id
+
+        created = _save_memory(
             client,
-            user_a_headers,
-            content="Alpha workspace-only memory.",
-            tags=["workspace-alpha"],
+            member,
+            content="Member's workspace-scoped memory.",
+            tags=["workspace-member"],
         )
 
-        response = client.get(
-            f"/api/memory/{alpha_memory['memory_id']}",
-            headers=same_user_other_workspace_headers,
-        )
-
+        # Same real user_id, wrong workspace_id -- must be denied exactly
+        # like a genuinely different user, and must not leak existence.
+        response = client.get(f"{MEMORY_PREFIX}/{created['id']}", headers=own_workspace["headers"])
         assert response.status_code == 404, response.text
         payload = _json(response)
-        _assert_structured_error(payload)
-        normalized = payload.get("detail", payload)
-        assert normalized["error"]["code"] == "memory_not_found"
+        assert _error_code(payload) == "memory_not_found"
 
-    def test_get_memory_allows_owner_inside_same_user_workspace_scope(
+    def test_get_memory_allows_owner_inside_same_workspace_scope(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        created = _create_memory(
+        owner = make_owner()
+        created = _save_memory(
             client,
-            user_a_headers,
+            owner,
             content="Owner can read memory inside same workspace.",
             tags=["read"],
         )
 
-        response = client.get(f"/api/memory/{created['memory_id']}", headers=user_a_headers)
+        response = client.get(f"{MEMORY_PREFIX}/{created['id']}", headers=owner.headers)
 
         assert response.status_code == 200, response.text
         payload = _json(response)
-        _assert_structured_success(payload)
+        assert payload["ok"] is True
 
         memory = payload["data"]["memory"]
-        assert memory["memory_id"] == created["memory_id"]
-        assert memory["user_id"] == "user_alpha"
-        assert memory["workspace_id"] == "workspace_alpha"
+        assert memory["id"] == created["id"]
+        assert memory["user_id"] == owner.user_id
+        assert memory["workspace_id"] == owner.workspace_id
 
     def test_search_memory_filters_within_current_scope_only(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-        user_b_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        expected = _create_memory(
+        owner = make_owner()
+        other = make_owner()
+
+        expected = _save_memory(
             client,
-            user_a_headers,
+            owner,
             content="Campaign launch preference: use short approval summaries.",
             tags=["campaign", "approval"],
         )
-        _create_memory(
+        _save_memory(
             client,
-            user_a_headers,
+            owner,
             content="Billing reminder preference: show monthly usage.",
             tags=["billing"],
         )
-        _create_memory(
+        _save_memory(
             client,
-            user_b_headers,
-            content="Campaign launch memory from another user must not appear.",
+            other,
+            content="Campaign launch memory from another workspace must not appear.",
             tags=["campaign"],
         )
 
-        response = client.get("/api/memory?query=campaign", headers=user_a_headers)
+        response = client.post(
+            f"{MEMORY_PREFIX}/search",
+            headers=owner.headers,
+            json={"query": "campaign"},
+        )
 
         assert response.status_code == 200, response.text
         payload = _json(response)
-        _assert_structured_success(payload)
+        assert payload["ok"] is True
 
-        memories = payload["data"]["memories"]
-        assert len(memories) == 1
-        assert memories[0]["memory_id"] == expected["memory_id"]
-        assert memories[0]["user_id"] == "user_alpha"
-        assert memories[0]["workspace_id"] == "workspace_alpha"
+        records = payload["records"]
+        assert len(records) == 1
+        assert records[0]["id"] == expected["id"]
+        assert records[0]["user_id"] == owner.user_id
+        assert records[0]["workspace_id"] == owner.workspace_id
 
-    def test_create_memory_requires_user_and_workspace_headers(
+    def test_save_memory_without_authorization_header_is_rejected(
         self,
-        client: TestClient,
+        client: Any,
     ) -> None:
         response = client.post(
-            "/api/memory",
-            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            f"{MEMORY_PREFIX}/save",
             json={
-                "content": "This request is missing identity scope.",
+                "memory_type": "short",
+                "content": "This request has no Authorization header at all.",
                 "tags": ["invalid"],
-                "source_agent": MEMORY_AGENT_NAME,
-                "sensitivity": "normal",
-            },
-        )
-
-        assert response.status_code in {400, 422}, response.text
-
-    def test_create_memory_requires_authorization_token(
-        self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-    ) -> None:
-        headers = dict(user_a_headers)
-        headers["Authorization"] = "Bearer wrong-token"
-
-        response = client.post(
-            "/api/memory",
-            headers=headers,
-            json={
-                "content": "Unauthorized memory write should fail.",
-                "tags": ["auth"],
-                "source_agent": MEMORY_AGENT_NAME,
-                "sensitivity": "normal",
+                "source": "user",
+                "sensitivity": "internal",
             },
         )
 
         assert response.status_code == 401, response.text
         payload = _json(response)
-        _assert_structured_error(payload)
+        assert _error_code(payload) == "ACCESS_TOKEN_REQUIRED"
 
-    def test_create_memory_validates_non_empty_content(
+    def test_save_memory_with_invalid_token_is_rejected(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
+        client: Any,
     ) -> None:
         response = client.post(
-            "/api/memory",
-            headers=user_a_headers,
+            f"{MEMORY_PREFIX}/save",
+            headers={"Authorization": "Bearer not-a-real-jwt"},
             json={
+                "memory_type": "short",
+                "content": "Unauthorized memory write should fail.",
+                "tags": ["auth"],
+                "source": "user",
+                "sensitivity": "internal",
+            },
+        )
+
+        assert response.status_code == 401, response.text
+        payload = _json(response)
+        assert _error_code(payload) == "INVALID_TOKEN"
+
+    def test_save_memory_validates_non_empty_content(
+        self,
+        client: Any,
+        make_owner: Any,
+    ) -> None:
+        owner = make_owner()
+        response = client.post(
+            f"{MEMORY_PREFIX}/save",
+            headers=owner.headers,
+            json={
+                "memory_type": "short",
                 "content": "",
                 "tags": ["invalid"],
-                "source_agent": MEMORY_AGENT_NAME,
-                "sensitivity": "normal",
+                "source": "user",
+                "sensitivity": "internal",
             },
         )
 
         assert response.status_code == 422, response.text
 
-    def test_free_plan_cannot_use_memory_api(
+    def test_free_plan_memory_quota_is_enforced(
         self,
-        client: TestClient,
-        free_plan_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
+        monkeypatch: Any,
     ) -> None:
+        """
+        Real contract note: apps/api/routes/memory.py has no blanket "free
+        plan cannot use the memory API at all" gate -- that was this test
+        file's old, imagined contract. enforce_write_access() only checks
+        role (can_write_memory), never plan; the one real plan-tied
+        behavior is memory_limit_for_plan()'s per-plan quota, enforced by
+        enforce_memory_quota(). New workspaces default to the "free" plan
+        (see apps/api/routes/auth.py's create_user_with_workspace ->
+        _DbWorkspacePlan.FREE), so this test exercises that real quota gate
+        instead, temporarily lowering the free-plan limit so it doesn't
+        need to create hundreds of real records to trip it.
+        """
+        import apps.api.routes.memory as memory_module
+
+        owner = make_owner()
+        monkeypatch.setattr(memory_module, "DEFAULT_FREE_MEMORY_LIMIT", 1)
+
+        _save_memory(client, owner, content="First memory within the free-plan quota.")
+
         response = client.post(
-            "/api/memory",
-            headers=free_plan_headers,
+            f"{MEMORY_PREFIX}/save",
+            headers=owner.headers,
             json={
-                "content": "Free plan should not create persistent memory.",
-                "tags": ["plan"],
-                "source_agent": MEMORY_AGENT_NAME,
-                "sensitivity": "normal",
+                "memory_type": "short",
+                "content": "Second memory should exceed the lowered free-plan quota.",
+                "tags": ["quota"],
+                "source": "user",
+                "sensitivity": "internal",
             },
         )
 
-        assert response.status_code == 402, response.text
+        assert response.status_code == 403, response.text
         payload = _json(response)
-        _assert_structured_error(payload)
-        normalized = payload.get("detail", payload)
-        assert normalized["error"]["code"] == "plan_memory_access_required"
+        assert _error_code(payload) == "memory_quota_exceeded"
 
-    def test_viewer_role_cannot_create_memory(
+    def test_viewer_role_cannot_save_memory(
         self,
-        client: TestClient,
-        viewer_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
+        make_member: Any,
     ) -> None:
+        owner = make_owner()
+        viewer = make_member(owner, role="viewer")
+
         response = client.post(
-            "/api/memory",
-            headers=viewer_headers,
+            f"{MEMORY_PREFIX}/save",
+            headers=viewer.headers,
             json={
+                "memory_type": "short",
                 "content": "Viewer role should not create memory.",
                 "tags": ["role"],
-                "source_agent": MEMORY_AGENT_NAME,
-                "sensitivity": "normal",
+                "source": "user",
+                "sensitivity": "internal",
             },
         )
 
         assert response.status_code == 403, response.text
         payload = _json(response)
-        _assert_structured_error(payload)
-        normalized = payload.get("detail", payload)
-        assert normalized["error"]["code"] == "role_not_allowed"
+        assert _error_code(payload) == "role_cannot_write_memory"
 
-    def test_sensitive_memory_requires_security_agent_route(
+    def test_security_agent_denial_blocks_sensitive_memory_save(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
+        monkeypatch: Any,
     ) -> None:
+        """
+        Real contract note: require_security() only ever *denies* a save
+        when a real Security Agent bridge is wired up via
+        apps.api.services.security.require_security_approval -- that module
+        does not exist in this codebase yet (project_security_approval is
+        None), so by default require_security() always takes its
+        {"approved": True, "mode": "fallback"} branch and sensitive saves
+        always succeed (see the companion "succeeds via fallback" test
+        below, which replaces this file's old hardcoded
+        "security_agent_required" 403 expectation -- that specific
+        behavior never existed in the real handler). This test exercises
+        the real denial code path directly by monkeypatching the Memory
+        service's own security_hook to a fake bridge that denies -- the
+        same seam a real Security Agent integration would plug into.
+        """
+        import apps.api.routes.memory as memory_module
+
+        owner = make_owner()
+
+        def _deny(request_payload: Dict[str, Any]) -> Dict[str, Any]:
+            return {"approved": False, "reason": "test-security-denial"}
+
+        monkeypatch.setattr(memory_module.memory_service, "security_hook", _deny)
+
         response = client.post(
-            "/api/memory",
-            headers=user_a_headers,
+            f"{MEMORY_PREFIX}/save",
+            headers=owner.headers,
             json={
+                "memory_type": "client",
                 "content": "Sensitive billing approval details require Security Agent review.",
                 "tags": ["sensitive", "billing"],
-                "source_agent": MEMORY_AGENT_NAME,
-                "sensitivity": "sensitive",
+                "source": "user",
+                "sensitivity": "confidential",
             },
         )
 
         assert response.status_code == 403, response.text
         payload = _json(response)
-        _assert_structured_error(payload)
-        normalized = payload.get("detail", payload)
-        assert normalized["error"]["code"] == "security_agent_required"
+        assert _error_code(payload) == "security_agent_denied"
 
-    def test_sensitive_memory_can_be_written_by_security_agent(
+    def test_sensitive_memory_save_succeeds_via_default_security_fallback(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
+        owner = make_owner()
+
         response = client.post(
-            "/api/memory",
-            headers=user_a_headers,
+            f"{MEMORY_PREFIX}/save",
+            headers=owner.headers,
             json={
+                "memory_type": "client",
                 "content": "Security-approved sensitive memory for workspace isolation test.",
                 "tags": ["sensitive", "security-approved"],
-                "source_agent": SECURITY_AGENT_NAME,
-                "sensitivity": "sensitive",
+                "source": "user",
+                "sensitivity": "restricted",
             },
         )
 
-        assert response.status_code in {200, 201}, response.text
+        assert response.status_code == 201, response.text
         payload = _json(response)
-        _assert_structured_success(payload)
+        assert payload["ok"] is True
 
         memory = payload["data"]["memory"]
-        assert memory["sensitivity"] == "sensitive"
-        assert memory["source_agent"] == SECURITY_AGENT_NAME
-        assert payload["data"]["agents"]["security_agent_ready"] is True
-        assert payload["data"]["verification_payload"]["checks"]["security_reviewed"] is True
+        assert memory["sensitivity"] == "restricted"
 
-    def test_member_can_read_but_cannot_delete_memory(
+    def test_member_can_read_own_memory_but_cannot_delete_it(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-        user_a_member_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
+        make_member: Any,
     ) -> None:
-        created = _create_memory(
+        """
+        Real contract note: the repository scopes every record by the
+        *creating* user_id as well as workspace_id (InMemoryMemoryRepository
+        .get_scoped() requires record.user_id == actor.user_id, not just a
+        matching workspace_id) -- memory is per-user within a workspace, not
+        shared workspace-wide. So a member can never read a record the
+        owner created in the same workspace (that path 404s, same as
+        cross-workspace access); to exercise the role-based delete gate
+        specifically, the member must create -- and can therefore read --
+        their own record first, then be denied deleting it purely on role
+        (can_delete_memory() excludes "member" regardless of ownership).
+        """
+        owner = make_owner()
+        member = make_member(owner, role="member")
+
+        created = _save_memory(
             client,
-            user_a_headers,
-            content="Member can read but should not delete this memory.",
+            member,
+            content="Member's own memory in the shared workspace.",
             tags=["member"],
         )
 
-        read_response = client.get(f"/api/memory/{created['memory_id']}", headers=user_a_member_headers)
+        read_response = client.get(f"{MEMORY_PREFIX}/{created['id']}", headers=member.headers)
         assert read_response.status_code == 200, read_response.text
 
-        delete_response = client.delete(f"/api/memory/{created['memory_id']}", headers=user_a_member_headers)
+        delete_response = client.delete(f"{MEMORY_PREFIX}/{created['id']}", headers=member.headers)
         assert delete_response.status_code == 403, delete_response.text
 
         payload = _json(delete_response)
-        _assert_structured_error(payload)
-        normalized = payload.get("detail", payload)
-        assert normalized["error"]["code"] == "delete_role_not_allowed"
+        assert _error_code(payload) == "role_cannot_delete_memory"
 
-    def test_delete_memory_is_scoped_audited_and_verified(
+    def test_delete_memory_is_scoped_and_verified(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        created = _create_memory(
+        owner = make_owner()
+        created = _save_memory(
             client,
-            user_a_headers,
-            content="Delete action must create audit and verification payload.",
+            owner,
+            content="Delete action must produce a verification payload.",
             tags=["delete"],
         )
 
-        delete_response = client.delete(f"/api/memory/{created['memory_id']}", headers=user_a_headers)
+        delete_response = client.delete(f"{MEMORY_PREFIX}/{created['id']}", headers=owner.headers)
         assert delete_response.status_code == 200, delete_response.text
 
         payload = _json(delete_response)
-        _assert_structured_success(payload)
-        assert payload["data"]["deleted"] is True
-        assert payload["data"]["memory_id"] == created["memory_id"]
-        assert payload["data"]["audit_logged"] is True
-        assert payload["data"]["verification_payload"]["action"] == "memory.delete"
-        assert payload["data"]["verification_payload"]["status"] == "prepared"
+        assert payload["ok"] is True
+        assert payload["data"]["deleted_ids"] == [created["id"]]
+        assert payload["data"]["deleted_count"] == 1
+        assert payload["data"]["hard_delete"] is False
+        assert payload["verification"]["action"] == "memory.delete"
+        assert payload["verification"]["result"]["deleted_ids"] == [created["id"]]
 
-        read_response = client.get(f"/api/memory/{created['memory_id']}", headers=user_a_headers)
+        # Default delete is soft-delete, so a scoped GET must no longer
+        # surface it (include_deleted defaults to False).
+        read_response = client.get(f"{MEMORY_PREFIX}/{created['id']}", headers=owner.headers)
         assert read_response.status_code == 404, read_response.text
 
     def test_delete_memory_denies_cross_workspace_delete_without_leaking_existence(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-        same_user_other_workspace_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        created = _create_memory(
+        """
+        Real contract note: unlike GET/PATCH, the delete handlers
+        (Memory.delete_memory()) never raise memory_not_found for missing
+        or out-of-scope ids -- delete_one_memory() always builds a
+        MemoryDeleteRequest and returns 200 "success" with whatever subset
+        of the requested ids actually matched the caller's own
+        (user_id, workspace_id) scope (possibly none). This is arguably
+        even more leak-resistant than a 404 (the response is identical
+        whether the id exists for someone else or doesn't exist at all),
+        so the real assertion here is that the request has *zero effect*
+        on the other actor's own record, not that it 404s.
+        """
+        owner = make_owner()
+        other = make_owner()
+
+        created = _save_memory(
             client,
-            user_a_headers,
+            owner,
             content="Cross-workspace delete attempt must fail safely.",
             tags=["delete", "isolation"],
         )
 
-        response = client.delete(
-            f"/api/memory/{created['memory_id']}",
-            headers=same_user_other_workspace_headers,
-        )
-
-        assert response.status_code == 404, response.text
+        response = client.delete(f"{MEMORY_PREFIX}/{created['id']}", headers=other.headers)
+        assert response.status_code == 200, response.text
         payload = _json(response)
-        _assert_structured_error(payload)
-        normalized = payload.get("detail", payload)
-        assert normalized["error"]["code"] == "memory_not_found"
+        assert payload["ok"] is True
+        assert payload["data"]["deleted_ids"] == []
+        assert payload["data"]["deleted_count"] == 0
 
-        owner_read_response = client.get(f"/api/memory/{created['memory_id']}", headers=user_a_headers)
+        owner_read_response = client.get(f"{MEMORY_PREFIX}/{created['id']}", headers=owner.headers)
         assert owner_read_response.status_code == 200, owner_read_response.text
 
-    def test_audit_logs_are_visible_only_to_current_workspace_admin_scope(
-        self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-        user_b_headers: Dict[str, str],
-    ) -> None:
-        alpha_memory = _create_memory(
-            client,
-            user_a_headers,
-            content="Alpha audit visibility memory.",
-            tags=["audit-alpha"],
+    @pytest.mark.skip(
+        reason=(
+            "No real equivalent exists yet: apps/api/routes/memory.py's "
+            "Memory.audit() (around lines 602-634) calls self.audit_hook, "
+            "which is project_audit_log imported from "
+            "apps.api.services.audit -- that module does not exist in this "
+            "codebase (project_audit_log is None), so audit_hook silently "
+            "no-ops on every memory action and nothing is ever persisted "
+            "to the real, DB-backed audit log (apps/api/routes/audit.py's "
+            "AuditLogModel). There is also no memory-specific "
+            "audit-listing endpoint (no GET /api/v1/memory/.../audit or "
+            "similar) -- the old fallback app's invented GET /api/audit/memory "
+            "has no real backend counterpart. Once a real audit bridge is "
+            "wired up (apps/api/services/audit.py), this should be "
+            "rewritten against whichever real endpoint surfaces those events."
         )
-        _create_memory(
-            client,
-            user_b_headers,
-            content="Beta audit visibility memory.",
-            tags=["audit-beta"],
+    )
+    def test_memory_audit_logs_are_visible_only_to_current_workspace_admin_scope(self) -> None:
+        pass
+
+    @pytest.mark.skip(
+        reason=(
+            "Same root cause as "
+            "test_memory_audit_logs_are_visible_only_to_current_workspace_admin_scope "
+            "above: there is no real, queryable memory-audit endpoint to "
+            "assert a viewer is forbidden from reading, because memory "
+            "audit events are never persisted anywhere in this codebase "
+            "yet (apps/api/routes/memory.py's audit_hook is None)."
         )
+    )
+    def test_viewer_cannot_read_memory_audit_logs(self) -> None:
+        pass
 
-        response = client.get("/api/audit/memory", headers=user_a_headers)
-        assert response.status_code == 200, response.text
-
-        payload = _json(response)
-        _assert_structured_success(payload)
-
-        logs = payload["data"]["audit_logs"]
-        assert len(logs) >= 1
-        assert all(log["user_id"] == "user_alpha" for log in logs)
-        assert all(log["workspace_id"] == "workspace_alpha" for log in logs)
-        assert any(log["resource_id"] == alpha_memory["memory_id"] for log in logs)
-        assert not any(log["user_id"] == "user_beta" for log in logs)
-
-    def test_viewer_cannot_read_memory_audit_logs(
+    def test_saved_memory_shape_is_compatible_with_memory_agent_indexing(
         self,
-        client: TestClient,
-        viewer_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        response = client.get("/api/audit/memory", headers=viewer_headers)
-
-        assert response.status_code == 403, response.text
-        payload = _json(response)
-        _assert_structured_error(payload)
-        normalized = payload.get("detail", payload)
-        assert normalized["error"]["code"] == "audit_role_not_allowed"
-
-    def test_memory_response_is_compatible_with_memory_agent_context_shape(
-        self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-    ) -> None:
-        created = _create_memory(
+        owner = make_owner()
+        created = _save_memory(
             client,
-            user_a_headers,
+            owner,
             content="Memory Agent should receive stable content, tags, metadata, user_id, and workspace_id.",
             tags=["memory-agent", "context"],
             metadata={
                 "task_id": "task_memory_api_001",
-                "agent_chain": [MASTER_AGENT_NAME, MEMORY_AGENT_NAME, VERIFICATION_AGENT_NAME],
+                "agent_chain": ["master_agent", "memory_agent", "verification_agent"],
             },
         )
 
         required_keys = {
-            "memory_id",
+            "id",
             "user_id",
             "workspace_id",
+            "memory_type",
             "content",
+            "title",
             "tags",
-            "source_agent",
+            "source",
             "sensitivity",
+            "project_id",
+            "client_id",
             "metadata",
             "created_at",
             "updated_at",
+            "deleted_at",
+            "created_by",
+            "updated_by",
         }
 
         assert required_keys.issubset(set(created.keys()))
         assert created["metadata"]["task_id"] == "task_memory_api_001"
-        assert MASTER_AGENT_NAME in created["metadata"]["agent_chain"]
-        assert MEMORY_AGENT_NAME in created["metadata"]["agent_chain"]
-        assert VERIFICATION_AGENT_NAME in created["metadata"]["agent_chain"]
+        assert "master_agent" in created["metadata"]["agent_chain"]
+        assert "memory_agent" in created["metadata"]["agent_chain"]
+        assert "verification_agent" in created["metadata"]["agent_chain"]
 
     def test_verification_payload_contains_user_workspace_and_resource_binding(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
+        owner = make_owner()
         response = client.post(
-            "/api/memory",
-            headers=user_a_headers,
+            f"{MEMORY_PREFIX}/save",
+            headers=owner.headers,
             json={
+                "memory_type": "short",
                 "content": "Verification Agent must confirm the memory action scope.",
                 "tags": ["verification"],
-                "source_agent": MEMORY_AGENT_NAME,
-                "sensitivity": "normal",
+                "source": "user",
+                "sensitivity": "internal",
             },
         )
 
-        assert response.status_code in {200, 201}, response.text
+        assert response.status_code == 201, response.text
         payload = _json(response)
-        _assert_structured_success(payload)
+        assert payload["ok"] is True
 
         memory = payload["data"]["memory"]
-        verification = payload["data"]["verification_payload"]
+        verification = payload["verification"]
 
-        assert verification["action"] == "memory.create"
+        assert verification["action"] == "memory.save"
         assert verification["user_id"] == memory["user_id"]
         assert verification["workspace_id"] == memory["workspace_id"]
-        assert verification["resource_type"] == "memory"
-        assert verification["resource_id"] == memory["memory_id"]
-        assert verification["verification_agent"] == VERIFICATION_AGENT_NAME
-        assert verification["checks"]["user_workspace_bound"] is True
-        assert verification["checks"]["memory_agent_compatible"] is True
+        assert verification["request_id"]
+        assert verification["result"]["memory_id"] == memory["id"]
+        assert verification["result"]["memory_type"] == memory["memory_type"]
 
     def test_memory_api_never_returns_other_workspace_data_after_mixed_operations(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
-        user_b_headers: Dict[str, str],
-        same_user_other_workspace_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        alpha_records = [
-            _create_memory(
-                client,
-                user_a_headers,
-                content=f"Alpha record {index}",
-                tags=["alpha", str(index)],
-            )
+        owner = make_owner()
+        other = make_owner()
+
+        mine = [
+            _save_memory(client, owner, content=f"My record {index}", tags=["mine", str(index)])
             for index in range(3)
         ]
-
-        beta_records = [
-            _create_memory(
-                client,
-                user_b_headers,
-                content=f"Beta record {index}",
-                tags=["beta", str(index)],
-            )
+        theirs = [
+            _save_memory(client, other, content=f"Their record {index}", tags=["theirs", str(index)])
             for index in range(2)
         ]
 
-        secondary_records = [
-            _create_memory(
-                client,
-                same_user_other_workspace_headers,
-                content=f"Secondary workspace record {index}",
-                tags=["secondary", str(index)],
-            )
-            for index in range(2)
-        ]
-
-        response = client.get("/api/memory", headers=user_a_headers)
+        response = client.get(MEMORY_PREFIX, headers=owner.headers)
         assert response.status_code == 200, response.text
 
         payload = _json(response)
-        _assert_structured_success(payload)
+        assert payload["ok"] is True
 
-        visible_ids = {memory["memory_id"] for memory in payload["data"]["memories"]}
-        alpha_ids = {memory["memory_id"] for memory in alpha_records}
-        beta_ids = {memory["memory_id"] for memory in beta_records}
-        secondary_ids = {memory["memory_id"] for memory in secondary_records}
+        visible_ids = {record["id"] for record in payload["records"]}
+        mine_ids = {record["id"] for record in mine}
+        theirs_ids = {record["id"] for record in theirs}
 
-        assert visible_ids == alpha_ids
-        assert visible_ids.isdisjoint(beta_ids)
-        assert visible_ids.isdisjoint(secondary_ids)
+        assert visible_ids == mine_ids
+        assert visible_ids.isdisjoint(theirs_ids)
 
     def test_memory_payload_does_not_require_or_expose_real_secrets(
         self,
-        client: TestClient,
-        user_a_headers: Dict[str, str],
+        client: Any,
+        make_owner: Any,
     ) -> None:
-        created = _create_memory(
+        owner = make_owner()
+        created = _save_memory(
             client,
-            user_a_headers,
+            owner,
             content="Store a harmless user preference, not secrets.",
             tags=["safe"],
             metadata={

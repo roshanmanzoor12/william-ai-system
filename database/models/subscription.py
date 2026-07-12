@@ -105,6 +105,7 @@ except Exception:  # pragma: no cover - emergency import-safe fallback
 DEFAULT_CURRENCY = os.getenv("WILLIAM_BILLING_CURRENCY", "USD").upper()
 
 FREE_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_FREE_PRICE_CENTS", "0"))
+STARTER_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_STARTER_PRICE_CENTS", "1200"))
 PRO_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_PRO_PRICE_CENTS", "2900"))
 BUSINESS_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_BUSINESS_PRICE_CENTS", "9900"))
 ENTERPRISE_PRICE_CENTS = int(os.getenv("WILLIAM_PLAN_ENTERPRISE_PRICE_CENTS", "29900"))
@@ -165,6 +166,13 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 class PlanKey(str, enum.Enum):
     FREE = "free"
+    # apps/api/routes/{auth,agents,analytics,audit,files}.py's own Plan enum
+    # (the vocabulary actually enforced on live, tested API routes) has
+    # always included "starter" between free and pro. This enum lacked it,
+    # so any SubscriptionPlan row seeded/created with plan_key="starter"
+    # crashed the subscription_plan_before_insert event listener with
+    # "Unknown plan: starter" via Subscription.normalize_plan().
+    STARTER = "starter"
     PRO = "pro"
     BUSINESS = "business"
     ENTERPRISE = "enterprise"
@@ -295,6 +303,22 @@ def default_limits_for_plan(plan_key: PlanKey) -> Dict[str, int]:
             UsageMetric.DASHBOARD_SEATS.value: 1,
         }
 
+    if plan_key == PlanKey.STARTER:
+        return {
+            UsageMetric.TASKS.value: 1000,
+            UsageMetric.AGENT_RUNS.value: 2500,
+            UsageMetric.MEMORY_RECORDS.value: 1000,
+            UsageMetric.MEMORY_STORAGE_MB.value: 500,
+            UsageMetric.WORKFLOW_RUNS.value: 100,
+            UsageMetric.WEBHOOKS.value: 5,
+            UsageMetric.FILES.value: 250,
+            UsageMetric.STORAGE_MB.value: 2500,
+            UsageMetric.API_CALLS.value: 10000,
+            UsageMetric.TEAM_MEMBERS.value: 2,
+            UsageMetric.DEVICE_WORKERS.value: 0,
+            UsageMetric.DASHBOARD_SEATS.value: 2,
+        }
+
     if plan_key == PlanKey.PRO:
         return {
             UsageMetric.TASKS.value: 5000,
@@ -350,6 +374,19 @@ def default_features_for_plan(plan_key: PlanKey) -> Dict[str, Any]:
             "memory_agent": True,
             "verification_agent": True,
             "security_agent": False,
+            "workflow_automation": False,
+            "webhooks": False,
+            "device_workers": False,
+            "advanced_analytics": False,
+            "priority_support": False,
+        }
+
+    if plan_key == PlanKey.STARTER:
+        return {
+            "master_agent": True,
+            "memory_agent": True,
+            "verification_agent": True,
+            "security_agent": True,
             "workflow_automation": False,
             "webhooks": False,
             "device_workers": False,
@@ -414,6 +451,7 @@ def default_agent_access_for_plan(plan_key: PlanKey) -> Dict[str, bool]:
 def default_price_cents(plan_key: PlanKey) -> int:
     prices = {
         PlanKey.FREE: FREE_PRICE_CENTS,
+        PlanKey.STARTER: STARTER_PRICE_CENTS,
         PlanKey.PRO: PRO_PRICE_CENTS,
         PlanKey.BUSINESS: BUSINESS_PRICE_CENTS,
         PlanKey.ENTERPRISE: ENTERPRISE_PRICE_CENTS,
@@ -422,11 +460,16 @@ def default_price_cents(plan_key: PlanKey) -> int:
 
 
 def plan_rank(plan_key: PlanKey) -> int:
+    # STARTER must rank above FREE (2) so plan_at_least() comparisons are
+    # correct -- it previously fell through .get(plan_key, 0), which made a
+    # Starter-tier plan rank BELOW Free (0 < 1), a real correctness bug, not
+    # just a missing entry.
     ranks = {
         PlanKey.FREE: 1,
-        PlanKey.PRO: 2,
-        PlanKey.BUSINESS: 3,
-        PlanKey.ENTERPRISE: 4,
+        PlanKey.STARTER: 2,
+        PlanKey.PRO: 3,
+        PlanKey.BUSINESS: 4,
+        PlanKey.ENTERPRISE: 5,
     }
     return ranks.get(plan_key, 0)
 

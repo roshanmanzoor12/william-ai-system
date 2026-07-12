@@ -695,6 +695,7 @@ from database.models.workspace import (
     WorkspaceMemberRole as _DbMemberRole,
     WorkspaceMembershipStatus as _DbMembershipStatus,
     WorkspacePlan as _DbWorkspacePlan,
+    normalize_slug as _normalize_workspace_slug,
 )
 
 
@@ -797,9 +798,24 @@ class DatabaseAuthStore:
             session.add(db_user)
             session.flush()
 
+            # Workspace.slug is derived from the name and unique at the DB
+            # level, but nothing guaranteed uniqueness before insert -- any
+            # two registrations sharing a workspace name (e.g. the very
+            # plausible default "My Workspace") hit a raw 500 from the
+            # database's UNIQUE constraint instead of a real, working
+            # registration. Suffix the slug deterministically until it's
+            # actually free within this workspace's slug namespace.
+            base_slug = _normalize_workspace_slug(workspace_name.strip())
+            unique_slug = base_slug
+            slug_suffix = 1
+            while session.query(_DbWorkspace).filter(_DbWorkspace.slug == unique_slug).first() is not None:
+                slug_suffix += 1
+                unique_slug = f"{base_slug}-{slug_suffix}"
+
             db_workspace = _DbWorkspace.create(
                 owner_user_id=db_user.id,
                 name=workspace_name.strip(),
+                slug=unique_slug,
                 plan=_DbWorkspacePlan.FREE,
                 created_by=db_user.id,
                 metadata=metadata or {},
@@ -1132,7 +1148,17 @@ SECURITY_AGENT = OptionalAgentHook(
         ("agents.security_agent.security_agent", "SecurityAgent"),
         ("agents.security.security_agent", "SecurityAgent"),
     ],
-    method_candidates=["approve_auth_action", "approve_api_action", "approve_action", "check_permission", "execute", "run"],
+    # "run_task" (real agents.security_agent.security_agent.SecurityAgent's
+    # actual, bespoke, sync entrypoint) and "execute_task" (BaseAgent's own
+    # safe dict-normalizing entrypoint) must come before "execute"/"run":
+    # none of the hopeful approve_*/check_permission names exist on the real
+    # class, so OptionalAgentHook.call() fell through to "run" -- which
+    # SecurityAgent never overrides, hitting BaseAgent.run()'s placeholder
+    # body and crashing with "'dict' object has no attribute 'task_name'"
+    # (confirmed live: this is exactly why /auth/logout always got blocked
+    # with a 403 SECURITY_AGENT_DENIED). Same root cause fixed in
+    # apps/api/routes/tasks.py and core/master_agent.py this session.
+    method_candidates=["run_task", "execute_task", "approve_auth_action", "approve_api_action", "approve_action", "check_permission", "execute", "run"],
 )
 
 MEMORY_AGENT = OptionalAgentHook(
@@ -1142,9 +1168,15 @@ MEMORY_AGENT = OptionalAgentHook(
         ("agents.memory_agent.memory_agent", "MemoryAgent"),
         ("agents.memory.memory_agent", "MemoryAgent"),
     ],
-    method_candidates=["record_auth_context", "record_api_context", "save_context", "remember", "execute", "run"],
+    # Same root cause/fix as SECURITY_AGENT above.
+    method_candidates=["run_task", "execute_task", "record_auth_context", "record_api_context", "save_context", "remember", "execute", "run"],
 )
 
+# apps.api.services.verification_agent_bridge.VerificationAgentBridge (first
+# import candidate below) resolves the real VerificationAgent.verify_task(
+# context, task_payload, ...)'s two-required-argument shape, which is
+# incompatible with this hook's generic method(payload) single-dict
+# invocation -- see that module for the context/task_payload split.
 VERIFICATION_AGENT = OptionalAgentHook(
     component_name="Verification Agent",
     import_candidates=[
@@ -1152,7 +1184,7 @@ VERIFICATION_AGENT = OptionalAgentHook(
         ("agents.verification_agent.verification_agent", "VerificationAgent"),
         ("agents.verification.verification_agent", "VerificationAgent"),
     ],
-    method_candidates=["prepare_auth_confirmation", "prepare_confirmation", "verify_result", "confirm", "execute", "run"],
+    method_candidates=["execute_task", "prepare_auth_confirmation", "prepare_confirmation", "verify_result", "confirm", "execute", "run"],
 )
 
 
@@ -1533,19 +1565,28 @@ class Auth:
             )
 
         except ValueError as exc:
+            # "Email is already registered" is a resource conflict (409),
+            # not a malformed-request error (400) -- every other ValueError
+            # this method can raise (e.g. an empty workspace name) is a
+            # genuine bad request, so only the duplicate-email case gets
+            # the more specific status.
+            is_duplicate_email = "already registered" in str(exc).lower()
+            conflict_status = status.HTTP_409_CONFLICT if is_duplicate_email else status.HTTP_400_BAD_REQUEST
+            conflict_code = "EMAIL_ALREADY_REGISTERED" if is_duplicate_email else "REGISTER_FAILED"
+
             write_auth_audit(
                 request=request,
                 event_type="auth_register",
                 action="register",
                 result="failed",
                 request_id=request_id,
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=conflict_status,
                 metadata={"error": str(exc)},
             )
             raise_api_error(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=conflict_status,
                 message=str(exc),
-                code="REGISTER_FAILED",
+                code=conflict_code,
                 request_id=request_id,
             )
 

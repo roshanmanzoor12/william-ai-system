@@ -5,7 +5,7 @@ const config: Config = {
   content: [
     "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/lib/**/*.{js,ts,jsx,tsx,mdx}"
+    "./src/lib/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
     extend: {
@@ -14,12 +14,12 @@ const config: Config = {
           bg: "#07080b",
           panel: "#0b0c0f",
           soft: "#111217",
-          orange: "#f97316"
-        }
-      }
-    }
+          orange: "#f97316",
+        },
+      },
+    },
   },
-  plugins: []
+  plugins: [],
 };
 
 export default config;

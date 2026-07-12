@@ -42,7 +42,7 @@ import {
   Unlock,
   UserCheck,
   WalletCards,
-  Zap
+  Zap,
 } from "lucide-react";
 
 type RiskLevel = "low" | "medium" | "high" | "critical";
@@ -99,27 +99,30 @@ const metrics: MetricCard[] = [
   {
     label: "Security Mode",
     value: "Guarded",
-    description: "Sensitive actions are routed through approval and risk checks.",
-    icon: ShieldCheck
+    description:
+      "Sensitive actions are routed through approval and risk checks.",
+    icon: ShieldCheck,
   },
   {
     label: "Pending Approvals",
     value: "7",
-    description: "Protected actions waiting for owner or Security Agent review.",
-    icon: Fingerprint
+    description:
+      "Protected actions waiting for owner or Security Agent review.",
+    icon: Fingerprint,
   },
   {
     label: "Blocked Events",
     value: "13",
     description: "Unsafe actions stopped before execution.",
-    icon: Ban
+    icon: Ban,
   },
   {
     label: "Audit Coverage",
     value: "100%",
-    description: "Every sensitive request is designed to generate an audit event.",
-    icon: FileClock
-  }
+    description:
+      "Every sensitive request is designed to generate an audit event.",
+    icon: FileClock,
+  },
 ];
 
 const approvalRequests: ApprovalRequest[] = [
@@ -134,7 +137,8 @@ const approvalRequests: ApprovalRequest[] = [
     status: "pending",
     requestedAt: "Today · 09:46",
     scope: "owner + workspace_id",
-    reason: "Terminal commands can alter files, install packages, or expose sensitive logs."
+    reason:
+      "Terminal commands can alter files, install packages, or expose sensitive logs.",
   },
   {
     id: "APP-1042",
@@ -147,7 +151,7 @@ const approvalRequests: ApprovalRequest[] = [
     status: "pending",
     requestedAt: "Today · 09:51",
     scope: "private_user + workspace_id",
-    reason: "Memory exports may contain private user, client, or project data."
+    reason: "Memory exports may contain private user, client, or project data.",
   },
   {
     id: "APP-1043",
@@ -160,7 +164,8 @@ const approvalRequests: ApprovalRequest[] = [
     status: "approved",
     requestedAt: "Yesterday · 17:22",
     scope: "finance role required",
-    reason: "Finance drafts are allowed, but payments or transfers must never be auto-submitted."
+    reason:
+      "Finance drafts are allowed, but payments or transfers must never be auto-submitted.",
   },
   {
     id: "APP-1044",
@@ -173,8 +178,9 @@ const approvalRequests: ApprovalRequest[] = [
     status: "denied",
     requestedAt: "Yesterday · 14:10",
     scope: "workspace browser session",
-    reason: "External form submission requires explicit confirmation and fraud checks."
-  }
+    reason:
+      "External form submission requires explicit confirmation and fraud checks.",
+  },
 ];
 
 const auditLogs: AuditLog[] = [
@@ -187,7 +193,7 @@ const auditLogs: AuditLog[] = [
     status: "approval_required",
     risk: "critical",
     timestamp: "Today · 10:02",
-    workspaceScope: "user_id + workspace_id"
+    workspaceScope: "user_id + workspace_id",
   },
   {
     id: "AUD-9002",
@@ -198,7 +204,7 @@ const auditLogs: AuditLog[] = [
     status: "reviewed",
     risk: "medium",
     timestamp: "Today · 09:58",
-    workspaceScope: "private_user"
+    workspaceScope: "private_user",
   },
   {
     id: "AUD-9003",
@@ -209,7 +215,7 @@ const auditLogs: AuditLog[] = [
     status: "blocked",
     risk: "critical",
     timestamp: "Yesterday · 22:14",
-    workspaceScope: "workspace browser logs"
+    workspaceScope: "workspace browser logs",
   },
   {
     id: "AUD-9004",
@@ -220,8 +226,8 @@ const auditLogs: AuditLog[] = [
     status: "allowed",
     risk: "low",
     timestamp: "Yesterday · 21:40",
-    workspaceScope: "current project"
-  }
+    workspaceScope: "current project",
+  },
 ];
 
 const riskEvents: RiskEvent[] = [
@@ -230,29 +236,29 @@ const riskEvents: RiskEvent[] = [
     description:
       "Finance Agent can prepare invoices and reports, but must never submit payments or transfers automatically.",
     risk: "critical",
-    icon: WalletCards
+    icon: WalletCards,
   },
   {
     title: "System Command Guard",
     description:
       "OS commands, file deletion, installs, device controls, and automation need explicit approval.",
     risk: "critical",
-    icon: TerminalSquare
+    icon: TerminalSquare,
   },
   {
     title: "Browser Fraud Shield",
     description:
       "Logins, form submissions, downloads, scraping, and external actions require policy checks.",
     risk: "high",
-    icon: Globe2
+    icon: Globe2,
   },
   {
     title: "Private Memory Control",
     description:
       "Sensitive user, team, project, and client memory cannot be exported or shared without review.",
     risk: "high",
-    icon: Database
-  }
+    icon: Database,
+  },
 ];
 
 const policyRules: PolicyRule[] = [
@@ -261,22 +267,22 @@ const policyRules: PolicyRule[] = [
     description:
       "Default production mode. Allows safe reads and drafts while pausing risky actions for approval.",
     mode: "guarded",
-    icon: ShieldCheck
+    icon: ShieldCheck,
   },
   {
     title: "Strict Mode",
     description:
       "Requires approval for most external actions, private data access, browser submissions, and automations.",
     mode: "strict",
-    icon: ShieldAlert
+    icon: ShieldAlert,
   },
   {
     title: "Emergency Lockdown",
     description:
       "Stops agents, freezes risky workflows, blocks automation, and requires owner re-authentication.",
     mode: "lockdown",
-    icon: Siren
-  }
+    icon: Siren,
+  },
 ];
 
 function getRiskStyles(risk: RiskLevel): string {
@@ -341,12 +347,7 @@ function formatStatus(status: string): string {
   return status.replaceAll("_", " ");
 }
 
-function MetricCardItem({
-  label,
-  value,
-  description,
-  icon: Icon
-}: MetricCard) {
+function MetricCardItem({ label, value, description, icon: Icon }: MetricCard) {
   return (
     <div className="rounded-[28px] border border-white/10 bg-white/[0.035] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.28)] transition hover:border-orange-500/25 hover:bg-orange-500/[0.055]">
       <div className="mb-5 flex items-center justify-between gap-4">
@@ -368,7 +369,7 @@ function RiskBadge({ risk }: { risk: RiskLevel }) {
   return (
     <span
       className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-bold capitalize ${getRiskStyles(
-        risk
+        risk,
       )}`}
     >
       {risk} risk
@@ -380,7 +381,7 @@ function ApprovalBadge({ status }: { status: ApprovalStatus }) {
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold capitalize ${getApprovalStyles(
-        status
+        status,
       )}`}
     >
       <span className="h-2 w-2 rounded-full bg-current shadow-[0_0_14px_currentColor]" />
@@ -393,7 +394,7 @@ function AuditBadge({ status }: { status: AuditStatus }) {
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold capitalize ${getAuditStyles(
-        status
+        status,
       )}`}
     >
       <span className="h-2 w-2 rounded-full bg-current shadow-[0_0_14px_currentColor]" />
@@ -555,7 +556,9 @@ function RiskEventCard({ event }: { event: RiskEvent }) {
         <RiskBadge risk={event.risk} />
       </div>
       <p className="text-sm font-bold text-white">{event.title}</p>
-      <p className="mt-2 text-sm leading-6 text-zinc-500">{event.description}</p>
+      <p className="mt-2 text-sm leading-6 text-zinc-500">
+        {event.description}
+      </p>
     </div>
   );
 }
@@ -571,7 +574,7 @@ function PolicyRuleCard({ rule }: { rule: PolicyRule }) {
         </span>
         <span
           className={`rounded-full border px-2.5 py-1 text-[11px] font-bold capitalize ${getModeStyles(
-            rule.mode
+            rule.mode,
           )}`}
         >
           {rule.mode}
@@ -586,14 +589,16 @@ function PolicyRuleCard({ rule }: { rule: PolicyRule }) {
 
 export default function SecurityPage() {
   const pendingCount = approvalRequests.filter(
-    (approval) => approval.status === "pending"
+    (approval) => approval.status === "pending",
   ).length;
 
   const criticalApprovals = approvalRequests.filter(
-    (approval) => approval.risk === "critical"
+    (approval) => approval.risk === "critical",
   ).length;
 
-  const blockedLogs = auditLogs.filter((log) => log.status === "blocked").length;
+  const blockedLogs = auditLogs.filter(
+    (log) => log.status === "blocked",
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -613,9 +618,9 @@ export default function SecurityPage() {
             </h1>
 
             <p className="mt-5 max-w-3xl text-base leading-8 text-zinc-400 md:text-lg">
-              Review approval requests, risk events, audit logs, protected actions,
-              emergency lockdown controls, and workspace-safe security decisions
-              before anything risky touches the system.
+              Review approval requests, risk events, audit logs, protected
+              actions, emergency lockdown controls, and workspace-safe security
+              decisions before anything risky touches the system.
             </p>
 
             <div className="mt-7 flex flex-wrap gap-3">
@@ -652,8 +657,8 @@ export default function SecurityPage() {
 
             <p className="text-sm leading-7 text-zinc-400">
               Emergency lock should stop all risky workflows, block protected
-              actions, pause automation, and require owner re-authentication before
-              agents resume.
+              actions, pause automation, and require owner re-authentication
+              before agents resume.
             </p>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -730,7 +735,7 @@ export default function SecurityPage() {
                 "Critical Risk",
                 "Blocked",
                 "Allowed",
-                "Reviewed"
+                "Reviewed",
               ].map((filter, index) => (
                 <button
                   key={filter}
@@ -887,8 +892,8 @@ export default function SecurityPage() {
             <BellRing className="mb-4 h-6 w-6 text-orange-300" />
             <p className="text-sm font-bold text-white">Approval Manager</p>
             <p className="mt-2 text-sm leading-6 text-zinc-500">
-              Creates confirmation prompts and records approval or denial decisions
-              for audit history.
+              Creates confirmation prompts and records approval or denial
+              decisions for audit history.
             </p>
           </div>
 
@@ -896,8 +901,8 @@ export default function SecurityPage() {
             <DoorClosed className="mb-4 h-6 w-6 text-orange-300" />
             <p className="text-sm font-bold text-white">Emergency Lock</p>
             <p className="mt-2 text-sm leading-6 text-zinc-500">
-              Future kill switch can freeze risky agents, workflows, and automation
-              until owner verification.
+              Future kill switch can freeze risky agents, workflows, and
+              automation until owner verification.
             </p>
           </div>
         </div>
@@ -913,10 +918,10 @@ export default function SecurityPage() {
               </p>
             </div>
             <p className="max-w-4xl text-sm leading-7 text-zinc-400">
-              This frontend page does not approve, deny, lock, unlock, or execute
-              real actions yet. Real decisions must be connected later through
-              protected backend routes, owner confirmation, audit storage, and
-              Security Agent policy checks.
+              This frontend page does not approve, deny, lock, unlock, or
+              execute real actions yet. Real decisions must be connected later
+              through protected backend routes, owner confirmation, audit
+              storage, and Security Agent policy checks.
             </p>
           </div>
 

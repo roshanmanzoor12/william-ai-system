@@ -46,14 +46,25 @@ export type ApiEnvelope<T> = {
 };
 
 export type ApiResult<T> =
-  | { success: true; data: T; message: string; metadata: Record<string, unknown> }
-  | { success: false; error: ApiErrorBody & { message: string }; metadata: Record<string, unknown> };
+  | {
+      success: true;
+      data: T;
+      message: string;
+      metadata: Record<string, unknown>;
+    }
+  | {
+      success: false;
+      error: ApiErrorBody & { message: string };
+      metadata: Record<string, unknown>;
+    };
 
 // NEXT_PUBLIC_API_BASE_URL already includes the API prefix, e.g.
 // "http://localhost:8000/api/v1" (see .env.example at the repo root and
 // under apps/dashboard/) -- every path passed to this client is relative
 // to that, e.g. request("/tasks") -> {API_BASE_URL}/tasks.
-export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
+export const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_BASE_URL || ""
+).replace(/\/$/, "");
 
 const http: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -84,16 +95,23 @@ async function performRefresh(session: SessionData): Promise<string | null> {
   try {
     const response = await axios.post<ApiEnvelope<RawLoginData>>(
       `${API_BASE_URL}/auth/refresh`,
-      { refresh_token: session.refreshToken, workspace_id: session.workspace_id },
+      {
+        refresh_token: session.refreshToken,
+        workspace_id: session.workspace_id,
+      },
       { headers: { "Content-Type": "application/json" } },
     );
 
     const body = response.data;
     if (!body.success || !body.data) return null;
 
-    const nextSession = normalizeAuthPayload(body.data, session.subscription_status);
+    const nextSession = normalizeAuthPayload(
+      body.data,
+      session.subscription_status,
+    );
     const rememberedInLocalStorage =
-      typeof window !== "undefined" && Boolean(window.localStorage.getItem("william.session"));
+      typeof window !== "undefined" &&
+      Boolean(window.localStorage.getItem("william.session"));
     saveSession(nextSession, rememberedInLocalStorage);
 
     return nextSession.accessToken;
@@ -105,11 +123,18 @@ async function performRefresh(session: SessionData): Promise<string | null> {
 http.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
-    const originalRequest = error.config as (AxiosRequestConfig & { _retried?: boolean }) | undefined;
+    const originalRequest = error.config as
+      | (AxiosRequestConfig & { _retried?: boolean })
+      | undefined;
     const status = error.response?.status;
     const session = readSession();
 
-    if (status === 401 && originalRequest && !originalRequest._retried && session?.refreshToken) {
+    if (
+      status === 401 &&
+      originalRequest &&
+      !originalRequest._retried &&
+      session?.refreshToken
+    ) {
       originalRequest._retried = true;
 
       if (!refreshPromise) {
@@ -132,7 +157,10 @@ http.interceptors.response.use(
 
     if (status === 401 && (!session || !session.refreshToken)) {
       clearSession();
-      if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+      if (
+        typeof window !== "undefined" &&
+        window.location.pathname !== "/login"
+      ) {
         window.location.assign("/login");
       }
     }
@@ -151,23 +179,39 @@ export async function request<T>(
   config: AxiosRequestConfig = {},
 ): Promise<ApiResult<T>> {
   try {
-    const response = await http.request<ApiEnvelope<T>>({ url: path, ...config });
+    const response = await http.request<ApiEnvelope<T>>({
+      url: path,
+      ...config,
+    });
     const body = response.data;
 
     if (body.success) {
-      return { success: true, data: body.data, message: body.message, metadata: body.metadata };
+      return {
+        success: true,
+        data: body.data,
+        message: body.message,
+        metadata: body.metadata,
+      };
     }
 
     return {
       success: false,
-      error: { code: body.error?.code || "UNKNOWN_ERROR", details: body.error?.details, message: body.message },
+      error: {
+        code: body.error?.code || "UNKNOWN_ERROR",
+        details: body.error?.details,
+        message: body.message,
+      },
       metadata: body.metadata || {},
     };
   } catch (error) {
     const axiosError = error as AxiosError<ApiEnvelope<T>>;
     const responseBody = axiosError.response?.data;
 
-    if (responseBody && typeof responseBody === "object" && "success" in responseBody) {
+    if (
+      responseBody &&
+      typeof responseBody === "object" &&
+      "success" in responseBody
+    ) {
       return {
         success: false,
         error: {
@@ -190,11 +234,17 @@ export async function request<T>(
 export const get = <T>(path: string, config?: AxiosRequestConfig) =>
   request<T>(path, { ...config, method: "GET" });
 
-export const post = <T>(path: string, data?: unknown, config?: AxiosRequestConfig) =>
-  request<T>(path, { ...config, method: "POST", data });
+export const post = <T>(
+  path: string,
+  data?: unknown,
+  config?: AxiosRequestConfig,
+) => request<T>(path, { ...config, method: "POST", data });
 
-export const patch = <T>(path: string, data?: unknown, config?: AxiosRequestConfig) =>
-  request<T>(path, { ...config, method: "PATCH", data });
+export const patch = <T>(
+  path: string,
+  data?: unknown,
+  config?: AxiosRequestConfig,
+) => request<T>(path, { ...config, method: "PATCH", data });
 
 export const del = <T>(path: string, config?: AxiosRequestConfig) =>
   request<T>(path, { ...config, method: "DELETE" });
@@ -246,7 +296,13 @@ const ALLOWED_ROLES: UserRole[] = [
   "user",
   "viewer",
 ];
-const ALLOWED_PLANS: UserPlan[] = ["free", "starter", "pro", "business", "enterprise"];
+const ALLOWED_PLANS: UserPlan[] = [
+  "free",
+  "starter",
+  "pro",
+  "business",
+  "enterprise",
+];
 const ALLOWED_SUBSCRIPTION_STATUSES: SubscriptionStatus[] = [
   "active",
   "trialing",
@@ -273,9 +329,9 @@ function normalizeAuthPayload(
   const plan = (ALLOWED_PLANS as string[]).includes(raw.membership.plan)
     ? (raw.membership.plan as UserPlan)
     : "free";
-  const subscriptionStatus = (ALLOWED_SUBSCRIPTION_STATUSES as string[]).includes(
-    raw.workspace.subscription_status,
-  )
+  const subscriptionStatus = (
+    ALLOWED_SUBSCRIPTION_STATUSES as string[]
+  ).includes(raw.workspace.subscription_status)
     ? (raw.workspace.subscription_status as SubscriptionStatus)
     : fallbackSubscriptionStatus || "active";
 
@@ -296,7 +352,9 @@ function normalizeAuthPayload(
   };
 }
 
-function mapAuthResult(result: ApiResult<RawLoginData>): ApiResult<SessionData> {
+function mapAuthResult(
+  result: ApiResult<RawLoginData>,
+): ApiResult<SessionData> {
   if (result.success === false) {
     return { success: false, error: result.error, metadata: result.metadata };
   }
@@ -317,7 +375,10 @@ export const authApi = {
     workspace_name?: string;
     invite_code?: string;
   }): Promise<ApiResult<SessionData>> {
-    const result = await request<RawLoginData>("/auth/register", { method: "POST", data: payload });
+    const result = await request<RawLoginData>("/auth/register", {
+      method: "POST",
+      data: payload,
+    });
     return mapAuthResult(result);
   },
 
@@ -326,18 +387,33 @@ export const authApi = {
     password: string;
     workspace_id?: string;
   }): Promise<ApiResult<SessionData>> {
-    const result = await request<RawLoginData>("/auth/login", { method: "POST", data: payload });
+    const result = await request<RawLoginData>("/auth/login", {
+      method: "POST",
+      data: payload,
+    });
     return mapAuthResult(result);
   },
 
-  async logout(refreshToken?: string, logoutAllSessions = false): Promise<ApiResult<Record<string, unknown>>> {
+  async logout(
+    refreshToken?: string,
+    logoutAllSessions = false,
+  ): Promise<ApiResult<Record<string, unknown>>> {
     return request("/auth/logout", {
       method: "POST",
-      data: { refresh_token: refreshToken, logout_all_sessions: logoutAllSessions },
+      data: {
+        refresh_token: refreshToken,
+        logout_all_sessions: logoutAllSessions,
+      },
     });
   },
 
-  async me(): Promise<ApiResult<{ user: RawUserRecord; workspace: RawWorkspaceRecord; membership: RawMembershipRecord }>> {
+  async me(): Promise<
+    ApiResult<{
+      user: RawUserRecord;
+      workspace: RawWorkspaceRecord;
+      membership: RawMembershipRecord;
+    }>
+  > {
     return request("/auth/me", { method: "GET" });
   },
 };
@@ -362,7 +438,8 @@ export const agentsApi = {
   list: <T>() => get<T>("/agents"),
   catalog: <T>() => get<T>("/agents/catalog"),
   health: <T>() => get<T>("/agents/health"),
-  get: <T>(agentName: string) => get<T>(`/agents/${encodeURIComponent(agentName)}`),
+  get: <T>(agentName: string) =>
+    get<T>(`/agents/${encodeURIComponent(agentName)}`),
   execute: <T>(payload: unknown) => post<T>("/agents/execute", payload),
   status: <T>() => get<T>("/agents/status"),
 };
@@ -373,9 +450,12 @@ export const tasksApi = {
   get: <T>(taskId: string) => get<T>(`/tasks/${encodeURIComponent(taskId)}`),
   create: <T>(payload: unknown) => post<T>("/tasks", payload),
   createAndRun: <T>(payload: unknown) => post<T>("/tasks/run", payload),
-  run: <T>(taskId: string) => post<T>(`/tasks/${encodeURIComponent(taskId)}/run`),
-  cancel: <T>(taskId: string) => post<T>(`/tasks/${encodeURIComponent(taskId)}/cancel`),
-  events: <T>(taskId: string) => get<T>(`/tasks/${encodeURIComponent(taskId)}/events`),
+  run: <T>(taskId: string) =>
+    post<T>(`/tasks/${encodeURIComponent(taskId)}/run`),
+  cancel: <T>(taskId: string) =>
+    post<T>(`/tasks/${encodeURIComponent(taskId)}/cancel`),
+  events: <T>(taskId: string) =>
+    get<T>(`/tasks/${encodeURIComponent(taskId)}/events`),
   audit: <T>() => get<T>("/tasks/audit"),
 };
 
@@ -384,27 +464,35 @@ export const memoryApi = {
   search: <T>(payload: unknown) => post<T>("/memory/search", payload),
   list: <T>(params?: Record<string, string | number | boolean | undefined>) =>
     get<T>("/memory", { params }),
-  get: <T>(memoryId: string) => get<T>(`/memory/${encodeURIComponent(memoryId)}`),
-  remove: <T>(memoryId: string) => del<T>(`/memory/${encodeURIComponent(memoryId)}`),
+  get: <T>(memoryId: string) =>
+    get<T>(`/memory/${encodeURIComponent(memoryId)}`),
+  remove: <T>(memoryId: string) =>
+    del<T>(`/memory/${encodeURIComponent(memoryId)}`),
 };
 
 export const securityApi = {
-  createApproval: <T>(payload: unknown) => post<T>("/security/approvals", payload),
+  createApproval: <T>(payload: unknown) =>
+    post<T>("/security/approvals", payload),
   decide: <T>(payload: unknown) => post<T>("/security/decide", payload),
-  listApprovals: <T>(params?: Record<string, string | number | boolean | undefined>) =>
-    get<T>("/security/approvals", { params }),
-  getApproval: <T>(approvalId: string) => get<T>(`/security/approvals/${encodeURIComponent(approvalId)}`),
+  listApprovals: <T>(
+    params?: Record<string, string | number | boolean | undefined>,
+  ) => get<T>("/security/approvals", { params }),
+  getApproval: <T>(approvalId: string) =>
+    get<T>(`/security/approvals/${encodeURIComponent(approvalId)}`),
   audit: <T>(params?: Record<string, string | number | boolean | undefined>) =>
     get<T>("/security/audit", { params }),
 };
 
 export const workflowsApi = {
   listTemplates: <T>() => get<T>("/workflows/templates"),
-  createTemplate: <T>(payload: unknown) => post<T>("/workflows/templates", payload),
+  createTemplate: <T>(payload: unknown) =>
+    post<T>("/workflows/templates", payload),
   run: <T>(payload: unknown) => post<T>("/workflows/run", payload),
-  listRuns: <T>(params?: Record<string, string | number | boolean | undefined>) =>
-    get<T>("/workflows/runs", { params }),
-  getRun: <T>(runId: string) => get<T>(`/workflows/runs/${encodeURIComponent(runId)}`),
+  listRuns: <T>(
+    params?: Record<string, string | number | boolean | undefined>,
+  ) => get<T>("/workflows/runs", { params }),
+  getRun: <T>(runId: string) =>
+    get<T>(`/workflows/runs/${encodeURIComponent(runId)}`),
   listWebhooks: <T>() => get<T>("/workflows/webhooks"),
 };
 
@@ -415,32 +503,41 @@ export const auditApi = {
 };
 
 export const analyticsApi = {
-  summary: <T>(params?: Record<string, string | number | boolean | undefined>) =>
-    get<T>("/analytics/summary", { params }),
+  summary: <T>(
+    params?: Record<string, string | number | boolean | undefined>,
+  ) => get<T>("/analytics/summary", { params }),
 };
 
 export const billingApi = {
   plans: <T>() => get<T>("/billing/plans"),
   subscription: <T>() => get<T>("/billing/subscription"),
-  createSubscription: <T>(payload: unknown) => post<T>("/billing/subscription", payload),
+  createSubscription: <T>(payload: unknown) =>
+    post<T>("/billing/subscription", payload),
   cancelSubscription: <T>() => post<T>("/billing/subscription/cancel"),
   usage: <T>() => get<T>("/billing/usage"),
-  invoices: <T>(params?: Record<string, string | number | boolean | undefined>) =>
-    get<T>("/billing/invoices", { params }),
+  invoices: <T>(
+    params?: Record<string, string | number | boolean | undefined>,
+  ) => get<T>("/billing/invoices", { params }),
   summaryReport: <T>() => get<T>("/billing/summary"),
 };
 
 export const subscriptionsApi = {
   plan: <T>() => get<T>("/subscriptions/plan"),
-  accessCheck: <T>(payload: unknown) => post<T>("/subscriptions/access-check", payload),
+  accessCheck: <T>(payload: unknown) =>
+    post<T>("/subscriptions/access-check", payload),
   dashboard: <T>() => get<T>("/subscriptions/dashboard"),
 };
 
 export const filesApi = {
   upload: <T>(formData: FormData) =>
-    request<T>("/files/upload", { method: "POST", data: formData, headers: { "Content-Type": "multipart/form-data" } }),
+    request<T>("/files/upload", {
+      method: "POST",
+      data: formData,
+      headers: { "Content-Type": "multipart/form-data" },
+    }),
   list: <T>() => get<T>("/files"),
-  download: <T>(fileId: string) => get<T>(`/files/${encodeURIComponent(fileId)}/download`),
+  download: <T>(fileId: string) =>
+    get<T>(`/files/${encodeURIComponent(fileId)}/download`),
   remove: <T>(fileId: string) => del<T>(`/files/${encodeURIComponent(fileId)}`),
 };
 
@@ -452,7 +549,259 @@ export const usersApi = {
 
 export const workspacesApi = {
   current: <T>() => get<T>("/workspaces/current"),
-  updateCurrent: <T>(payload: unknown) => patch<T>("/workspaces/current", payload),
+  updateCurrent: <T>(payload: unknown) =>
+    patch<T>("/workspaces/current", payload),
   members: <T>() => get<T>("/workspaces/current/members"),
-  inviteMember: <T>(payload: unknown) => post<T>("/workspaces/current/invites", payload),
+  inviteMember: <T>(payload: unknown) =>
+    post<T>("/workspaces/current/invites", payload),
+};
+
+// =============================================================================
+// Voice (Phase 9 -- apps/api/routes/voice.py, mounted at /voice/*)
+//
+// Shapes below mirror apps/api/routes/voice.py's Pydantic models and
+// database/models/voice.py's to_dict() output exactly (read directly from
+// source, not guessed). Every endpoint requires the same real
+// Authorization: Bearer <token> header the rest of this client already
+// attaches via the request() interceptor.
+// =============================================================================
+
+export type VoiceMode =
+  | "disabled"
+  | "push_to_talk"
+  | "wake_word_admin"
+  | "wake_word_trusted_users"
+  | "continuous_conversation";
+
+export type VoiceDependencyStatusValue =
+  | "available"
+  | "configured"
+  | "external_dependency_required";
+
+export type VoiceDependencyStatus = {
+  wake_word_engine: VoiceDependencyStatusValue;
+  audio_input_worker: VoiceDependencyStatusValue;
+  stt_provider: VoiceDependencyStatusValue;
+  tts_provider: VoiceDependencyStatusValue;
+  speaker_recognition_provider: VoiceDependencyStatusValue;
+};
+
+export type VoiceSettings = {
+  id: string;
+  workspace_id: string;
+  mode: VoiceMode;
+  wake_word: string;
+  requires_security_approval: boolean;
+  dependency_status: VoiceDependencyStatus;
+  voice_worker_connected: boolean;
+  voice_worker_last_seen_at: string | null;
+  last_wake_event_at: string | null;
+  last_recognized_speaker_profile_id: string | null;
+  last_detected_language: string | null;
+  last_command_transcript: string | null;
+  last_routed_agent: string | null;
+  last_response_text: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VoiceStatusData = {
+  settings: VoiceSettings;
+  wake_word_default: string;
+};
+
+export type VoiceConfigUpdateData = {
+  settings: VoiceSettings;
+  requires_approval: boolean;
+  approved: boolean;
+};
+
+// The 14 real agent keys from AGENT_CATALOG (apps/api/routes/agents.py),
+// used for the allowed_agents/blocked_agents multi-selects.
+export const VOICE_AGENT_KEYS = [
+  "voice",
+  "system",
+  "browser",
+  "code",
+  "memory",
+  "security",
+  "verification",
+  "visual",
+  "workflow",
+  "hologram",
+  "call",
+  "business",
+  "finance",
+  "creator",
+] as const;
+
+export type VoiceAgentKey = (typeof VOICE_AGENT_KEYS)[number];
+
+export type VoiceProfileRole =
+  | "owner"
+  | "admin"
+  | "trusted_developer"
+  | "trusted_manager"
+  | "trusted_assistant"
+  | "guest";
+
+export type VoiceProfileStatus = "active" | "disabled" | "revoked";
+
+export type VoiceprintStatus =
+  | "enrolled"
+  | "pending"
+  | "external_dependency_required"
+  | "disabled";
+
+export type VoiceProfile = {
+  id: string;
+  workspace_id: string;
+  created_by_user_id: string;
+  linked_user_id: string | null;
+  display_name: string;
+  role: VoiceProfileRole;
+  allowed_agents: string[];
+  blocked_agents: string[];
+  allowed_capabilities: string[];
+  blocked_capabilities: string[];
+  can_use_voice: boolean;
+  can_use_wake_word: boolean;
+  can_access_private_memory: boolean;
+  can_access_finance: boolean;
+  can_access_system_agent: boolean;
+  can_run_code_agent: boolean;
+  requires_approval_for_risky_actions: boolean;
+  preferred_language: string;
+  reply_language_mode: string;
+  voiceprint_status: VoiceprintStatus;
+  voiceprint_reference_id: string | null;
+  status: VoiceProfileStatus;
+  created_at: string;
+  updated_at: string;
+  last_used_at: string | null;
+};
+
+export type VoiceProfileListData = {
+  profiles: VoiceProfile[];
+  count: number;
+};
+
+export type VoiceProfileMutationData = { profile: VoiceProfile };
+
+export type VoiceProfileCreatePayload = {
+  display_name: string;
+  role?: VoiceProfileRole;
+  linked_user_id?: string | null;
+  allowed_agents?: string[];
+  blocked_agents?: string[];
+  allowed_capabilities?: string[];
+  blocked_capabilities?: string[];
+  can_use_voice?: boolean;
+  can_use_wake_word?: boolean;
+  can_access_private_memory?: boolean;
+  can_access_finance?: boolean;
+  can_access_system_agent?: boolean;
+  can_run_code_agent?: boolean;
+  requires_approval_for_risky_actions?: boolean;
+  preferred_language?: string;
+  reply_language_mode?: string;
+};
+
+export type VoiceProfileUpdatePayload = Partial<VoiceProfileCreatePayload> & {
+  status?: VoiceProfileStatus;
+};
+
+export type VoiceCommandRequestPayload = {
+  transcript: string;
+  detected_language?: string;
+  speaker_profile_id?: string;
+  session_id?: string;
+  wake_word?: string;
+};
+
+export type VoicePushToTalkPayload = {
+  transcript: string;
+  detected_language?: string;
+  session_id?: string;
+};
+
+export type VoiceSpeechOutputStatus =
+  | "available"
+  | "external_dependency_required";
+
+export type VoiceCommandResponseData = {
+  success: boolean;
+  message: string;
+  response_text: string;
+  reply_language: string;
+  speech_output_status: VoiceSpeechOutputStatus;
+  master_result: unknown;
+  request_id: string;
+};
+
+export type VoiceEnrollStartPayload = {
+  profile_id?: string;
+  display_name: string;
+};
+
+export type VoiceEnrollDependencyStatus = {
+  configured_providers: string[];
+  provider_configured: boolean;
+  dev_bypass_available: boolean;
+};
+
+export type VoiceEnrollStartData = {
+  profile_id: string;
+  dependency_status: VoiceEnrollDependencyStatus;
+};
+
+export type VoiceEnrollCompletePayload = {
+  profile_id: string;
+  voice_sample_ref: string;
+};
+
+export type VoiceEnrollCompleteData = {
+  profile: VoiceProfile;
+  enrollment_result: Record<string, unknown>;
+};
+
+// Deliberately NOT generic (unlike the domain helpers above): every voice
+// endpoint has one real, concrete response shape read directly from
+// apps/api/routes/voice.py, so callers get real narrowing on
+// `response.success` for free instead of having to pass a type argument.
+export const voiceApi = {
+  status: () => get<VoiceStatusData>("/voice/status"),
+
+  updateConfig: (payload: { mode?: VoiceMode; wake_word?: string }) =>
+    post<VoiceConfigUpdateData>("/voice/config", payload),
+
+  listProfiles: () => get<VoiceProfileListData>("/voice/profiles"),
+
+  createProfile: (payload: VoiceProfileCreatePayload) =>
+    post<VoiceProfileMutationData>("/voice/profiles", payload),
+
+  updateProfile: (profileId: string, payload: VoiceProfileUpdatePayload) =>
+    patch<VoiceProfileMutationData>(
+      `/voice/profiles/${encodeURIComponent(profileId)}`,
+      payload,
+    ),
+
+  deleteProfile: (profileId: string, hardDelete = false) =>
+    del<VoiceProfileMutationData>(
+      `/voice/profiles/${encodeURIComponent(profileId)}?hard_delete=${
+        hardDelete ? "true" : "false"
+      }`,
+    ),
+
+  sendCommand: (payload: VoiceCommandRequestPayload) =>
+    post<VoiceCommandResponseData>("/voice/command", payload),
+
+  sendPushToTalkText: (payload: VoicePushToTalkPayload) =>
+    post<VoiceCommandResponseData>("/voice/push-to-talk/text", payload),
+
+  enrollStart: (payload: VoiceEnrollStartPayload) =>
+    post<VoiceEnrollStartData>("/voice/enroll/start", payload),
+
+  enrollComplete: (payload: VoiceEnrollCompletePayload) =>
+    post<VoiceEnrollCompleteData>("/voice/enroll/complete", payload),
 };

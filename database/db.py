@@ -33,6 +33,7 @@ try:
     from sqlalchemy.engine import Engine
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import Session, declarative_base, sessionmaker
+    from sqlalchemy.pool import StaticPool
 except Exception as exc:  # pragma: no cover
     raise ImportError(
         "SQLAlchemy is required for database/db.py. "
@@ -226,6 +227,17 @@ class Db:
 
         if database_url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
+
+            # A plain sqlite:///:memory: URL gives every checked-out
+            # connection its own private, empty in-memory database under
+            # SQLAlchemy's default pooling -- a row written in one
+            # session_scope() call would be invisible to the next one.
+            # StaticPool keeps a single connection alive for the whole
+            # engine so the in-memory DB is actually shared, which is the
+            # standard SQLAlchemy pattern for testing against SQLite memory.
+            if ":memory:" in database_url:
+                engine_kwargs["poolclass"] = StaticPool
+                engine_kwargs.pop("pool_pre_ping", None)
         else:
             engine_kwargs["pool_size"] = int(os.getenv("DATABASE_POOL_SIZE", "5"))
             engine_kwargs["max_overflow"] = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))

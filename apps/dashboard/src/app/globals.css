@@ -67,8 +67,16 @@ body {
   min-height: 100%;
   margin: 0;
   background:
-    radial-gradient(circle at top left, rgba(255, 107, 53, 0.08), transparent 32%),
-    radial-gradient(circle at top right, rgba(15, 23, 42, 0.04), transparent 30%),
+    radial-gradient(
+      circle at top left,
+      rgba(255, 107, 53, 0.08),
+      transparent 32%
+    ),
+    radial-gradient(
+      circle at top right,
+      rgba(15, 23, 42, 0.04),
+      transparent 30%
+    ),
     var(--william-bg);
   color: var(--william-text);
   font-family:
@@ -131,13 +139,21 @@ canvas {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(255, 107, 53, 0.85), rgba(240, 79, 35, 0.72));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 107, 53, 0.85),
+    rgba(240, 79, 35, 0.72)
+  );
   border-radius: 999px;
   border: 2px solid rgba(255, 255, 255, 0.95);
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(255, 123, 77, 1), rgba(255, 107, 53, 0.9));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 123, 77, 1),
+    rgba(255, 107, 53, 0.9)
+  );
 }
 
 /* Main app shell look */
@@ -163,7 +179,11 @@ canvas {
 .william-glass {
   border: 1px solid rgba(255, 255, 255, 0.85);
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.72)),
+    linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.92),
+      rgba(255, 255, 255, 0.72)
+    ),
     rgba(255, 255, 255, 0.78);
   box-shadow: var(--william-shadow-md);
   backdrop-filter: blur(22px);
@@ -204,7 +224,11 @@ canvas {
   color: #ffffff;
   border-radius: var(--william-radius-lg);
   background:
-    radial-gradient(circle at 85% 18%, rgba(255, 255, 255, 0.28), transparent 24%),
+    radial-gradient(
+      circle at 85% 18%,
+      rgba(255, 255, 255, 0.28),
+      transparent 24%
+    ),
     linear-gradient(135deg, #ff835c 0%, #ff6b35 48%, #f04f23 100%);
   box-shadow:
     0 18px 48px rgba(255, 107, 53, 0.32),

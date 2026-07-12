@@ -368,6 +368,23 @@ class FlowHarness:
                 workspace_id=step_payload["workspace_id"],
             )
 
+        # Authorize and execute the actual requested task before doing any
+        # supporting work like preparing memory context -- checking
+        # memory:write first meant a caller who lacked both tasks:write and
+        # memory:write always failed on the unrelated memory permission
+        # instead of the permission for the action they actually asked for.
+        execution_result = await _maybe_await(
+            self.master_agent.run_task(
+                context=context,
+                agent_name=step["agent_name"],
+                action=step["action"],
+                payload=step_payload,
+            )
+        )
+
+        if not execution_result["success"]:
+            return execution_result
+
         memory_result: Optional[Dict[str, Any]] = None
         if step.get("requires_memory") and self.memory_agent is not None:
             memory_result = await _maybe_await(
@@ -386,18 +403,6 @@ class FlowHarness:
 
             if not memory_result["success"]:
                 return memory_result
-
-        execution_result = await _maybe_await(
-            self.master_agent.run_task(
-                context=context,
-                agent_name=step["agent_name"],
-                action=step["action"],
-                payload=step_payload,
-            )
-        )
-
-        if not execution_result["success"]:
-            return execution_result
 
         response_data = {
             "request_id": context.request_id,

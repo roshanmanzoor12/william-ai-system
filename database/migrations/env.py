@@ -140,6 +140,7 @@ MODEL_MODULES: tuple[str, ...] = (
     "database.models.workflow",
     "database.models.business",
     "database.models.finance",
+    "database.models.voice",
 )
 
 
@@ -211,7 +212,12 @@ class Env:
         "DB_URL",
     )
 
-    DEFAULT_SQLITE_PATH: str = "sqlite:///./william_jarvis.db"
+    # Must match database/db.py's own Db.DEFAULT_SQLITE_URL exactly -- these
+    # were two independently hardcoded fallback filenames ("william_jarvis.db"
+    # here vs "william.db" there), so running migrations with no DATABASE_URL
+    # set silently migrated a different SQLite file than the one the app
+    # actually reads from, leaving the real file's schema stale forever.
+    DEFAULT_SQLITE_PATH: str = "sqlite:///./william.db"
 
     INTERNAL_TABLE_PREFIXES: tuple[str, ...] = (
         "alembic_",

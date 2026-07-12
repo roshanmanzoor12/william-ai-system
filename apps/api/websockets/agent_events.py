@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import uuid
@@ -75,6 +76,23 @@ try:
     from apps.api.services.master_agent import notify_master_agent as project_notify_master_agent  # type: ignore
 except Exception:
     project_notify_master_agent = None
+
+# Real, JWT-verified auth -- apps/api/routes/auth.py is a core module (not a
+# "future" one), so this import should always succeed; the fallback exists
+# only for a genuinely broken install. Previously this endpoint built its
+# ActorContext straight from caller-supplied user_id/workspace_id/role/plan
+# query parameters with no verification at all (the module's own docstring
+# demonstrated the exploit: "?user_id=user_1&workspace_id=workspace_1&
+# role=admin&plan=pro" -- anyone could claim to be any user, any workspace,
+# any role, and receive that workspace's live agent events).
+try:
+    from apps.api.routes.auth import AUTH_STORE as REAL_AUTH_STORE, TOKEN_SERVICE as REAL_TOKEN_SERVICE  # type: ignore
+except Exception as real_auth_import_exc:
+    REAL_AUTH_STORE = None
+    REAL_TOKEN_SERVICE = None
+    logging.getLogger(__name__).warning(
+        "Real auth import fallback enabled in apps.api.websockets.agent_events: %s", real_auth_import_exc
+    )
 
 
 # =============================================================================
@@ -475,28 +493,59 @@ def event_channels(event: AgentEventRecord) -> Set[str]:
     return channels
 
 
-def websocket_actor_from_query(
+async def websocket_actor_from_token(
     websocket: WebSocket,
-    user_id: str,
-    workspace_id: str,
-    role: Optional[str],
-    plan: Optional[str],
-    subscription_active: Optional[str],
+    token: str,
     request_id: Optional[str],
-) -> ActorContext:
-    safe_user_id = normalize_id(user_id, "user_id")
-    safe_workspace_id = normalize_id(workspace_id, "workspace_id")
+) -> Optional[ActorContext]:
+    """
+    Verify a real access token and build an ActorContext from it.
 
-    return ActorContext(
-        user_id=safe_user_id,
-        workspace_id=safe_workspace_id,
-        role=parse_role(role),
-        plan=parse_plan(plan),
-        subscription_active=subscription_active_from_value(subscription_active),
-        request_id=request_id or str(uuid.uuid4()),
-        ip_address=websocket.client.host if websocket.client else None,
-        user_agent=websocket.headers.get("User-Agent"),
-    )
+    Mirrors apps/api/routes/auth.py's get_current_auth_context() exactly
+    (signature check, revocation check, active-user check, live session
+    lookup, live membership lookup) since browsers can't set a custom
+    Authorization header on a WebSocket handshake -- the token travels as a
+    query parameter instead, but every other verification step is identical
+    to the HTTP routes. Returns None on any failure; the caller must close
+    the connection without accepting it, never fall back to trusting the
+    query parameters themselves.
+    """
+
+    if REAL_TOKEN_SERVICE is None or REAL_AUTH_STORE is None:
+        return None
+
+    try:
+        payload = REAL_TOKEN_SERVICE.verify_token(token, expected_type="access")
+
+        if REAL_AUTH_STORE.is_jti_revoked(payload["jti"]):
+            return None
+
+        user = REAL_AUTH_STORE.get_user_by_id(payload["sub"])
+        if not user or not user.is_active:
+            return None
+
+        session = REAL_AUTH_STORE.touch_session(payload["session_id"])
+
+        if session.user_id != user.user_id or session.workspace_id != payload["workspace_id"]:
+            return None
+
+        membership = REAL_AUTH_STORE.get_membership(user.user_id, session.workspace_id)
+        if not membership:
+            return None
+
+        return ActorContext(
+            user_id=user.user_id,
+            workspace_id=session.workspace_id,
+            role=parse_role(membership.role),
+            plan=parse_plan(membership.plan),
+            subscription_active=True,
+            request_id=request_id or str(uuid.uuid4()),
+            ip_address=websocket.client.host if websocket.client else None,
+            user_agent=websocket.headers.get("User-Agent"),
+        )
+
+    except Exception:
+        return None
 
 
 async def send_safe_json(websocket: WebSocket, data: Dict[str, Any]) -> bool:
@@ -1163,11 +1212,7 @@ agent_events_service = AgentEvents()
 @router.websocket(WEBSOCKET_PATH)
 async def agent_events_websocket(
     websocket: WebSocket,
-    user_id: str = Query(..., description="Authenticated user ID"),
-    workspace_id: str = Query(..., description="Current workspace ID"),
-    role: Optional[str] = Query(default="member"),
-    plan: Optional[str] = Query(default="free"),
-    subscription_active: Optional[str] = Query(default="true"),
+    token: str = Query(..., description="Real, signed access token (same one used for Authorization: Bearer on HTTP routes)"),
     request_id: Optional[str] = Query(default=None),
     channels: Optional[str] = Query(default=None, description="Comma-separated event channels"),
 ) -> None:
@@ -1175,7 +1220,15 @@ async def agent_events_websocket(
     Dashboard WebSocket endpoint.
 
     Example:
-    ws://localhost:8000/ws/agent-events?user_id=user_1&workspace_id=workspace_1&role=admin&plan=pro
+    ws://localhost:8000/ws/agent-events?token=<real_access_token>
+
+    user_id/workspace_id/role/plan are derived entirely from the verified
+    token's live session + membership lookup (see
+    websocket_actor_from_token()) -- browsers can't set a custom
+    Authorization header during the WebSocket handshake, so the token
+    travels as a query parameter instead, but it is verified exactly like
+    every HTTP route's Authorization: Bearer token. Never accept
+    user_id/workspace_id/role/plan as caller-supplied values here again.
 
     Isolation rule:
     A connection only receives events for its exact user_id + workspace_id.
@@ -1185,15 +1238,15 @@ async def agent_events_websocket(
     heartbeat_task: Optional[asyncio.Task[Any]] = None
 
     try:
-        actor = websocket_actor_from_query(
+        actor = await websocket_actor_from_token(
             websocket=websocket,
-            user_id=user_id,
-            workspace_id=workspace_id,
-            role=role,
-            plan=plan,
-            subscription_active=subscription_active,
+            token=token,
             request_id=request_id,
         )
+
+        if actor is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired token.")
+            return
 
         channel_list = []
         if channels:

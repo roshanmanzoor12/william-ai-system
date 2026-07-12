@@ -30,8 +30,9 @@ import {
   Users,
   WalletCards,
   Workflow,
-  Zap
+  Zap,
 } from "lucide-react";
+import { OfflineBanner } from "@/components/state/OfflineBanner";
 
 type DashboardLayoutProps = {
   children: React.ReactNode;
@@ -52,7 +53,7 @@ const primaryNavItems: NavItem[] = [
   { label: "Memory", href: "/memory", icon: Brain },
   { label: "Security", href: "/security", icon: ShieldCheck, badge: "Live" },
   { label: "Workflows", href: "/workflows", icon: Workflow },
-  { label: "Analytics", href: "/analytics", icon: BarChart3 }
+  { label: "Analytics", href: "/analytics", icon: BarChart3 },
 ];
 
 const businessNavItems: NavItem[] = [
@@ -62,18 +63,18 @@ const businessNavItems: NavItem[] = [
   { label: "Finance", href: "/finance", icon: WalletCards },
   { label: "Billing", href: "/billing", icon: CreditCard },
   { label: "Permissions", href: "/agent-permissions", icon: KeyRound },
-  { label: "Settings", href: "/settings", icon: Settings }
+  { label: "Settings", href: "/settings", icon: Settings },
 ];
 
 const agentStatusCards = [
   { label: "Master Agent", value: "Routing", icon: Orbit },
   { label: "Security Agent", value: "Guarded", icon: Fingerprint },
-  { label: "Memory Agent", value: "Isolated", icon: MemoryStick }
+  { label: "Memory Agent", value: "Isolated", icon: MemoryStick },
 ];
 
 function SidebarNavGroup({
   title,
-  items
+  items,
 }: {
   title: string;
   items: NavItem[];
@@ -120,7 +121,7 @@ function SidebarNavGroup({
 function SystemMetric({
   label,
   value,
-  icon: Icon
+  icon: Icon,
 }: {
   label: string;
   value: string;
@@ -142,6 +143,7 @@ function SystemMetric({
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   return (
     <div className="william-app-shell">
+      <OfflineBanner />
       <div className="william-dashboard-frame">
         <div className="flex min-h-[calc(100vh-48px)]">
           <aside className="hidden w-[292px] shrink-0 border-r border-zinc-100 bg-white/70 px-5 py-5 backdrop-blur-2xl xl:block">
@@ -182,7 +184,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
             <div className="custom-scrollbar flex max-h-[calc(100vh-220px)] flex-col gap-7 overflow-y-auto pr-1">
               <SidebarNavGroup title="Command Center" items={primaryNavItems} />
-              <SidebarNavGroup title="Business Stack" items={businessNavItems} />
+              <SidebarNavGroup
+                title="Business Stack"
+                items={businessNavItems}
+              />
 
               <div className="rounded-[26px] border border-zinc-100 bg-white p-4 shadow-[0_18px_55px_rgba(15,23,42,0.05)]">
                 <div className="mb-4 flex items-center justify-between">

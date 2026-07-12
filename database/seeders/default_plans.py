@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from sqlalchemy import DateTime
+
 
 ISODateTime = str
 JSONDict = Dict[str, Any]
@@ -103,6 +105,17 @@ class AgentDefinition:
         data = asdict(self)
         data["risk_level"] = self.risk_level.value
         data["permissions_required"] = list(self.permissions_required)
+        # database.models.agent_registry.AgentRegistry's real columns are
+        # agent_key/agent_name/display_name, not this dataclass's shorter
+        # key/name -- _make_model_instance() passes this dict straight into
+        # AgentRegistry(**record), and a plain TypeError-catching fallback
+        # silently left agent_key/agent_name/display_name as None (NOT NULL
+        # constraint failure) rather than raising a clear error. Add the
+        # DB-column-named aliases without removing key/name, which other
+        # seed-summary/permission-building code in this file still reads.
+        data["agent_key"] = self.key
+        data["agent_name"] = self.key
+        data["display_name"] = self.name
         return data
 
 
@@ -826,8 +839,15 @@ class DefaultPlans:
             ),
         ),
         PlanDefinition(
-            key="growth",
-            name="Growth",
+            # database.models.subscription.PlanKey / apps/api/routes/*.py's
+            # Plan enum (the vocabulary actually enforced on live routes)
+            # both use "pro" for this tier, not "growth" -- "growth" made
+            # the subscription_plan_before_insert event listener crash with
+            # "Unknown plan: growth" via Subscription.normalize_plan(). Keep
+            # the friendlier PlanTier.GROWTH categorization for this
+            # seeder's own internal metadata; only the DB plan_key changes.
+            key="pro",
+            name="Pro",
             tier=PlanTier.GROWTH,
             description="For growing businesses that need automation, memory, and team control.",
             monthly_price_cents=7900,
@@ -1525,8 +1545,16 @@ class DefaultPlans:
             cls._seed_collection(
                 session=session,
                 model=models.get("Agent"),
+                # database.models.agent_registry.AgentRegistry has no "key"
+                # column (it's agent_key) -- using "key" here made
+                # _find_existing() never match an already-seeded row, so a
+                # second run always attempted a fresh INSERT and hit the
+                # (user_id, workspace_id, agent_key, version) UNIQUE
+                # constraint instead of skipping/updating. "agent_key" is
+                # the real column name (aliased onto this dict by
+                # AgentDefinition.to_dict()).
                 records=[agent.to_dict() for agent in cls.AGENTS],
-                unique_field="key",
+                unique_field="agent_key",
                 bucket="agents",
                 result=result,
                 context=context,
@@ -1712,12 +1740,44 @@ class DefaultPlans:
 
     @classmethod
     def _make_model_instance(cls, model: type, record: JSONDict) -> Any:
+        record = cls._coerce_datetime_fields(model, record)
         try:
             return model(**record)
         except TypeError:
             instance = model()
             cls._update_model_instance(instance, record)
             return instance
+
+    @classmethod
+    def _coerce_datetime_fields(cls, model: type, record: JSONDict) -> JSONDict:
+        """
+        _with_seed_metadata() stamps created_at/updated_at (and callers may
+        supply other *_at fields) as ISO strings via cls.now(). That is the
+        right shape for models with String-typed timestamp columns, but
+        models with a real SQLAlchemy DateTime column (e.g.
+        database.models.agent_registry.AgentRegistry) reject a raw string at
+        insert time: "SQLite DateTime type only accepts Python datetime and
+        date objects as input." Convert ISO-string values to real datetime
+        objects, but only for columns actually typed as DateTime on this
+        specific model -- leave String-typed timestamp columns untouched.
+        """
+        table = getattr(model, "__table__", None)
+        if table is None:
+            return record
+
+        coerced = dict(record)
+        for column in table.columns:
+            value = coerced.get(column.name)
+            if not isinstance(value, str):
+                continue
+            if not isinstance(column.type, DateTime):
+                continue
+            try:
+                coerced[column.name] = datetime.fromisoformat(value)
+            except ValueError:
+                continue
+
+        return coerced
 
     @classmethod
     def _update_model_instance(cls, instance: Any, record: JSONDict) -> None:

@@ -15,9 +15,19 @@
  *   plan/subscription visibility, safe errors, and audit-ready actions.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { SessionData, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
+import { EmptyState } from "@/components/state/EmptyState";
+import { ErrorState } from "@/components/state/ErrorState";
+import { ForbiddenState } from "@/components/state/ForbiddenState";
+import { LoadingState } from "@/components/state/LoadingState";
 
 type RangeKey = "7d" | "30d" | "90d" | "12m";
 
@@ -91,7 +101,8 @@ type AnalyticsData = {
   workflows: WorkflowMetric[];
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
 const RANGE_LABELS: Record<RangeKey, string> = {
   "7d": "7 Days",
@@ -105,8 +116,18 @@ function cx(...classes: Array<string | false | null | undefined>): string {
 }
 
 function safeError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error || "Unknown error");
-  const blocked = ["secret", "token", "password", "apikey", "api_key", "database_url", "jwt", "connection string"];
+  const message =
+    error instanceof Error ? error.message : String(error || "Unknown error");
+  const blocked = [
+    "secret",
+    "token",
+    "password",
+    "apikey",
+    "api_key",
+    "database_url",
+    "jwt",
+    "connection string",
+  ];
   const lower = message.toLowerCase();
 
   if (blocked.some((word) => lower.includes(word))) {
@@ -158,11 +179,17 @@ type RealAnalyticsSummary = {
  * assigned, running, waiting_approval, paused, completed, failed,
  * cancelled, retrying).
  */
-function buildAnalyticsFromReal(real: RealAnalyticsSummary, session: SessionData): AnalyticsData {
+function buildAnalyticsFromReal(
+  real: RealAnalyticsSummary,
+  session: SessionData,
+): AnalyticsData {
   const byStatus = real.tasks.by_status || {};
   const completedTasks = byStatus.completed || 0;
   const failedTasks = (byStatus.failed || 0) + (byStatus.cancelled || 0);
-  const activeTasks = Math.max(0, real.tasks.total - completedTasks - failedTasks);
+  const activeTasks = Math.max(
+    0,
+    real.tasks.total - completedTasks - failedTasks,
+  );
 
   return {
     user_id: session.user_id,
@@ -199,14 +226,18 @@ async function dashboardFetch<T>(
   if (!API_BASE_URL) {
     return {
       success: false,
-      error: "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
+      error:
+        "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
     };
   }
 
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
   headers.set("Authorization", `Bearer ${options.accessToken}`);
-  headers.set("X-Audit-Action", options.audit_action || "dashboard_analytics_read");
+  headers.set(
+    "X-Audit-Action",
+    options.audit_action || "dashboard_analytics_read",
+  );
 
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -220,7 +251,9 @@ async function dashboardFetch<T>(
     if (!response.ok) {
       return {
         success: false,
-        error: safeError(json.error || `Request failed with status ${response.status}`),
+        error: safeError(
+          json.error || `Request failed with status ${response.status}`,
+        ),
       };
     }
 
@@ -281,12 +314,33 @@ function Icon({
   switch (name) {
     case "logo":
       return (
-        <svg width={size} height={size} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-          <rect width="32" height="32" rx="12" fill="url(#analyticsLogoGradient)" />
-          <path d="M10 21.5V16h5.7c1.1 0 2-.9 2-2v-1.8H12V8h10v6.1c0 3.3-2.6 5.9-5.9 5.9h-1.3v1.5H10Z" fill="white" />
+        <svg
+          width={size}
+          height={size}
+          viewBox="0 0 32 32"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden
+        >
+          <rect
+            width="32"
+            height="32"
+            rx="12"
+            fill="url(#analyticsLogoGradient)"
+          />
+          <path
+            d="M10 21.5V16h5.7c1.1 0 2-.9 2-2v-1.8H12V8h10v6.1c0 3.3-2.6 5.9-5.9 5.9h-1.3v1.5H10Z"
+            fill="white"
+          />
           <path d="M19.3 24v-5.7H24V24h-4.7Z" fill="white" />
           <defs>
-            <linearGradient id="analyticsLogoGradient" x1="4" x2="28" y1="4" y2="28">
+            <linearGradient
+              id="analyticsLogoGradient"
+              x1="4"
+              x2="28"
+              y1="4"
+              y2="28"
+            >
               <stop stopColor="#ff805d" />
               <stop offset="1" stopColor="#ff3d22" />
             </linearGradient>
@@ -294,57 +348,372 @@ function Icon({
         </svg>
       );
     case "search":
-      return <svg {...common}><path d="M11 19a8 8 0 1 1 5.3-2l3.4 3.3" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M11 19a8 8 0 1 1 5.3-2l3.4 3.3"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "bell":
-      return <svg {...common}><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M13.7 21a2 2 0 0 1-3.4 0" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="18.5" cy="5.5" r="2.5" fill="#ff5438" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M13.7 21a2 2 0 0 1-3.4 0"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <circle cx="18.5" cy="5.5" r="2.5" fill="#ff5438" />
+        </svg>
+      );
     case "alert":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="M12 7v6" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M12 16.8h.01" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M12 7v6"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M12 16.8h.01"
+            stroke={stroke}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "grid":
-      return <svg {...common}><path d="M8.5 4.5h-3v3h3v-3ZM18.5 4.5h-3v3h3v-3ZM8.5 16.5h-3v3h3v-3ZM18.5 16.5h-3v3h3v-3ZM13.5 10.5h-3v3h3v-3Z" stroke={stroke} strokeWidth="1.5" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M8.5 4.5h-3v3h3v-3ZM18.5 4.5h-3v3h3v-3ZM8.5 16.5h-3v3h3v-3ZM18.5 16.5h-3v3h3v-3ZM13.5 10.5h-3v3h3v-3Z"
+            stroke={stroke}
+            strokeWidth="1.5"
+          />
+        </svg>
+      );
     case "calendar":
-      return <svg {...common}><path d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "mail":
-      return <svg {...common}><path d="M4 6.5h16v11H4v-11Z" stroke={stroke} strokeWidth="1.7" /><path d="m4 7 8 6 8-6" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path d="M4 6.5h16v11H4v-11Z" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="m4 7 8 6 8-6"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "doc":
-      return <svg {...common}><path d="M7 3.8h7l3 3V20H7V3.8Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="M14 4v3h3M9.5 11h5M9.5 15h5" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M7 3.8h7l3 3V20H7V3.8Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M14 4v3h3M9.5 11h5M9.5 15h5"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "users":
-      return <svg {...common}><path d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="12" cy="9" r="3" stroke={stroke} strokeWidth="1.7" /><path d="M20 18c0-1.8-1.1-3.3-2.7-3.8M16.8 6.3a2.5 2.5 0 0 1 0 4.4" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <circle cx="12" cy="9" r="3" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M20 18c0-1.8-1.1-3.3-2.7-3.8M16.8 6.3a2.5 2.5 0 0 1 0 4.4"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "layers":
-      return <svg {...common}><path d="m12 3 8 4-8 4-8-4 8-4Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="m4 12 8 4 8-4M4 17l8 4 8-4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="m12 3 8 4-8 4-8-4 8-4Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m4 12 8 4 8-4M4 17l8 4 8-4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "settings":
-      return <svg {...common}><circle cx="12" cy="12" r="3" stroke={stroke} strokeWidth="1.7" /><path d="M19 12a7.4 7.4 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a6 6 0 0 0-1.8-1L14.4 3h-4l-.4 3a6 6 0 0 0-1.8 1L5.8 6l-2 3.5 2 1.5a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a6 6 0 0 0 1.8 1l.4 3h4l.4-3a6 6 0 0 0 1.8-1l2.4 1 2-3.5-2-1.5c.1-.3.1-.7.1-1Z" stroke={stroke} strokeWidth="1.2" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="3" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M19 12a7.4 7.4 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a6 6 0 0 0-1.8-1L14.4 3h-4l-.4 3a6 6 0 0 0-1.8 1L5.8 6l-2 3.5 2 1.5a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a6 6 0 0 0 1.8 1l.4 3h4l.4-3a6 6 0 0 0 1.8-1l2.4 1 2-3.5-2-1.5c.1-.3.1-.7.1-1Z"
+            stroke={stroke}
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "help":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="M9.8 9.3a2.4 2.4 0 0 1 4.6 1c0 1.8-2.4 2-2.4 3.5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M12 17.2h.01" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M9.8 9.3a2.4 2.4 0 0 1 4.6 1c0 1.8-2.4 2-2.4 3.5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M12 17.2h.01"
+            stroke={stroke}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "logout":
-      return <svg {...common}><path d="M10 5H6v14h4M14 8l4 4-4 4M18 12H9" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M10 5H6v14h4M14 8l4 4-4 4M18 12H9"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "moon":
-      return <svg {...common}><path d="M19 15.2A7.5 7.5 0 0 1 8.8 5a8 8 0 1 0 10.2 10.2Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M19 15.2A7.5 7.5 0 0 1 8.8 5a8 8 0 1 0 10.2 10.2Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "sun":
-      return <svg {...common}><circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth="1.7" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "chart":
-      return <svg {...common}><path d="M4 19V5M4 19h16" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M8 16v-5M12 16V8M16 16v-7" stroke={stroke} strokeWidth="2" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M4 19V5M4 19h16"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M8 16v-5M12 16V8M16 16v-7"
+            stroke={stroke}
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "lead":
-      return <svg {...common}><circle cx="9" cy="8" r="3" stroke={stroke} strokeWidth="1.7" /><path d="M3.8 19c.8-3 2.7-5 5.2-5s4.4 2 5.2 5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M16 8h5M18.5 5.5v5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="9" cy="8" r="3" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M3.8 19c.8-3 2.7-5 5.2-5s4.4 2 5.2 5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M16 8h5M18.5 5.5v5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "workflow":
-      return <svg {...common}><path d="M6 6h4v4H6V6ZM14 14h4v4h-4v-4ZM14 6h4v4h-4V6ZM8 10v2a2 2 0 0 0 2 2h4M12 8h2" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M6 6h4v4H6V6ZM14 14h4v4h-4v-4ZM14 6h4v4h-4V6ZM8 10v2a2 2 0 0 0 2 2h4M12 8h2"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "usage":
-      return <svg {...common}><path d="M12 3v18M5 8h8a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h10" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 3v18M5 8h8a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h10"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "shield":
-      return <svg {...common}><path d="M12 3 19 6v5.5c0 4.5-2.8 7.8-7 9.5-4.2-1.7-7-5-7-9.5V6l7-3Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="m9.5 12 1.8 1.8 3.7-4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 3 19 6v5.5c0 4.5-2.8 7.8-7 9.5-4.2-1.7-7-5-7-9.5V6l7-3Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m9.5 12 1.8 1.8 3.7-4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "memory":
-      return <svg {...common}><rect x="5" y="5" width="14" height="14" rx="3" stroke={stroke} strokeWidth="1.7" /><path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <rect
+            x="5"
+            y="5"
+            width="14"
+            height="14"
+            rx="3"
+            stroke={stroke}
+            strokeWidth="1.7"
+          />
+          <path
+            d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "verify":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="m8.5 12.3 2.2 2.2 4.9-5.2" stroke={stroke} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="m8.5 12.3 2.2 2.2 4.9-5.2"
+            stroke={stroke}
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "filter":
-      return <svg {...common}><path d="M4 6h16M7 12h10M10 18h4" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M4 6h16M7 12h10M10 18h4"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "download":
-      return <svg {...common}><path d="M12 4v10M8 10l4 4 4-4M5 20h14" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 4v10M8 10l4 4 4-4M5 20h14"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "more":
-      return <svg {...common}><path d="M6 12h.01M12 12h.01M18 12h.01" stroke={stroke} strokeWidth="3" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M6 12h.01M12 12h.01M18 12h.01"
+            stroke={stroke}
+            strokeWidth="3"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "spark":
-      return <svg {...common}><path d="M12 2.5 13.7 9l6.3 3-6.3 3L12 21.5 10.3 15 4 12l6.3-3L12 2.5Z" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 2.5 13.7 9l6.3 3-6.3 3L12 21.5 10.3 15 4 12l6.3-3L12 2.5Z"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "arrow":
-      return <svg {...common}><path d="M7 17 17 7M9 7h8v8" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M7 17 17 7M9 7h8v8"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     default:
       return null;
   }
@@ -361,33 +730,54 @@ function BigBarChart({ data }: { data: AnalyticsPoint[] }) {
           <p>Tasks, leads, workflows, and agent usage units</p>
         </div>
         <div className="legend">
-          <span><i className="orangeDot" /> Usage</span>
-          <span><i className="darkDot" /> Tasks</span>
+          <span>
+            <i className="orangeDot" /> Usage
+          </span>
+          <span>
+            <i className="darkDot" /> Tasks
+          </span>
         </div>
       </div>
 
       {data.length === 0 ? (
-        <p className="emptyNote">
-          Time-series usage/lead/workflow analytics are not available yet -- the backend only
-          reports point-in-time task and audit totals today.
-        </p>
+        <EmptyState
+          variant="light"
+          icon="◈"
+          title="No usage trend data"
+          message="Time-series usage/lead/workflow analytics are not available yet -- the backend only reports point-in-time task and audit totals today."
+        />
       ) : (
-      <div className="barChart" aria-label="Usage analytics chart">
-        {data.map((point) => {
-          const usageHeight = Math.max(34, Math.round((point.usage / max) * 146));
-          const taskHeight = Math.max(24, Math.round((point.tasks / Math.max(...data.map((item) => item.tasks), 1)) * 112));
+        <div className="barChart" aria-label="Usage analytics chart">
+          {data.map((point) => {
+            const usageHeight = Math.max(
+              34,
+              Math.round((point.usage / max) * 146),
+            );
+            const taskHeight = Math.max(
+              24,
+              Math.round(
+                (point.tasks / Math.max(...data.map((item) => item.tasks), 1)) *
+                  112,
+              ),
+            );
 
-          return (
-            <div className="barGroup" key={point.label}>
-              <div className="bars">
-                <span className="bar barOrange" style={{ height: usageHeight }} />
-                <span className="bar barDark" style={{ height: taskHeight }} />
+            return (
+              <div className="barGroup" key={point.label}>
+                <div className="bars">
+                  <span
+                    className="bar barOrange"
+                    style={{ height: usageHeight }}
+                  />
+                  <span
+                    className="bar barDark"
+                    style={{ height: taskHeight }}
+                  />
+                </div>
+                <span className="barLabel">{point.label}</span>
               </div>
-              <span className="barLabel">{point.label}</span>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -411,7 +801,10 @@ function DonutMeter({ value, label }: { value: number | null; label: string }) {
 
   return (
     <div className="donutWrap">
-      <div className="donut" style={{ ["--value" as string]: `${normalized * 3.6}deg` }}>
+      <div
+        className="donut"
+        style={{ ["--value" as string]: `${normalized * 3.6}deg` }}
+      >
         <div>
           <strong>{normalized}%</strong>
           <span>{label}</span>
@@ -453,30 +846,60 @@ export default function Page() {
     setCheckingSession(false);
   }, [router]);
 
-  const canViewAdvancedAnalytics = Boolean(session) && hasMinRole(session!.role, "manager") && hasMinPlan(session!.plan, "pro");
-  const canExportAnalytics = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "business");
-  const canViewBillingUsage = Boolean(session) && hasMinRole(session!.role, "admin");
-  const canViewSecurityAnalytics = Boolean(session) && hasMinRole(session!.role, "admin");
+  const canViewAdvancedAnalytics =
+    Boolean(session) &&
+    hasMinRole(session!.role, "manager") &&
+    hasMinPlan(session!.plan, "pro");
+  const canExportAnalytics =
+    Boolean(session) &&
+    hasMinRole(session!.role, "admin") &&
+    hasMinPlan(session!.plan, "business");
+  const canViewBillingUsage =
+    Boolean(session) && hasMinRole(session!.role, "admin");
+  const canViewSecurityAnalytics =
+    Boolean(session) && hasMinRole(session!.role, "admin");
 
   const usagePercent = useMemo(() => {
-    if (!analytics || analytics.usage_units === null || analytics.usage_limit === null) return null;
-    return Math.min(100, Math.round((analytics.usage_units / Math.max(analytics.usage_limit, 1)) * 100));
+    if (
+      !analytics ||
+      analytics.usage_units === null ||
+      analytics.usage_limit === null
+    )
+      return null;
+    return Math.min(
+      100,
+      Math.round(
+        (analytics.usage_units / Math.max(analytics.usage_limit, 1)) * 100,
+      ),
+    );
   }, [analytics]);
 
   const taskCompletionRate = useMemo(() => {
     if (!analytics || analytics.total_tasks === 0) return 0;
-    return Math.round((analytics.completed_tasks / analytics.total_tasks) * 100);
+    return Math.round(
+      (analytics.completed_tasks / analytics.total_tasks) * 100,
+    );
   }, [analytics]);
 
   const leadQualificationRate = useMemo(() => {
-    if (!analytics || analytics.total_leads === null || analytics.qualified_leads === null || analytics.total_leads === 0) {
+    if (
+      !analytics ||
+      analytics.total_leads === null ||
+      analytics.qualified_leads === null ||
+      analytics.total_leads === 0
+    ) {
       return null;
     }
-    return Math.round((analytics.qualified_leads / analytics.total_leads) * 100);
+    return Math.round(
+      (analytics.qualified_leads / analytics.total_leads) * 100,
+    );
   }, [analytics]);
 
   const loadAnalytics = useCallback(
-    async (nextRange: RangeKey = range, mode: "initial" | "refresh" = "initial") => {
+    async (
+      nextRange: RangeKey = range,
+      mode: "initial" | "refresh" = "initial",
+    ) => {
       if (!session) return;
 
       if (mode === "initial") setIsLoading(true);
@@ -489,11 +912,14 @@ export default function Page() {
       // task-status counts, an agent-event total, and a fixed 7-day audit
       // count, so `nextRange` only affects the range tabs' selected state,
       // not what data comes back.
-      const response = await dashboardFetch<RealAnalyticsSummary>("/analytics/summary", {
-        method: "GET",
-        accessToken: session.accessToken,
-        audit_action: "analytics_dashboard_read",
-      });
+      const response = await dashboardFetch<RealAnalyticsSummary>(
+        "/analytics/summary",
+        {
+          method: "GET",
+          accessToken: session.accessToken,
+          audit_action: "analytics_dashboard_read",
+        },
+      );
 
       if (response.success && response.data) {
         setAnalytics(buildAnalyticsFromReal(response.data, session));
@@ -514,6 +940,11 @@ export default function Page() {
     void loadAnalytics(range, "initial");
   }, [loadAnalytics, range, session]);
 
+  const handleRetry = useCallback(() => {
+    setError(null);
+    void loadAnalytics(range, "initial");
+  }, [loadAnalytics, range]);
+
   const changeRange = (nextRange: RangeKey) => {
     setRange(nextRange);
     void loadAnalytics(nextRange, "refresh");
@@ -521,7 +952,9 @@ export default function Page() {
 
   const exportAnalytics = () => {
     if (!canExportAnalytics || !analytics || !session) {
-      setError("Analytics export requires admin access and Business plan or higher.");
+      setError(
+        "Analytics export requires admin access and Business plan or higher.",
+      );
       return;
     }
 
@@ -549,335 +982,416 @@ export default function Page() {
   if (checkingSession || !session) {
     return (
       <div className="dashboardPanel">
-        <p>Checking secure session...</p>
+        <LoadingState variant="light" title="Checking secure session..." />
       </div>
     );
   }
 
   return (
     <div className="dashboardPanel">
-        <div className="heroLine">
-          <div>
-            <h1>Analytics, {session.name.split(" ")[0]}</h1>
-            <p>Monitor usage, tasks, leads, workflows, security reviews, memory writes, and verification readiness.</p>
-          </div>
-
-          <div className="heroActions">
-            <div className="tenantBadge">
-              <span>{session.role}</span>
-              <strong>{session.plan}</strong>
-            </div>
-            <button className="exportBtn" onClick={exportAnalytics} disabled={!canExportAnalytics || !analytics}>
-              <Icon name="download" size={16} />
-              Export
-            </button>
-          </div>
+      <div className="heroLine">
+        <div>
+          <h1>Analytics, {session.name.split(" ")[0]}</h1>
+          <p>
+            Monitor usage, tasks, leads, workflows, security reviews, memory
+            writes, and verification readiness.
+          </p>
         </div>
 
-        {error ? (
-          <div className="errorBox" role="alert">
-            <Icon name="alert" />
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>Dismiss</button>
+        <div className="heroActions">
+          <div className="tenantBadge">
+            <span>{session.role}</span>
+            <strong>{session.plan}</strong>
           </div>
-        ) : null}
-
-        <div className="rangeRow">
-          <div className="rangeTabs" aria-label="Analytics date range">
-            {(Object.keys(RANGE_LABELS) as RangeKey[]).map((item) => (
-              <button key={item} className={cx(range === item && "active")} onClick={() => changeRange(item)}>
-                {RANGE_LABELS[item]}
-              </button>
-            ))}
-          </div>
-
-          <button className="refreshBtn" onClick={() => loadAnalytics(range, "refresh")} disabled={isRefreshing}>
-            <Icon name="filter" size={16} />
-            {isRefreshing ? "Refreshing..." : "Refresh"}
+          <button
+            className="exportBtn"
+            onClick={exportAnalytics}
+            disabled={!canExportAnalytics || !analytics}
+          >
+            <Icon name="download" size={16} />
+            Export
           </button>
         </div>
+      </div>
 
-        {isLoading ? (
-          <section className="stateBox">
-            <div className="loader" />
-            <strong>Loading analytics...</strong>
-            <p>Checking user and workspace scoped dashboard records.</p>
+      {error ? (
+        <div className="mb-4">
+          <ErrorState variant="light" message={error} onRetry={handleRetry} />
+        </div>
+      ) : null}
+
+      <div className="rangeRow">
+        <div className="rangeTabs" aria-label="Analytics date range">
+          {(Object.keys(RANGE_LABELS) as RangeKey[]).map((item) => (
+            <button
+              key={item}
+              className={cx(range === item && "active")}
+              onClick={() => changeRange(item)}
+            >
+              {RANGE_LABELS[item]}
+            </button>
+          ))}
+        </div>
+
+        <button
+          className="refreshBtn"
+          onClick={() => loadAnalytics(range, "refresh")}
+          disabled={isRefreshing}
+        >
+          <Icon name="filter" size={16} />
+          {isRefreshing ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
+
+      {isLoading ? (
+        <section className="stateBox">
+          <LoadingState
+            variant="light"
+            title="Loading analytics..."
+            subtitle="Checking user and workspace scoped dashboard records."
+          />
+        </section>
+      ) : !analytics ? (
+        <section className="stateBox">
+          <EmptyState
+            variant="light"
+            icon="◈"
+            title="No analytics found"
+            message="Once agents start running, your numbers will wake up and start flexing."
+          />
+        </section>
+      ) : (
+        <>
+          <section className="overviewGrid">
+            <div className="balanceCard">
+              <div className="cardTop">
+                <div>
+                  <p>Total Usage</p>
+                  <h2>{formatNumber(analytics.usage_units)}</h2>
+                  <span className="greenText">
+                    {usagePercent === null
+                      ? "Usage metering not available yet"
+                      : `↑ ${usagePercent}% of plan limit`}
+                  </span>
+                </div>
+                <button className="currencyBtn">{RANGE_LABELS[range]}</button>
+              </div>
+
+              <div className="usageTrack">
+                <span style={{ width: `${usagePercent ?? 0}%` }} />
+              </div>
+
+              <div className="usageMeta">
+                <span>{formatNumber(analytics.usage_units)} used</span>
+                <strong>{formatNumber(analytics.usage_limit)} limit</strong>
+              </div>
+
+              <div className="miniWallets">
+                <div>
+                  <Icon name="chart" />
+                  <strong>{formatNumber(analytics.total_tasks)}</strong>
+                  <span>Tasks</span>
+                </div>
+                <div>
+                  <Icon name="lead" />
+                  <strong>{formatNumber(analytics.total_leads)}</strong>
+                  <span>Leads</span>
+                </div>
+                <div>
+                  <Icon name="workflow" />
+                  <strong>{formatNumber(analytics.workflow_runs)}</strong>
+                  <span>Runs</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="metricGrid">
+              <div className="metricCard hot">
+                <div className="metricIcon">
+                  <Icon name="spark" />
+                </div>
+                <span>Completed Tasks</span>
+                <strong>{formatNumber(analytics.completed_tasks)}</strong>
+                <p>↑ {taskCompletionRate}% completion rate</p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="lead" />
+                </div>
+                <span>Qualified Leads</span>
+                <strong>{formatNumber(analytics.qualified_leads)}</strong>
+                <p>
+                  {leadQualificationRate === null
+                    ? "Not available"
+                    : `${leadQualificationRate}% qualification`}
+                </p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="workflow" />
+                </div>
+                <span>Workflow Success</span>
+                <strong>
+                  {formatPercent(analytics.workflow_success_rate)}
+                </strong>
+                <p>{formatNumber(analytics.workflow_runs)} total runs</p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="verify" />
+                </div>
+                <span>Verification Ready</span>
+                <strong>{formatNumber(analytics.verification_ready)}</strong>
+                <p>Completion payloads</p>
+              </div>
+            </div>
+
+            <BigBarChart data={analytics.series} />
           </section>
-        ) : !analytics ? (
-          <section className="stateBox">
-            <Icon name="chart" size={34} />
-            <strong>No analytics found</strong>
-            <p>Once agents start running, your numbers will wake up and start flexing.</p>
+
+          <section className="progressAndCards">
+            <div className="progressCard">
+              <div className="cardTop">
+                <div>
+                  <h3>System Health</h3>
+                  <p>Live quality indicators for William/Jarvis operations</p>
+                </div>
+                <button className="liveToggle">Tenant Safe</button>
+              </div>
+
+              <div className="donutGrid">
+                <DonutMeter value={taskCompletionRate} label="Tasks" />
+                <DonutMeter
+                  value={analytics.workflow_success_rate}
+                  label="Workflows"
+                />
+                <DonutMeter value={leadQualificationRate} label="Leads" />
+              </div>
+            </div>
+
+            <div className="cardsCard">
+              <div className="cardTop">
+                <h3>Agent Contracts</h3>
+                <button className="smallSoft">Audit On</button>
+              </div>
+
+              <div className="contractCards">
+                <div className="contract dark">
+                  <span>Memory Agent</span>
+                  <strong>
+                    {formatNumber(analytics.memory_writes)} context writes
+                  </strong>
+                  <small>User/workspace scoped</small>
+                </div>
+
+                <div className="contract orange">
+                  <span>Security Agent</span>
+                  <strong>
+                    {canViewSecurityAnalytics
+                      ? formatNumber(analytics.security_reviews)
+                      : "Locked"}
+                  </strong>
+                  <small>
+                    {canViewSecurityAnalytics
+                      ? "Sensitive reviews"
+                      : "Admin only"}
+                  </small>
+                </div>
+              </div>
+            </div>
           </section>
-        ) : (
-          <>
-            <section className="overviewGrid">
-              <div className="balanceCard">
-                <div className="cardTop">
-                  <div>
-                    <p>Total Usage</p>
-                    <h2>{formatNumber(analytics.usage_units)}</h2>
-                    <span className="greenText">
-                      {usagePercent === null ? "Usage metering not available yet" : `↑ ${usagePercent}% of plan limit`}
-                    </span>
-                  </div>
-                  <button className="currencyBtn">{RANGE_LABELS[range]}</button>
-                </div>
 
-                <div className="usageTrack">
-                  <span style={{ width: `${usagePercent ?? 0}%` }} />
-                </div>
-
-                <div className="usageMeta">
-                  <span>{formatNumber(analytics.usage_units)} used</span>
-                  <strong>{formatNumber(analytics.usage_limit)} limit</strong>
-                </div>
-
-                <div className="miniWallets">
-                  <div>
-                    <Icon name="chart" />
-                    <strong>{formatNumber(analytics.total_tasks)}</strong>
-                    <span>Tasks</span>
-                  </div>
-                  <div>
-                    <Icon name="lead" />
-                    <strong>{formatNumber(analytics.total_leads)}</strong>
-                    <span>Leads</span>
-                  </div>
-                  <div>
-                    <Icon name="workflow" />
-                    <strong>{formatNumber(analytics.workflow_runs)}</strong>
-                    <span>Runs</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="metricGrid">
-                <div className="metricCard hot">
-                  <div className="metricIcon"><Icon name="spark" /></div>
-                  <span>Completed Tasks</span>
-                  <strong>{formatNumber(analytics.completed_tasks)}</strong>
-                  <p>↑ {taskCompletionRate}% completion rate</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="lead" /></div>
-                  <span>Qualified Leads</span>
-                  <strong>{formatNumber(analytics.qualified_leads)}</strong>
-                  <p>{leadQualificationRate === null ? "Not available" : `${leadQualificationRate}% qualification`}</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="workflow" /></div>
-                  <span>Workflow Success</span>
-                  <strong>{formatPercent(analytics.workflow_success_rate)}</strong>
-                  <p>{formatNumber(analytics.workflow_runs)} total runs</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="verify" /></div>
-                  <span>Verification Ready</span>
-                  <strong>{formatNumber(analytics.verification_ready)}</strong>
-                  <p>Completion payloads</p>
-                </div>
-              </div>
-
-              <BigBarChart data={analytics.series} />
-            </section>
-
-            <section className="progressAndCards">
-              <div className="progressCard">
-                <div className="cardTop">
-                  <div>
-                    <h3>System Health</h3>
-                    <p>Live quality indicators for William/Jarvis operations</p>
-                  </div>
-                  <button className="liveToggle">Tenant Safe</button>
-                </div>
-
-                <div className="donutGrid">
-                  <DonutMeter value={taskCompletionRate} label="Tasks" />
-                  <DonutMeter value={analytics.workflow_success_rate} label="Workflows" />
-                  <DonutMeter value={leadQualificationRate} label="Leads" />
-                </div>
-              </div>
-
-              <div className="cardsCard">
-                <div className="cardTop">
-                  <h3>Agent Contracts</h3>
-                  <button className="smallSoft">Audit On</button>
-                </div>
-
-                <div className="contractCards">
-                  <div className="contract dark">
-                    <span>Memory Agent</span>
-                    <strong>{formatNumber(analytics.memory_writes)} context writes</strong>
-                    <small>User/workspace scoped</small>
-                  </div>
-
-                  <div className="contract orange">
-                    <span>Security Agent</span>
-                    <strong>{canViewSecurityAnalytics ? formatNumber(analytics.security_reviews) : "Locked"}</strong>
-                    <small>{canViewSecurityAnalytics ? "Sensitive reviews" : "Admin only"}</small>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="lowerGrid">
-              <div className="tableCard">
-                <div className="tableHeader">
-                  <div>
-                    <h2>Agent Usage</h2>
-                    <p>Performance by agent lane. No cross-workspace data included.</p>
-                  </div>
-                  <button className="filterBtn"><Icon name="filter" size={16} /> Filter</button>
-                </div>
-
-                {!canViewAdvancedAnalytics ? (
-                  <div className="lockedBox">
-                    <Icon name="shield" size={30} />
-                    <strong>Advanced analytics locked</strong>
-                    <p>Upgrade to Pro and use Operator role or higher.</p>
-                  </div>
-                ) : analytics.agents.length === 0 ? (
-                  <p className="emptyNote">
-                    Per-agent usage breakdowns are not available yet -- the backend only reports
-                    a total agent-event count today, not a per-agent split.
+          <section className="lowerGrid">
+            <div className="tableCard">
+              <div className="tableHeader">
+                <div>
+                  <h2>Agent Usage</h2>
+                  <p>
+                    Performance by agent lane. No cross-workspace data included.
                   </p>
-                ) : (
-                  <div className="tableWrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Agent</th>
-                          <th>Completed</th>
-                          <th>Active</th>
-                          <th>Failed</th>
-                          <th>Usage</th>
-                          <th>Rate</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {analytics.agents.map((agent) => {
-                          const total = agent.completed + agent.failed + agent.active;
-                          const rate = total ? Math.round((agent.completed / total) * 100) : 0;
-
-                          return (
-                            <tr key={agent.agent}>
-                              <td>
-                                <div className="activityCell">
-                                  <span className="agentIcon"><Icon name="spark" size={15} /></span>
-                                  <div>
-                                    <strong>{agent.agent} Agent</strong>
-                                    <small>usage lane</small>
-                                  </div>
-                                </div>
-                              </td>
-                              <td>{formatNumber(agent.completed)}</td>
-                              <td>{formatNumber(agent.active)}</td>
-                              <td>{formatNumber(agent.failed)}</td>
-                              <td>{formatNumber(agent.usage_units)}</td>
-                              <td>
-                                <div className="rowProgress">
-                                  <span style={{ width: `${rate}%` }} />
-                                </div>
-                                <small>{rate}%</small>
-                              </td>
-                              <td>
-                                <button className="moreBtn" aria-label={`More details for ${agent.agent}`}>
-                                  <Icon name="more" size={18} />
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                </div>
+                <button className="filterBtn">
+                  <Icon name="filter" size={16} /> Filter
+                </button>
               </div>
 
-              <div className="sideCards">
-                <div className="leadCard">
-                  <div className="cardTop">
-                    <div>
-                      <h3>Lead Analytics</h3>
-                      <p>Source quality and qualification</p>
-                    </div>
-                    <Icon name="lead" />
-                  </div>
+              {!canViewAdvancedAnalytics ? (
+                <div className="lockedBox">
+                  <ForbiddenState
+                    variant="light"
+                    title="Advanced Analytics Locked"
+                    message="Upgrade to Pro and use Operator role or higher."
+                  />
+                </div>
+              ) : analytics.agents.length === 0 ? (
+                <EmptyState
+                  variant="light"
+                  icon="◈"
+                  title="No agent usage"
+                  message="Per-agent usage breakdowns are not available yet -- the backend only reports a total agent-event count today, not a per-agent split."
+                />
+              ) : (
+                <div className="tableWrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Agent</th>
+                        <th>Completed</th>
+                        <th>Active</th>
+                        <th>Failed</th>
+                        <th>Usage</th>
+                        <th>Rate</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {analytics.agents.map((agent) => {
+                        const total =
+                          agent.completed + agent.failed + agent.active;
+                        const rate = total
+                          ? Math.round((agent.completed / total) * 100)
+                          : 0;
 
-                  <div className="leadList">
-                    {analytics.leads.length === 0 ? (
-                      <p className="emptyNote">
-                        Lead-pipeline analytics are not available yet -- there is no CRM backend
-                        router to source this from.
-                      </p>
-                    ) : (
-                      analytics.leads.map((lead) => (
-                        <div className="leadRow" key={lead.source}>
-                          <div>
-                            <strong>{lead.source}</strong>
-                            <span>{formatNumber(lead.qualified)} qualified from {formatNumber(lead.leads)}</span>
-                          </div>
-                          <b>{lead.conversion_rate}%</b>
-                        </div>
-                      ))
-                    )}
+                        return (
+                          <tr key={agent.agent}>
+                            <td>
+                              <div className="activityCell">
+                                <span className="agentIcon">
+                                  <Icon name="spark" size={15} />
+                                </span>
+                                <div>
+                                  <strong>{agent.agent} Agent</strong>
+                                  <small>usage lane</small>
+                                </div>
+                              </div>
+                            </td>
+                            <td>{formatNumber(agent.completed)}</td>
+                            <td>{formatNumber(agent.active)}</td>
+                            <td>{formatNumber(agent.failed)}</td>
+                            <td>{formatNumber(agent.usage_units)}</td>
+                            <td>
+                              <div className="rowProgress">
+                                <span style={{ width: `${rate}%` }} />
+                              </div>
+                              <small>{rate}%</small>
+                            </td>
+                            <td>
+                              <button
+                                className="moreBtn"
+                                aria-label={`More details for ${agent.agent}`}
+                              >
+                                <Icon name="more" size={18} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="sideCards">
+              <div className="leadCard">
+                <div className="cardTop">
+                  <div>
+                    <h3>Lead Analytics</h3>
+                    <p>Source quality and qualification</p>
                   </div>
+                  <Icon name="lead" />
                 </div>
 
-                <div className="leadCard">
-                  <div className="cardTop">
-                    <div>
-                      <h3>Billing Usage</h3>
-                      <p>Plan consumption and audit events</p>
-                    </div>
-                    <Icon name="usage" />
-                  </div>
-
-                  {canViewBillingUsage ? (
-                    <div className="billingPanel">
-                      <strong>{usagePercent === null ? "N/A" : `${usagePercent}%`}</strong>
-                      <span>
-                        {usagePercent === null
-                          ? "Usage metering is not available yet"
-                          : `${formatNumber(analytics.usage_units)} / ${formatNumber(analytics.usage_limit)} units`}
-                      </span>
-                      <div className="usageTrack small">
-                        <span style={{ width: `${usagePercent ?? 0}%` }} />
-                      </div>
-                      <p>{formatNumber(analytics.audit_events)} audit events (last 7 days) · generated {formatDate(analytics.generated_at)}</p>
-                    </div>
+                <div className="leadList">
+                  {analytics.leads.length === 0 ? (
+                    <EmptyState
+                      variant="light"
+                      icon="◈"
+                      title="No lead data"
+                      message="Lead-pipeline analytics are not available yet -- there is no CRM backend router to source this from."
+                    />
                   ) : (
-                    <div className="lockedMini">
-                      <Icon name="shield" size={22} />
-                      <span>Billing analytics are admin-only.</span>
-                    </div>
+                    analytics.leads.map((lead) => (
+                      <div className="leadRow" key={lead.source}>
+                        <div>
+                          <strong>{lead.source}</strong>
+                          <span>
+                            {formatNumber(lead.qualified)} qualified from{" "}
+                            {formatNumber(lead.leads)}
+                          </span>
+                        </div>
+                        <b>{lead.conversion_rate}%</b>
+                      </div>
+                    ))
                   )}
                 </div>
               </div>
-            </section>
 
-            <section className="workflowCard">
-              <div className="tableHeader">
-                <div>
-                  <h2>Workflow Analytics</h2>
-                  <p>Automation runs, success rate, and blocked workflow visibility.</p>
+              <div className="leadCard">
+                <div className="cardTop">
+                  <div>
+                    <h3>Billing Usage</h3>
+                    <p>Plan consumption and audit events</p>
+                  </div>
+                  <Icon name="usage" />
                 </div>
-                <button className="filterBtn"><Icon name="workflow" size={16} /> Manage</button>
-              </div>
 
-              <div className="workflowGrid">
-                {analytics.workflows.length === 0 ? (
-                  <p className="emptyNote">
-                    Workflow run analytics are not available yet -- apps/api/routes/workflows.py
-                    tracks individual runs, but there is no aggregate success-rate/duration
-                    reporting endpoint yet.
-                  </p>
+                {canViewBillingUsage ? (
+                  <div className="billingPanel">
+                    <strong>
+                      {usagePercent === null ? "N/A" : `${usagePercent}%`}
+                    </strong>
+                    <span>
+                      {usagePercent === null
+                        ? "Usage metering is not available yet"
+                        : `${formatNumber(analytics.usage_units)} / ${formatNumber(analytics.usage_limit)} units`}
+                    </span>
+                    <div className="usageTrack small">
+                      <span style={{ width: `${usagePercent ?? 0}%` }} />
+                    </div>
+                    <p>
+                      {formatNumber(analytics.audit_events)} audit events (last
+                      7 days) · generated {formatDate(analytics.generated_at)}
+                    </p>
+                  </div>
                 ) : (
+                  <div className="lockedMini">
+                    <ForbiddenState
+                      variant="light"
+                      message="Billing analytics are admin-only."
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+
+          <section className="workflowCard">
+            <div className="tableHeader">
+              <div>
+                <h2>Workflow Analytics</h2>
+                <p>
+                  Automation runs, success rate, and blocked workflow
+                  visibility.
+                </p>
+              </div>
+              <button className="filterBtn">
+                <Icon name="workflow" size={16} /> Manage
+              </button>
+            </div>
+
+            <div className="workflowGrid">
+              {analytics.workflows.length === 0 ? (
+                <EmptyState
+                  variant="light"
+                  icon="◈"
+                  title="No workflow analytics"
+                  message="Workflow run analytics are not available yet -- apps/api/routes/workflows.py tracks individual runs, but there is no aggregate success-rate/duration reporting endpoint yet."
+                />
+              ) : (
                 analytics.workflows.map((workflow) => (
                   <div className="workflowItem" key={workflow.id}>
                     <div className="workflowTop">
@@ -908,11 +1422,11 @@ export default function Page() {
                     </div>
                   </div>
                 ))
-                )}
-              </div>
-            </section>
-          </>
-        )}
+              )}
+            </div>
+          </section>
+        </>
+      )}
 
       <style jsx>{`
         :global(*) {
@@ -939,7 +1453,11 @@ export default function Page() {
           display: grid;
           grid-template-columns: 72px minmax(0, 1fr);
           background:
-            radial-gradient(circle at 50% 10%, rgba(255, 255, 255, 0.8), transparent 28%),
+            radial-gradient(
+              circle at 50% 10%,
+              rgba(255, 255, 255, 0.8),
+              transparent 28%
+            ),
             #e9e9e7;
         }
 
@@ -1320,14 +1838,13 @@ export default function Page() {
         .usageTrack {
           margin-top: 22px;
           height: 14px;
-          background:
-            repeating-linear-gradient(
-              -45deg,
-              #f0f0ee,
-              #f0f0ee 4px,
-              #e6e6e3 4px,
-              #e6e6e3 8px
-            );
+          background: repeating-linear-gradient(
+            -45deg,
+            #f0f0ee,
+            #f0f0ee 4px,
+            #e6e6e3 4px,
+            #e6e6e3 8px
+          );
           border-radius: 999px;
           overflow: hidden;
         }
@@ -1475,7 +1992,11 @@ export default function Page() {
           justify-content: space-between;
           gap: 10px;
           padding: 10px 0 0;
-          background-image: linear-gradient(to top, #ededeb 1px, transparent 1px);
+          background-image: linear-gradient(
+            to top,
+            #ededeb 1px,
+            transparent 1px
+          );
           background-size: 100% 42px;
         }
 
@@ -1501,14 +2022,13 @@ export default function Page() {
         }
 
         .barOrange {
-          background:
-            repeating-linear-gradient(
-              -45deg,
-              #ff5438,
-              #ff5438 4px,
-              #ff765f 4px,
-              #ff765f 8px
-            );
+          background: repeating-linear-gradient(
+            -45deg,
+            #ff5438,
+            #ff5438 4px,
+            #ff765f 4px,
+            #ff765f 8px
+          );
         }
 
         .barDark {

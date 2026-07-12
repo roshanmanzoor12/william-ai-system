@@ -1953,19 +1953,31 @@ class MasterAgent(BaseAgent):
 
             timeout_seconds = self._get_task_timeout(step)
 
-            if _method_exists(agent, "execute"):
-                result = await asyncio.wait_for(
-                    _maybe_await(agent.execute(task_payload)),
-                    timeout=timeout_seconds,
-                )
-            elif _method_exists(agent, "run"):
-                result = await asyncio.wait_for(
-                    _maybe_await(agent.run(task_payload)),
-                    timeout=timeout_seconds,
-                )
-            elif callable(agent):
+            # A live smoke test invoking every real specialized agent through
+            # this dispatch confirmed each one implements a different real
+            # entrypoint (run_task/handle_task/arun/run/execute) and that
+            # several agents' inherited BaseAgent.execute_task() pipeline
+            # crashes outright due to incompatible internal hook overrides
+            # (_emit_agent_event/_log_audit_event/_error_result signature
+            # drift written for that agent's own convention only). Rather
+            # than special-case every agent's quirks here, delegate to the
+            # shared adapter (agents/agent_execution_adapter.py), which tries
+            # each real entrypoint in the confirmed-safe preference order and
+            # degrades a signature/method mismatch to a structured error
+            # instead of raising.
+            if callable(agent) and not any(
+                _method_exists(agent, name)
+                for name in ("run_task", "handle_task", "arun", "run", "execute", "execute_task")
+            ):
                 result = await asyncio.wait_for(
                     _maybe_await(agent(task_payload)),
+                    timeout=timeout_seconds,
+                )
+            elif agent is not None:
+                from agents.agent_execution_adapter import call_agent
+
+                result = await asyncio.wait_for(
+                    call_agent(agent, task_payload, agent_name=agent_name),
                     timeout=timeout_seconds,
                 )
             else:

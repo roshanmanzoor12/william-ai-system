@@ -32,7 +32,11 @@ export type UserRole =
   | "user"
   | "viewer";
 export type UserPlan = "free" | "starter" | "pro" | "business" | "enterprise";
-export type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled";
+export type SubscriptionStatus =
+  | "active"
+  | "trialing"
+  | "past_due"
+  | "canceled";
 
 const ROLE_RANK: Record<UserRole, number> = {
   viewer: 10,
@@ -94,15 +98,20 @@ const REFRESH_TOKEN_KEY = "william.refresh_token";
 // regardless of what this table says.
 function permissionsForRank(rank: number): string[] {
   const permissions = ["dashboard:read", "workspace:read", "memory:read"];
-  if (rank >= ROLE_RANK.user) permissions.push("tasks:write", "agents:run", "agent:execute");
+  if (rank >= ROLE_RANK.user)
+    permissions.push("tasks:write", "agents:run", "agent:execute");
   if (rank >= ROLE_RANK.manager) permissions.push("audit:read", "billing:read");
-  if (rank >= ROLE_RANK.admin) permissions.push("security:approve", "workspace:update", "session:manage");
+  if (rank >= ROLE_RANK.admin)
+    permissions.push("security:approve", "workspace:update", "session:manage");
   if (rank >= ROLE_RANK.owner) permissions.push("billing:manage");
   return permissions;
 }
 
 const ROLE_PERMISSIONS: Record<UserRole, string[]> = Object.fromEntries(
-  (Object.keys(ROLE_RANK) as UserRole[]).map((role) => [role, permissionsForRank(ROLE_RANK[role])]),
+  (Object.keys(ROLE_RANK) as UserRole[]).map((role) => [
+    role,
+    permissionsForRank(ROLE_RANK[role]),
+  ]),
 ) as Record<UserRole, string[]>;
 
 const PLAN_ACCESS: Record<UserPlan, boolean> = {
@@ -119,12 +128,14 @@ function isValidSession(value: unknown): value is SessionData {
 
   return Boolean(
     session.accessToken &&
-      session.user_id &&
-      session.workspace_id &&
-      session.role &&
-      session.plan &&
-      session.subscription_status &&
-      ["active", "trialing", "past_due", "canceled"].includes(session.subscription_status),
+    session.user_id &&
+    session.workspace_id &&
+    session.role &&
+    session.plan &&
+    session.subscription_status &&
+    ["active", "trialing", "past_due", "canceled"].includes(
+      session.subscription_status,
+    ),
   );
 }
 
@@ -132,7 +143,8 @@ export function readSession(): SessionData | null {
   if (typeof window === "undefined") return null;
 
   const raw =
-    window.localStorage.getItem(SESSION_KEY) || window.sessionStorage.getItem(SESSION_KEY);
+    window.localStorage.getItem(SESSION_KEY) ||
+    window.sessionStorage.getItem(SESSION_KEY);
 
   if (!raw) return null;
 
@@ -147,7 +159,9 @@ export function readSession(): SessionData | null {
 export function saveSession(session: SessionData, rememberMe: boolean): void {
   if (typeof window === "undefined") return;
 
-  const selectedStorage = rememberMe ? window.localStorage : window.sessionStorage;
+  const selectedStorage = rememberMe
+    ? window.localStorage
+    : window.sessionStorage;
   const otherStorage = rememberMe ? window.sessionStorage : window.localStorage;
 
   otherStorage.removeItem(SESSION_KEY);
@@ -173,7 +187,10 @@ export function clearSession(): void {
   window.sessionStorage.removeItem(REFRESH_TOKEN_KEY);
 }
 
-export function hasPermission(session: SessionData, permission: string): boolean {
+export function hasPermission(
+  session: SessionData,
+  permission: string,
+): boolean {
   const sessionPermissions = new Set([
     ...(ROLE_PERMISSIONS[session.role] || []),
     ...(session.permissions || []),
@@ -214,7 +231,10 @@ export function canUseDashboard(session: SessionData): SessionAccessResult {
     };
   }
 
-  if (!hasPermission(session, "dashboard:read") && !hasPermission(session, "workspace:read")) {
+  if (
+    !hasPermission(session, "dashboard:read") &&
+    !hasPermission(session, "workspace:read")
+  ) {
     return {
       allowed: false,
       code: "PERMISSION_DENIED",

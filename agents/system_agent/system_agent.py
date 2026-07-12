@@ -754,11 +754,19 @@ class SystemAgent(BaseAgent):
             metadata=task.get("metadata") or {},
         )
 
-        return self._safe_result(
-            message="Task context validated.",
-            data={"context": context},
-            metadata={"request_id": context.request_id},
-        )
+        # Deliberately NOT built via self._safe_result(): that helper routes
+        # data through _safe_json() for JSON-safety, which -- since TaskContext
+        # is a dataclass -- silently converts this live `context` object into
+        # a plain dict via dataclasses.asdict(). Callers (handle_task) need the
+        # real TaskContext instance back (context.user_id attribute access,
+        # _dispatch_action's TaskContext-typed parameter), not a JSON-safe copy.
+        return {
+            "success": True,
+            "message": "Task context validated.",
+            "data": {"context": context},
+            "error": None,
+            "metadata": {"request_id": context.request_id},
+        }
 
     def _requires_security_check(self, action: str, payload: Optional[Mapping[str, Any]] = None) -> bool:
         """

@@ -13,9 +13,24 @@
  *   audit logs, workflow registry, template loading, billing limits, and role checks.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
-import { SessionData, UserPlan, hasMinPlan, hasMinRole, readSession } from "@/lib/auth";
+import {
+  SessionData,
+  UserPlan,
+  hasMinPlan,
+  hasMinRole,
+  readSession,
+} from "@/lib/auth";
+import { EmptyState } from "@/components/state/EmptyState";
+import { ErrorState } from "@/components/state/ErrorState";
+import { LoadingState } from "@/components/state/LoadingState";
 
 // Matches apps/api/routes/workflows.py's real WorkflowStatus (template
 // status) and WorkflowStepType enums exactly (confirmed by reading the
@@ -121,7 +136,13 @@ function templateIsSensitive(template: WorkflowTemplate): boolean {
 // persistent "workflow" object, only templates (reusable recipes) and
 // individual runs (one execution each). `runs`/`success_rate` had no
 // backend source at all; a single run has neither concept.
-type WorkflowRunStatus = "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled";
+type WorkflowRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 type WorkflowRun = {
   id: string;
@@ -148,7 +169,8 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
   cancelled: "Cancelled",
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
 const STATUS_LABELS: Record<WorkflowStatus, string> = {
   draft: "Draft",
@@ -166,8 +188,18 @@ function nowIso(): string {
 }
 
 function safeError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error || "Unknown error");
-  const blocked = ["secret", "token", "password", "apikey", "api_key", "database_url", "jwt", "connection string"];
+  const message =
+    error instanceof Error ? error.message : String(error || "Unknown error");
+  const blocked = [
+    "secret",
+    "token",
+    "password",
+    "apikey",
+    "api_key",
+    "database_url",
+    "jwt",
+    "connection string",
+  ];
 
   if (blocked.some((word) => message.toLowerCase().includes(word))) {
     return "A safe application error occurred. Please try again or contact the workspace admin.";
@@ -213,14 +245,18 @@ async function dashboardFetch<T>(
   if (!API_BASE_URL) {
     return {
       success: false,
-      error: "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
+      error:
+        "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your dashboard environment.",
     };
   }
 
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
   headers.set("Authorization", `Bearer ${options.accessToken}`);
-  headers.set("X-Audit-Action", options.audit_action || "workflow_dashboard_read");
+  headers.set(
+    "X-Audit-Action",
+    options.audit_action || "workflow_dashboard_read",
+  );
 
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -240,10 +276,15 @@ async function dashboardFetch<T>(
     };
 
     if (!response.ok || raw.ok === false) {
-      const rawError = typeof raw.error === "string" ? raw.error : raw.error?.message;
+      const rawError =
+        typeof raw.error === "string" ? raw.error : raw.error?.message;
       return {
         success: false,
-        error: safeError(rawError || raw.message || `Request failed with status ${response.status}`),
+        error: safeError(
+          rawError ||
+            raw.message ||
+            `Request failed with status ${response.status}`,
+        ),
       };
     }
 
@@ -307,12 +348,33 @@ function Icon({
   switch (name) {
     case "logo":
       return (
-        <svg width={size} height={size} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-          <rect width="32" height="32" rx="12" fill="url(#workflowLogoGradient)" />
-          <path d="M10 21.5V16h5.7c1.1 0 2-.9 2-2v-1.8H12V8h10v6.1c0 3.3-2.6 5.9-5.9 5.9h-1.3v1.5H10Z" fill="white" />
+        <svg
+          width={size}
+          height={size}
+          viewBox="0 0 32 32"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden
+        >
+          <rect
+            width="32"
+            height="32"
+            rx="12"
+            fill="url(#workflowLogoGradient)"
+          />
+          <path
+            d="M10 21.5V16h5.7c1.1 0 2-.9 2-2v-1.8H12V8h10v6.1c0 3.3-2.6 5.9-5.9 5.9h-1.3v1.5H10Z"
+            fill="white"
+          />
           <path d="M19.3 24v-5.7H24V24h-4.7Z" fill="white" />
           <defs>
-            <linearGradient id="workflowLogoGradient" x1="4" x2="28" y1="4" y2="28">
+            <linearGradient
+              id="workflowLogoGradient"
+              x1="4"
+              x2="28"
+              y1="4"
+              y2="28"
+            >
               <stop stopColor="#ff805d" />
               <stop offset="1" stopColor="#ff3d22" />
             </linearGradient>
@@ -320,61 +382,380 @@ function Icon({
         </svg>
       );
     case "search":
-      return <svg {...common}><path d="M11 19a8 8 0 1 1 5.3-2l3.4 3.3" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M11 19a8 8 0 1 1 5.3-2l3.4 3.3"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "bell":
-      return <svg {...common}><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M13.7 21a2 2 0 0 1-3.4 0" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="18.5" cy="5.5" r="2.5" fill="#ff5438" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M13.7 21a2 2 0 0 1-3.4 0"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <circle cx="18.5" cy="5.5" r="2.5" fill="#ff5438" />
+        </svg>
+      );
     case "alert":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="M12 7v6" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M12 16.8h.01" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M12 7v6"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M12 16.8h.01"
+            stroke={stroke}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "grid":
-      return <svg {...common}><path d="M8.5 4.5h-3v3h3v-3ZM18.5 4.5h-3v3h3v-3ZM8.5 16.5h-3v3h3v-3ZM18.5 16.5h-3v3h3v-3ZM13.5 10.5h-3v3h3v-3Z" stroke={stroke} strokeWidth="1.5" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M8.5 4.5h-3v3h3v-3ZM18.5 4.5h-3v3h3v-3ZM8.5 16.5h-3v3h3v-3ZM18.5 16.5h-3v3h3v-3ZM13.5 10.5h-3v3h3v-3Z"
+            stroke={stroke}
+            strokeWidth="1.5"
+          />
+        </svg>
+      );
     case "calendar":
-      return <svg {...common}><path d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "mail":
-      return <svg {...common}><path d="M4 6.5h16v11H4v-11Z" stroke={stroke} strokeWidth="1.7" /><path d="m4 7 8 6 8-6" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path d="M4 6.5h16v11H4v-11Z" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="m4 7 8 6 8-6"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "doc":
-      return <svg {...common}><path d="M7 3.8h7l3 3V20H7V3.8Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="M14 4v3h3M9.5 11h5M9.5 15h5" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M7 3.8h7l3 3V20H7V3.8Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M14 4v3h3M9.5 11h5M9.5 15h5"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "users":
-      return <svg {...common}><path d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><circle cx="12" cy="9" r="3" stroke={stroke} strokeWidth="1.7" /><path d="M20 18c0-1.8-1.1-3.3-2.7-3.8M16.8 6.3a2.5 2.5 0 0 1 0 4.4" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <circle cx="12" cy="9" r="3" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M20 18c0-1.8-1.1-3.3-2.7-3.8M16.8 6.3a2.5 2.5 0 0 1 0 4.4"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "layers":
-      return <svg {...common}><path d="m12 3 8 4-8 4-8-4 8-4Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="m4 12 8 4 8-4M4 17l8 4 8-4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="m12 3 8 4-8 4-8-4 8-4Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m4 12 8 4 8-4M4 17l8 4 8-4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "settings":
-      return <svg {...common}><circle cx="12" cy="12" r="3" stroke={stroke} strokeWidth="1.7" /><path d="M19 12a7.4 7.4 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a6 6 0 0 0-1.8-1L14.4 3h-4l-.4 3a6 6 0 0 0-1.8 1L5.8 6l-2 3.5 2 1.5a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a6 6 0 0 0 1.8 1l.4 3h4l.4-3a6 6 0 0 0 1.8-1l2.4 1 2-3.5-2-1.5c.1-.3.1-.7.1-1Z" stroke={stroke} strokeWidth="1.2" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="3" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M19 12a7.4 7.4 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a6 6 0 0 0-1.8-1L14.4 3h-4l-.4 3a6 6 0 0 0-1.8 1L5.8 6l-2 3.5 2 1.5a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a6 6 0 0 0 1.8 1l.4 3h4l.4-3a6 6 0 0 0 1.8-1l2.4 1 2-3.5-2-1.5c.1-.3.1-.7.1-1Z"
+            stroke={stroke}
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "help":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="M9.8 9.3a2.4 2.4 0 0 1 4.6 1c0 1.8-2.4 2-2.4 3.5" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /><path d="M12 17.2h.01" stroke={stroke} strokeWidth="2.4" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M9.8 9.3a2.4 2.4 0 0 1 4.6 1c0 1.8-2.4 2-2.4 3.5"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+          <path
+            d="M12 17.2h.01"
+            stroke={stroke}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "logout":
-      return <svg {...common}><path d="M10 5H6v14h4M14 8l4 4-4 4M18 12H9" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M10 5H6v14h4M14 8l4 4-4 4M18 12H9"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "moon":
-      return <svg {...common}><path d="M19 15.2A7.5 7.5 0 0 1 8.8 5a8 8 0 1 0 10.2 10.2Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M19 15.2A7.5 7.5 0 0 1 8.8 5a8 8 0 1 0 10.2 10.2Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "sun":
-      return <svg {...common}><circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth="1.7" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "workflow":
-      return <svg {...common}><path d="M6 6h4v4H6V6ZM14 14h4v4h-4v-4ZM14 6h4v4h-4V6ZM8 10v2a2 2 0 0 0 2 2h4M12 8h2" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M6 6h4v4H6V6ZM14 14h4v4h-4v-4ZM14 6h4v4h-4V6ZM8 10v2a2 2 0 0 0 2 2h4M12 8h2"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "template":
-      return <svg {...common}><path d="M4 5h7v6H4V5ZM13 5h7v4h-7V5ZM13 11h7v8h-7v-8ZM4 13h7v6H4v-6Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M4 5h7v6H4V5ZM13 5h7v4h-7V5ZM13 11h7v8h-7v-8ZM4 13h7v6H4v-6Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "shield":
-      return <svg {...common}><path d="M12 3 19 6v5.5c0 4.5-2.8 7.8-7 9.5-4.2-1.7-7-5-7-9.5V6l7-3Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /><path d="m9.5 12 1.8 1.8 3.7-4" stroke={stroke} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 3 19 6v5.5c0 4.5-2.8 7.8-7 9.5-4.2-1.7-7-5-7-9.5V6l7-3Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m9.5 12 1.8 1.8 3.7-4"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "memory":
-      return <svg {...common}><rect x="5" y="5" width="14" height="14" rx="3" stroke={stroke} strokeWidth="1.7" /><path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <rect
+            x="5"
+            y="5"
+            width="14"
+            height="14"
+            rx="3"
+            stroke={stroke}
+            strokeWidth="1.7"
+          />
+          <path
+            d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "verify":
-      return <svg {...common}><circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" /><path d="m8.5 12.3 2.2 2.2 4.9-5.2" stroke={stroke} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="m8.5 12.3 2.2 2.2 4.9-5.2"
+            stroke={stroke}
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "play":
-      return <svg {...common}><path d="M8 5.5v13l11-6.5-11-6.5Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M8 5.5v13l11-6.5-11-6.5Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "pause":
-      return <svg {...common}><path d="M8 5v14M16 5v14" stroke={stroke} strokeWidth="2.2" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M8 5v14M16 5v14"
+            stroke={stroke}
+            strokeWidth="2.2"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "plus":
-      return <svg {...common}><path d="M12 5v14M5 12h14" stroke={stroke} strokeWidth="1.9" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 5v14M5 12h14"
+            stroke={stroke}
+            strokeWidth="1.9"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "filter":
-      return <svg {...common}><path d="M4 6h16M7 12h10M10 18h4" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M4 6h16M7 12h10M10 18h4"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "more":
-      return <svg {...common}><path d="M6 12h.01M12 12h.01M18 12h.01" stroke={stroke} strokeWidth="3" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M6 12h.01M12 12h.01M18 12h.01"
+            stroke={stroke}
+            strokeWidth="3"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     case "spark":
-      return <svg {...common}><path d="M12 2.5 13.7 9l6.3 3-6.3 3L12 21.5 10.3 15 4 12l6.3-3L12 2.5Z" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M12 2.5 13.7 9l6.3 3-6.3 3L12 21.5 10.3 15 4 12l6.3-3L12 2.5Z"
+            stroke={stroke}
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "arrow":
-      return <svg {...common}><path d="M7 17 17 7M9 7h8v8" stroke={stroke} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M7 17 17 7M9 7h8v8"
+            stroke={stroke}
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "bolt":
-      return <svg {...common}><path d="M13 2 5 13h6l-1 9 8-12h-6l1-8Z" stroke={stroke} strokeWidth="1.7" strokeLinejoin="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path
+            d="M13 2 5 13h6l-1 9 8-12h-6l1-8Z"
+            stroke={stroke}
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
     case "crm":
-      return <svg {...common}><path d="M5 5h14v14H5V5Z" stroke={stroke} strokeWidth="1.7" /><path d="M8 9h8M8 13h5M8 17h8" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" /></svg>;
+      return (
+        <svg {...common}>
+          <path d="M5 5h14v14H5V5Z" stroke={stroke} strokeWidth="1.7" />
+          <path
+            d="M8 9h8M8 13h5M8 17h8"
+            stroke={stroke}
+            strokeWidth="1.6"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
     default:
       return null;
   }
@@ -409,7 +790,12 @@ function WorkflowCanvas({ nodes }: { nodes: WorkflowNode[] }) {
   return (
     <div className="canvasWrap">
       <div className="canvasGrid">
-        <svg className="connectorSvg" viewBox="0 0 940 210" preserveAspectRatio="none" aria-hidden>
+        <svg
+          className="connectorSvg"
+          viewBox="0 0 940 210"
+          preserveAspectRatio="none"
+          aria-hidden
+        >
           {nodes.slice(0, -1).map((node, index) => {
             const next = nodes[index + 1];
             return (
@@ -428,14 +814,22 @@ function WorkflowCanvas({ nodes }: { nodes: WorkflowNode[] }) {
         {nodes.map((node) => (
           <div
             key={node.id}
-            className={cx("builderNode", `node-${node.type}`, node.sensitive && "sensitive")}
+            className={cx(
+              "builderNode",
+              `node-${node.type}`,
+              node.sensitive && "sensitive",
+            )}
             style={{ left: node.x, top: node.y }}
           >
             <div className="nodeIcon">
               {node.type === "agent" ? <Icon name="spark" size={16} /> : null}
-              {node.type === "security" ? <Icon name="shield" size={16} /> : null}
+              {node.type === "security" ? (
+                <Icon name="shield" size={16} />
+              ) : null}
               {node.type === "memory" ? <Icon name="memory" size={16} /> : null}
-              {node.type === "action" ? <Icon name="workflow" size={16} /> : null}
+              {node.type === "action" ? (
+                <Icon name="workflow" size={16} />
+              ) : null}
             </div>
             <div>
               <strong>{node.title}</strong>
@@ -455,7 +849,9 @@ export default function Page() {
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
-  const [selectedStatus, setSelectedStatus] = useState<WorkflowStatus | "all">("all");
+  const [selectedStatus, setSelectedStatus] = useState<WorkflowStatus | "all">(
+    "all",
+  );
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -474,22 +870,40 @@ export default function Page() {
     setCheckingSession(false);
   }, [router]);
 
-  const canCreateWorkflow = Boolean(session) && hasMinRole(session!.role, "manager") && hasMinPlan(session!.plan, "pro");
-  const canUseSensitiveWorkflow = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "business");
-  const canPublishWorkflow = Boolean(session) && hasMinRole(session!.role, "admin") && hasMinPlan(session!.plan, "pro");
+  const canCreateWorkflow =
+    Boolean(session) &&
+    hasMinRole(session!.role, "manager") &&
+    hasMinPlan(session!.plan, "pro");
+  const canUseSensitiveWorkflow =
+    Boolean(session) &&
+    hasMinRole(session!.role, "admin") &&
+    hasMinPlan(session!.plan, "business");
+  const canPublishWorkflow =
+    Boolean(session) &&
+    hasMinRole(session!.role, "admin") &&
+    hasMinPlan(session!.plan, "pro");
 
   const selectedTemplate = useMemo(() => {
-    return templates.find((template) => template.id === selectedTemplateId) || templates[0];
+    return (
+      templates.find((template) => template.id === selectedTemplateId) ||
+      templates[0]
+    );
   }, [selectedTemplateId, templates]);
 
   const stats = useMemo(() => {
     const total = runs.length;
     const running = runs.filter((run) => run.status === "running").length;
-    const waitingApproval = runs.filter((run) => run.status === "waiting_approval").length;
+    const waitingApproval = runs.filter(
+      (run) => run.status === "waiting_approval",
+    ).length;
     const completed = runs.filter((run) => run.status === "completed").length;
-    const failed = runs.filter((run) => run.status === "failed" || run.status === "cancelled").length;
+    const failed = runs.filter(
+      (run) => run.status === "failed" || run.status === "cancelled",
+    ).length;
     const finished = completed + failed;
-    const successRate = finished ? Math.round((completed / finished) * 100) : null;
+    const successRate = finished
+      ? Math.round((completed / finished) * 100)
+      : null;
 
     return { total, running, waitingApproval, completed, failed, successRate };
   }, [runs]);
@@ -498,7 +912,8 @@ export default function Page() {
     const q = search.trim().toLowerCase();
 
     return templates.filter((template) => {
-      const statusMatch = selectedStatus === "all" || template.status === selectedStatus;
+      const statusMatch =
+        selectedStatus === "all" || template.status === selectedStatus;
       const searchMatch =
         !q ||
         template.name.toLowerCase().includes(q) ||
@@ -531,7 +946,9 @@ export default function Page() {
 
     if (templateResponse.success && Array.isArray(templateResponse.data)) {
       setTemplates(templateResponse.data);
-      setSelectedTemplateId((current) => current || templateResponse.data![0]?.id || "");
+      setSelectedTemplateId(
+        (current) => current || templateResponse.data![0]?.id || "",
+      );
     } else {
       setTemplates([]);
       if (templateResponse.error) setError(templateResponse.error);
@@ -553,6 +970,11 @@ export default function Page() {
     void loadWorkflows();
   }, [loadWorkflows]);
 
+  const handleRetry = useCallback(() => {
+    setError(null);
+    void loadWorkflows();
+  }, [loadWorkflows]);
+
   const createWorkflowFromTemplate = async (template: WorkflowTemplate) => {
     if (!session) return;
 
@@ -562,7 +984,9 @@ export default function Page() {
     }
 
     if (templateIsSensitive(template) && !canUseSensitiveWorkflow) {
-      setError("Sensitive workflow templates require admin access and Business plan or higher.");
+      setError(
+        "Sensitive workflow templates require admin access and Business plan or higher.",
+      );
       return;
     }
 
@@ -579,13 +1003,16 @@ export default function Page() {
 
     // POST /workflows/run nests the created record one level deeper, under
     // data.run (see WorkflowResponse(data={"run": run.visible_dict()})).
-    const response = await dashboardFetch<{ run: WorkflowRun }>("/workflows/run", {
-      method: "POST",
-      accessToken: session.accessToken,
-      audit_action: "workflow_create",
-      body: JSON.stringify(payload),
-      dataKey: "data",
-    });
+    const response = await dashboardFetch<{ run: WorkflowRun }>(
+      "/workflows/run",
+      {
+        method: "POST",
+        accessToken: session.accessToken,
+        audit_action: "workflow_create",
+        body: JSON.stringify(payload),
+        dataKey: "data",
+      },
+    );
 
     if (response.success && response.data) {
       setRuns((current) => [response.data!.run, ...current]);
@@ -604,7 +1031,8 @@ export default function Page() {
       return;
     }
 
-    const nextStatus: WorkflowStatus = template.status === "active" ? "paused" : "active";
+    const nextStatus: WorkflowStatus =
+      template.status === "active" ? "paused" : "active";
 
     const response = await dashboardFetch<{ template: WorkflowTemplate }>(
       `/workflows/templates/${encodeURIComponent(template.id)}`,
@@ -618,7 +1046,11 @@ export default function Page() {
     );
 
     if (response.success && response.data) {
-      setTemplates((current) => current.map((item) => (item.id === template.id ? response.data!.template : item)));
+      setTemplates((current) =>
+        current.map((item) =>
+          item.id === template.id ? response.data!.template : item,
+        ),
+      );
     } else if (response.error) {
       setError(response.error);
     }
@@ -627,378 +1059,500 @@ export default function Page() {
   if (checkingSession || !session) {
     return (
       <div className="dashboardPanel">
-        <p>Checking secure session...</p>
+        <LoadingState variant="light" title="Checking secure session..." />
       </div>
     );
   }
 
   return (
     <div className="dashboardPanel">
-        <div className="heroLine">
-          <div>
-            <h1>Workflows, {session.name.split(" ")[0]}</h1>
-            <p>Build agent automations, load templates, route sensitive actions, save memory context, and verify completions.</p>
-          </div>
-
-          <div className="heroActions">
-            <div className="tenantBadge">
-              <span>{session.role}</span>
-              <strong>{session.plan}</strong>
-            </div>
-            <button
-              className="createBtn"
-              disabled={!canCreateWorkflow || !selectedTemplate || isCreating}
-              onClick={() => selectedTemplate && createWorkflowFromTemplate(selectedTemplate)}
-            >
-              <Icon name="plus" size={16} />
-              {isCreating ? "Creating..." : "Create Flow"}
-            </button>
-          </div>
+      <div className="heroLine">
+        <div>
+          <h1>Workflows, {session.name.split(" ")[0]}</h1>
+          <p>
+            Build agent automations, load templates, route sensitive actions,
+            save memory context, and verify completions.
+          </p>
         </div>
 
-        {error ? (
-          <div className="errorBox" role="alert">
-            <Icon name="alert" />
-            <span>{error}</span>
-            <button onClick={() => setError(null)}>Dismiss</button>
+        <div className="heroActions">
+          <div className="tenantBadge">
+            <span>{session.role}</span>
+            <strong>{session.plan}</strong>
           </div>
-        ) : null}
+          <button
+            className="createBtn"
+            disabled={!canCreateWorkflow || !selectedTemplate || isCreating}
+            onClick={() =>
+              selectedTemplate && createWorkflowFromTemplate(selectedTemplate)
+            }
+          >
+            <Icon name="plus" size={16} />
+            {isCreating ? "Creating..." : "Create Flow"}
+          </button>
+        </div>
+      </div>
 
-        {isLoading ? (
-          <section className="stateBox">
-            <div className="loader" />
-            <strong>Loading workflows...</strong>
-            <p>Checking tenant-safe workflow templates and automation history.</p>
-          </section>
-        ) : (
-          <>
-            <section className="overviewGrid">
-              <div className="balanceCard">
-                <div className="cardTop">
-                  <div>
-                    <p>Total Runs</p>
-                    <h2>{formatNumber(stats.total)}</h2>
-                    <span className="greenText">↑ {stats.running} running now</span>
-                  </div>
-                  <button className="currencyBtn">Live</button>
-                </div>
+      {error ? (
+        <div className="mb-4">
+          <ErrorState variant="light" message={error} onRetry={handleRetry} />
+        </div>
+      ) : null}
 
-                <div className="actionRow">
-                  <button
-                    className="primaryBtn"
-                    disabled={!canCreateWorkflow || !selectedTemplate || isCreating}
-                    onClick={() => selectedTemplate && createWorkflowFromTemplate(selectedTemplate)}
-                  >
-                    <Icon name="play" size={16} />
-                    Use Template
-                  </button>
-                  <button className="softBtn" onClick={() => loadWorkflows()}>
-                    Refresh
-                  </button>
-                </div>
-
-                <div className="miniWallets">
-                  <div>
-                    <Icon name="workflow" />
-                    <strong>{formatNumber(stats.completed)}</strong>
-                    <span>Completed</span>
-                  </div>
-                  <div>
-                    <Icon name="verify" />
-                    <strong>{stats.successRate === null ? "N/A" : `${stats.successRate}%`}</strong>
-                    <span>Success</span>
-                  </div>
-                  <div>
-                    <Icon name="shield" />
-                    <strong>{stats.waitingApproval}</strong>
-                    <span>Awaiting Approval</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="metricGrid">
-                <div className="metricCard hot">
-                  <div className="metricIcon"><Icon name="spark" /></div>
-                  <span>Templates</span>
-                  <strong>{templates.length}</strong>
-                  <p>Ready to launch</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="memory" /></div>
-                  <span>Queued</span>
-                  <strong>{runs.filter((run) => run.status === "queued").length}</strong>
-                  <p>Waiting to start</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="shield" /></div>
-                  <span>Security Routed</span>
-                  <strong>{runs.filter((run) => run.approval_id !== null).length}</strong>
-                  <p>Approval required</p>
-                </div>
-
-                <div className="metricCard">
-                  <div className="metricIcon"><Icon name="verify" /></div>
-                  <span>Failed</span>
-                  <strong>{stats.failed}</strong>
-                  <p>Needs review</p>
-                </div>
-              </div>
-
-              <div className="chartCard">
-                <div className="cardTop">
-                  <div>
-                    <h3>Run Status</h3>
-                    <p>Real run counts by status</p>
-                  </div>
-                  <div className="legend">
-                    <span><i className="orangeDot" /> Count</span>
-                  </div>
-                </div>
-
-                {runs.length === 0 ? (
-                  <p className="emptyNote">No workflow runs yet -- use a template above to start one.</p>
-                ) : (
-                <div className="barChart">
-                  {(Object.keys(RUN_STATUS_LABELS) as WorkflowRunStatus[]).map((statusKey) => {
-                    const count = runs.filter((run) => run.status === statusKey).length;
-                    const barHeight = Math.max(8, Math.min(145, count * 24));
-
-                    return (
-                      <div className="barGroup" key={statusKey}>
-                        <div className="bars">
-                          <span className="bar barOrange" style={{ height: barHeight }} />
-                        </div>
-                        <span className="barLabel">{RUN_STATUS_LABELS[statusKey]}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                )}
-              </div>
-            </section>
-
-            <section className="builderGrid">
-              <div className="builderCard">
-                <div className="tableHeader">
-                  <div>
-                    <h2>Workflow Builder</h2>
-                    <p>{selectedTemplate ? selectedTemplate.description : "Select a template to preview the workflow chain."}</p>
-                  </div>
-
-                  <button
-                    className="filterBtn"
-                    disabled={!selectedTemplate}
-                    onClick={() => selectedTemplate && createWorkflowFromTemplate(selectedTemplate)}
-                  >
-                    <Icon name="plus" size={16} />
-                    Build
-                  </button>
-                </div>
-
-                {selectedTemplate ? (
-                  <WorkflowCanvas nodes={selectedTemplate.steps.map(stepToNode)} />
-                ) : (
-                  <div className="emptyBuilder">
-                    <Icon name="workflow" size={34} />
-                    <strong>No template selected</strong>
-                    <p>Pick one from the template library. The robots need a blueprint, boss.</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="contractCard">
-                <div className="cardTop">
-                  <h3>Automation Rules</h3>
-                  <button className="smallSoft">Audit On</button>
-                </div>
-
-                <div className="contractCards">
-                  <div className="contract dark">
-                    <span>Security Agent</span>
-                    <strong>{selectedTemplate && templateIsSensitive(selectedTemplate) ? "Required before publish" : "Not required"}</strong>
-                    <small>Sensitive action gate</small>
-                  </div>
-
-                  <div className="contract orange">
-                    <span>Verification Agent</span>
-                    <strong>Always prepared</strong>
-                    <small>Completion confirmation</small>
-                  </div>
-                </div>
-
-                <div className="ruleList">
-                  <div>
-                    <Icon name="memory" />
-                    <span>Memory Agent compatible context</span>
-                  </div>
-                  <div>
-                    <Icon name="shield" />
-                    <span>Role and plan checked before execution</span>
-                  </div>
-                  <div>
-                    <Icon name="doc" />
-                    <span>Audit event emitted for state changes</span>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="templateSection">
-              <div className="tableHeader">
+      {isLoading ? (
+        <section className="stateBox">
+          <LoadingState
+            variant="light"
+            title="Loading workflows..."
+            subtitle="Checking tenant-safe workflow templates and automation history."
+          />
+        </section>
+      ) : (
+        <>
+          <section className="overviewGrid">
+            <div className="balanceCard">
+              <div className="cardTop">
                 <div>
-                  <h2>Workflow Templates</h2>
-                  <p>Production-ready automation starters scoped to current workspace.</p>
+                  <p>Total Runs</p>
+                  <h2>{formatNumber(stats.total)}</h2>
+                  <span className="greenText">
+                    ↑ {stats.running} running now
+                  </span>
                 </div>
-
-                <div className="tableTools">
-                  <label className="searchBox">
-                    <Icon name="search" size={16} />
-                    <input
-                      value={search}
-                      onChange={(event) => setSearch(event.target.value)}
-                      placeholder="Search templates..."
-                    />
-                  </label>
-
-                  <select
-                    value={selectedStatus}
-                    onChange={(event) => setSelectedStatus(event.target.value as WorkflowStatus | "all")}
-                  >
-                    <option value="all">All Statuses</option>
-                    <option value="draft">Draft</option>
-                    <option value="active">Active</option>
-                    <option value="paused">Paused</option>
-                    <option value="archived">Archived</option>
-                  </select>
-
-                  <button className="filterBtn"><Icon name="filter" size={16} /> Filter</button>
-                </div>
+                <button className="currencyBtn">Live</button>
               </div>
 
-              {filteredTemplates.length === 0 ? (
-                <div className="emptyBuilder">
-                  <Icon name="template" size={34} />
-                  <strong>No templates found</strong>
-                  <p>{templates.length === 0 ? "Create a workflow template to get started." : "Clear filters to see your existing templates."}</p>
-                </div>
-              ) : (
-                <div className="templateGrid">
-                  {filteredTemplates.map((template) => {
-                    const sensitive = templateIsSensitive(template);
+              <div className="actionRow">
+                <button
+                  className="primaryBtn"
+                  disabled={
+                    !canCreateWorkflow || !selectedTemplate || isCreating
+                  }
+                  onClick={() =>
+                    selectedTemplate &&
+                    createWorkflowFromTemplate(selectedTemplate)
+                  }
+                >
+                  <Icon name="play" size={16} />
+                  Use Template
+                </button>
+                <button className="softBtn" onClick={() => loadWorkflows()}>
+                  Refresh
+                </button>
+              </div>
 
-                    return (
-                      <article
-                        key={template.id}
-                        className={cx("templateCard", selectedTemplate?.id === template.id && "selected")}
-                        onClick={() => setSelectedTemplateId(template.id)}
-                      >
-                        <div className="templateTop">
-                          <span className="templateIcon"><TemplateStatusIcon status={template.status} /></span>
-                          <button
-                            className="moreBtn"
-                            aria-label={`Toggle status for ${template.name}`}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void toggleTemplateStatus(template);
-                            }}
-                            disabled={!canCreateWorkflow}
-                          >
-                            <Icon name="more" size={18} />
-                          </button>
-                        </div>
-
-                        <h3>{template.name}</h3>
-                        <p>{template.description || "No description."}</p>
-
-                        <div className="templateMeta">
-                          <span>{template.steps.length} steps</span>
-                          <span>{STATUS_LABELS[template.status]}</span>
-                          {sensitive ? <span>Security-reviewed</span> : null}
-                        </div>
-
-                        <button
-                          className="templateBtn"
-                          disabled={!canCreateWorkflow || (sensitive && !canUseSensitiveWorkflow) || isCreating}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            createWorkflowFromTemplate(template);
-                          }}
-                        >
-                          {sensitive && !canUseSensitiveWorkflow ? "Admin Only" : "Use Template"}
-                        </button>
-                      </article>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-
-            <section className="tableCard">
-              <div className="tableHeader">
+              <div className="miniWallets">
                 <div>
-                  <h2>Run History</h2>
-                  <p>Live run records scoped to the current user and workspace only.</p>
+                  <Icon name="workflow" />
+                  <strong>{formatNumber(stats.completed)}</strong>
+                  <span>Completed</span>
                 </div>
-                <button className="filterBtn" onClick={() => loadWorkflows()}><Icon name="workflow" size={16} /> Refresh</button>
+                <div>
+                  <Icon name="verify" />
+                  <strong>
+                    {stats.successRate === null
+                      ? "N/A"
+                      : `${stats.successRate}%`}
+                  </strong>
+                  <span>Success</span>
+                </div>
+                <div>
+                  <Icon name="shield" />
+                  <strong>{stats.waitingApproval}</strong>
+                  <span>Awaiting Approval</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="metricGrid">
+              <div className="metricCard hot">
+                <div className="metricIcon">
+                  <Icon name="spark" />
+                </div>
+                <span>Templates</span>
+                <strong>{templates.length}</strong>
+                <p>Ready to launch</p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="memory" />
+                </div>
+                <span>Queued</span>
+                <strong>
+                  {runs.filter((run) => run.status === "queued").length}
+                </strong>
+                <p>Waiting to start</p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="shield" />
+                </div>
+                <span>Security Routed</span>
+                <strong>
+                  {runs.filter((run) => run.approval_id !== null).length}
+                </strong>
+                <p>Approval required</p>
+              </div>
+
+              <div className="metricCard">
+                <div className="metricIcon">
+                  <Icon name="verify" />
+                </div>
+                <span>Failed</span>
+                <strong>{stats.failed}</strong>
+                <p>Needs review</p>
+              </div>
+            </div>
+
+            <div className="chartCard">
+              <div className="cardTop">
+                <div>
+                  <h3>Run Status</h3>
+                  <p>Real run counts by status</p>
+                </div>
+                <div className="legend">
+                  <span>
+                    <i className="orangeDot" /> Count
+                  </span>
+                </div>
               </div>
 
               {runs.length === 0 ? (
-                <div className="emptyBuilder">
-                  <Icon name="doc" size={34} />
-                  <strong>No runs yet</strong>
-                  <p>Use a template above to start your first workflow run.</p>
-                </div>
+                <EmptyState
+                  variant="light"
+                  icon="◈"
+                  title="No workflow runs"
+                  message="No workflow runs yet -- use a template above to start one."
+                />
               ) : (
-                <div className="tableWrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Run ID</th>
-                        <th>Template</th>
-                        <th>Status</th>
-                        <th>Trigger</th>
-                        <th>Security</th>
-                        <th>Started</th>
-                        <th>Completed</th>
-                      </tr>
-                    </thead>
+                <div className="barChart">
+                  {(Object.keys(RUN_STATUS_LABELS) as WorkflowRunStatus[]).map(
+                    (statusKey) => {
+                      const count = runs.filter(
+                        (run) => run.status === statusKey,
+                      ).length;
+                      const barHeight = Math.max(8, Math.min(145, count * 24));
 
-                    <tbody>
-                      {runs.map((run) => {
-                        const template = templates.find((item) => item.id === run.template_id);
-                        const sensitive = run.approval_id !== null;
-
-                        return (
-                          <tr key={run.id}>
-                            <td><strong className="mono">{run.id}</strong></td>
-                            <td>
-                              <div className="activityCell">
-                                <span className={cx("agentIcon", sensitive && "sensitive")}>
-                                  {sensitive ? <Icon name="shield" size={15} /> : <Icon name="workflow" size={15} />}
-                                </span>
-                                <div>
-                                  <strong>{template?.name || run.template_id}</strong>
-                                  {run.error ? <small>{run.error}</small> : null}
-                                </div>
-                              </div>
-                            </td>
-                            <td><RunStatusPill status={run.status} /></td>
-                            <td>{run.trigger_type}</td>
-                            <td>{sensitive ? <Icon name="shield" size={15} /> : "—"}</td>
-                            <td>{run.started_at ? formatDateTime(run.started_at) : "Not started"}</td>
-                            <td>{run.completed_at ? formatDateTime(run.completed_at) : "—"}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                      return (
+                        <div className="barGroup" key={statusKey}>
+                          <div className="bars">
+                            <span
+                              className="bar barOrange"
+                              style={{ height: barHeight }}
+                            />
+                          </div>
+                          <span className="barLabel">
+                            {RUN_STATUS_LABELS[statusKey]}
+                          </span>
+                        </div>
+                      );
+                    },
+                  )}
                 </div>
               )}
-            </section>
-          </>
-        )}
+            </div>
+          </section>
+
+          <section className="builderGrid">
+            <div className="builderCard">
+              <div className="tableHeader">
+                <div>
+                  <h2>Workflow Builder</h2>
+                  <p>
+                    {selectedTemplate
+                      ? selectedTemplate.description
+                      : "Select a template to preview the workflow chain."}
+                  </p>
+                </div>
+
+                <button
+                  className="filterBtn"
+                  disabled={!selectedTemplate}
+                  onClick={() =>
+                    selectedTemplate &&
+                    createWorkflowFromTemplate(selectedTemplate)
+                  }
+                >
+                  <Icon name="plus" size={16} />
+                  Build
+                </button>
+              </div>
+
+              {selectedTemplate ? (
+                <WorkflowCanvas
+                  nodes={selectedTemplate.steps.map(stepToNode)}
+                />
+              ) : (
+                <div className="emptyBuilder">
+                  <EmptyState
+                    variant="light"
+                    icon="◈"
+                    title="No template selected"
+                    message="Pick one from the template library. The robots need a blueprint, boss."
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="contractCard">
+              <div className="cardTop">
+                <h3>Automation Rules</h3>
+                <button className="smallSoft">Audit On</button>
+              </div>
+
+              <div className="contractCards">
+                <div className="contract dark">
+                  <span>Security Agent</span>
+                  <strong>
+                    {selectedTemplate && templateIsSensitive(selectedTemplate)
+                      ? "Required before publish"
+                      : "Not required"}
+                  </strong>
+                  <small>Sensitive action gate</small>
+                </div>
+
+                <div className="contract orange">
+                  <span>Verification Agent</span>
+                  <strong>Always prepared</strong>
+                  <small>Completion confirmation</small>
+                </div>
+              </div>
+
+              <div className="ruleList">
+                <div>
+                  <Icon name="memory" />
+                  <span>Memory Agent compatible context</span>
+                </div>
+                <div>
+                  <Icon name="shield" />
+                  <span>Role and plan checked before execution</span>
+                </div>
+                <div>
+                  <Icon name="doc" />
+                  <span>Audit event emitted for state changes</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="templateSection">
+            <div className="tableHeader">
+              <div>
+                <h2>Workflow Templates</h2>
+                <p>
+                  Production-ready automation starters scoped to current
+                  workspace.
+                </p>
+              </div>
+
+              <div className="tableTools">
+                <label className="searchBox">
+                  <Icon name="search" size={16} />
+                  <input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search templates..."
+                  />
+                </label>
+
+                <select
+                  value={selectedStatus}
+                  onChange={(event) =>
+                    setSelectedStatus(
+                      event.target.value as WorkflowStatus | "all",
+                    )
+                  }
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="draft">Draft</option>
+                  <option value="active">Active</option>
+                  <option value="paused">Paused</option>
+                  <option value="archived">Archived</option>
+                </select>
+
+                <button className="filterBtn">
+                  <Icon name="filter" size={16} /> Filter
+                </button>
+              </div>
+            </div>
+
+            {filteredTemplates.length === 0 ? (
+              <div className="emptyBuilder">
+                <EmptyState
+                  variant="light"
+                  icon="◈"
+                  title="No templates found"
+                  message={
+                    templates.length === 0
+                      ? "Create a workflow template to get started."
+                      : "Clear filters to see your existing templates."
+                  }
+                />
+              </div>
+            ) : (
+              <div className="templateGrid">
+                {filteredTemplates.map((template) => {
+                  const sensitive = templateIsSensitive(template);
+
+                  return (
+                    <article
+                      key={template.id}
+                      className={cx(
+                        "templateCard",
+                        selectedTemplate?.id === template.id && "selected",
+                      )}
+                      onClick={() => setSelectedTemplateId(template.id)}
+                    >
+                      <div className="templateTop">
+                        <span className="templateIcon">
+                          <TemplateStatusIcon status={template.status} />
+                        </span>
+                        <button
+                          className="moreBtn"
+                          aria-label={`Toggle status for ${template.name}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void toggleTemplateStatus(template);
+                          }}
+                          disabled={!canCreateWorkflow}
+                        >
+                          <Icon name="more" size={18} />
+                        </button>
+                      </div>
+
+                      <h3>{template.name}</h3>
+                      <p>{template.description || "No description."}</p>
+
+                      <div className="templateMeta">
+                        <span>{template.steps.length} steps</span>
+                        <span>{STATUS_LABELS[template.status]}</span>
+                        {sensitive ? <span>Security-reviewed</span> : null}
+                      </div>
+
+                      <button
+                        className="templateBtn"
+                        disabled={
+                          !canCreateWorkflow ||
+                          (sensitive && !canUseSensitiveWorkflow) ||
+                          isCreating
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          createWorkflowFromTemplate(template);
+                        }}
+                      >
+                        {sensitive && !canUseSensitiveWorkflow
+                          ? "Admin Only"
+                          : "Use Template"}
+                      </button>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="tableCard">
+            <div className="tableHeader">
+              <div>
+                <h2>Run History</h2>
+                <p>
+                  Live run records scoped to the current user and workspace
+                  only.
+                </p>
+              </div>
+              <button className="filterBtn" onClick={() => loadWorkflows()}>
+                <Icon name="workflow" size={16} /> Refresh
+              </button>
+            </div>
+
+            {runs.length === 0 ? (
+              <div className="emptyBuilder">
+                <EmptyState
+                  variant="light"
+                  icon="◈"
+                  title="No runs yet"
+                  message="Use a template above to start your first workflow run."
+                />
+              </div>
+            ) : (
+              <div className="tableWrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Run ID</th>
+                      <th>Template</th>
+                      <th>Status</th>
+                      <th>Trigger</th>
+                      <th>Security</th>
+                      <th>Started</th>
+                      <th>Completed</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {runs.map((run) => {
+                      const template = templates.find(
+                        (item) => item.id === run.template_id,
+                      );
+                      const sensitive = run.approval_id !== null;
+
+                      return (
+                        <tr key={run.id}>
+                          <td>
+                            <strong className="mono">{run.id}</strong>
+                          </td>
+                          <td>
+                            <div className="activityCell">
+                              <span
+                                className={cx(
+                                  "agentIcon",
+                                  sensitive && "sensitive",
+                                )}
+                              >
+                                {sensitive ? (
+                                  <Icon name="shield" size={15} />
+                                ) : (
+                                  <Icon name="workflow" size={15} />
+                                )}
+                              </span>
+                              <div>
+                                <strong>
+                                  {template?.name || run.template_id}
+                                </strong>
+                                {run.error ? <small>{run.error}</small> : null}
+                              </div>
+                            </div>
+                          </td>
+                          <td>
+                            <RunStatusPill status={run.status} />
+                          </td>
+                          <td>{run.trigger_type}</td>
+                          <td>
+                            {sensitive ? <Icon name="shield" size={15} /> : "—"}
+                          </td>
+                          <td>
+                            {run.started_at
+                              ? formatDateTime(run.started_at)
+                              : "Not started"}
+                          </td>
+                          <td>
+                            {run.completed_at
+                              ? formatDateTime(run.completed_at)
+                              : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
+      )}
 
       <style jsx>{`
         :global(*) {
@@ -1025,7 +1579,11 @@ export default function Page() {
           display: grid;
           grid-template-columns: 72px minmax(0, 1fr);
           background:
-            radial-gradient(circle at 50% 10%, rgba(255, 255, 255, 0.8), transparent 28%),
+            radial-gradient(
+              circle at 50% 10%,
+              rgba(255, 255, 255, 0.8),
+              transparent 28%
+            ),
             #e9e9e7;
         }
 
@@ -1449,7 +2007,7 @@ export default function Page() {
 
         .metricCard.hot span,
         .metricCard.hot p {
-          color: rgba(255,255,255,0.78);
+          color: rgba(255, 255, 255, 0.78);
         }
 
         .metricIcon {
@@ -1461,7 +2019,7 @@ export default function Page() {
           border-radius: 50%;
           display: grid;
           place-items: center;
-          background: rgba(0,0,0,0.06);
+          background: rgba(0, 0, 0, 0.06);
         }
 
         .metricCard strong {
@@ -1516,7 +2074,11 @@ export default function Page() {
           justify-content: space-between;
           gap: 10px;
           padding: 10px 0 0;
-          background-image: linear-gradient(to top, #ededeb 1px, transparent 1px);
+          background-image: linear-gradient(
+            to top,
+            #ededeb 1px,
+            transparent 1px
+          );
           background-size: 100% 42px;
         }
 
@@ -1542,7 +2104,13 @@ export default function Page() {
         }
 
         .barOrange {
-          background: repeating-linear-gradient(-45deg, #ff5438, #ff5438 4px, #ff765f 4px, #ff765f 8px);
+          background: repeating-linear-gradient(
+            -45deg,
+            #ff5438,
+            #ff5438 4px,
+            #ff765f 4px,
+            #ff765f 8px
+          );
         }
 
         .barDark {
@@ -1588,8 +2156,7 @@ export default function Page() {
           border-radius: 22px;
           background:
             linear-gradient(#ededeb 1px, transparent 1px),
-            linear-gradient(90deg, #ededeb 1px, transparent 1px),
-            #f8f8f6;
+            linear-gradient(90deg, #ededeb 1px, transparent 1px), #f8f8f6;
           background-size: 28px 28px;
           position: relative;
           overflow: hidden;
@@ -1609,7 +2176,7 @@ export default function Page() {
           border-radius: 18px;
           background: white;
           border: 1px solid #eeeeeb;
-          box-shadow: 0 16px 36px rgba(25,25,22,0.08);
+          box-shadow: 0 16px 36px rgba(25, 25, 22, 0.08);
           padding: 14px;
           display: flex;
           align-items: center;
@@ -1671,7 +2238,7 @@ export default function Page() {
           width: 110px;
           height: 110px;
           border-radius: 28px;
-          background: rgba(255,255,255,0.08);
+          background: rgba(255, 255, 255, 0.08);
           right: -28px;
           top: -24px;
           transform: rotate(18deg);
@@ -1687,7 +2254,7 @@ export default function Page() {
 
         .contract span,
         .contract small {
-          color: rgba(255,255,255,0.75);
+          color: rgba(255, 255, 255, 0.75);
           font-size: 12px;
           z-index: 1;
         }
@@ -1773,8 +2340,8 @@ export default function Page() {
         .templateCard:hover,
         .templateCard.selected {
           transform: translateY(-2px);
-          box-shadow: 0 16px 40px rgba(25,25,22,0.08);
-          border-color: rgba(255,84,56,0.35);
+          box-shadow: 0 16px 40px rgba(25, 25, 22, 0.08);
+          border-color: rgba(255, 84, 56, 0.35);
         }
 
         .templateCard.locked {
@@ -1875,7 +2442,8 @@ export default function Page() {
         }
 
         .mono {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
           font-size: 12px;
         }
 

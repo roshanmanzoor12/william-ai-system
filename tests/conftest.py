@@ -40,7 +40,7 @@ os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("WILLIAM_ENV", "test")
 os.environ.setdefault("TESTING", "1")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET", "test-only-jwt-secret-not-for-production")
 os.environ.setdefault("ENCRYPTION_KEY", "test-only-encryption-key-not-for-production")
 os.environ.setdefault("MASTER_AGENT_ENABLED", "false")
@@ -70,6 +70,53 @@ except Exception:  # pragma: no cover
     AsyncSession = None  # type: ignore[assignment]
     async_sessionmaker = None  # type: ignore[assignment]
     create_async_engine = None  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# Real Database Schema (sync SQLAlchemy engine used by apps/api/routes/*.py)
+# ---------------------------------------------------------------------------
+#
+# The `app` fixture below now builds the real apps.api.main app instead of
+# a fake stub, and real routes (auth.py, memory.py, etc.) read/write through
+# database/db.py's synchronous engine. That engine points at an in-memory
+# SQLite database for tests (DATABASE_URL set above), which starts out with
+# no tables at all -- nothing runs Alembic migrations against it. Mirroring
+# database/migrations/env.py's own MODEL_MODULES list, every real model
+# module is imported here so its table registers on Base.metadata, then
+# create_all() builds the schema once for the whole test session before any
+# test touches the database.
+_DB_MODEL_MODULES = (
+    "database.models.user",
+    "database.models.workspace",
+    "database.models.role_permission",
+    "database.models.subscription",
+    "database.models.agent_registry",
+    "database.models.agent_task",
+    "database.models.agent_event",
+    "database.models.agent",
+    "database.models.memory",
+    "database.models.security",
+    "database.models.file",
+    "database.models.workflow",
+    "database.models.business",
+    "database.models.finance",
+    "database.models.voice",
+)
+
+try:
+    from database.db import Base as _DB_BASE, db_manager as _DB_MANAGER
+
+    for _module_path in _DB_MODEL_MODULES:
+        try:
+            __import__(_module_path)
+        except Exception:  # pragma: no cover
+            pass
+
+    _DB_BASE.metadata.create_all(bind=_DB_MANAGER.engine)
+except Exception:  # pragma: no cover
+    # database/db.py or a model module isn't importable -- tests that only
+    # exercise agent doubles (no real DB) must still be able to run.
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +311,24 @@ class TestStore:
         self.subscriptions[subscription.workspace_id] = subscription
         return subscription
 
+    @staticmethod
+    def _agent_name_key(agent_name: AgentName | str) -> str:
+        # str(AgentName.CODE) is "AgentName.CODE", not "code_agent" --
+        # (str, Enum) subclasses don't override __str__, so plain str()
+        # produces the qualified member name instead of the value, even
+        # though the member itself compares equal to its value. Using
+        # str() directly here meant every grant/check pair silently used
+        # different keys and access was always denied.
+        if isinstance(agent_name, AgentName):
+            return agent_name.value
+        return str(agent_name)
+
     def grant_agent_access(self, workspace_id: str, agent_name: AgentName | str) -> None:
         self.require_workspace(workspace_id)
-        self.agent_access.setdefault(workspace_id, set()).add(str(agent_name))
+        self.agent_access.setdefault(workspace_id, set()).add(self._agent_name_key(agent_name))
 
     def has_agent_access(self, workspace_id: str, agent_name: AgentName | str) -> bool:
-        return str(agent_name) in self.agent_access.get(workspace_id, set())
+        return self._agent_name_key(agent_name) in self.agent_access.get(workspace_id, set())
 
     def require_user(self, user_id: str) -> TestUser:
         user = self.users.get(user_id)
@@ -675,10 +734,27 @@ class FakeMasterAgent:
         assert_permission(context, "agents:run")
 
         subscription = self.store.require_subscription(context.workspace_id)
-        assert_plan_allows(
-            subscription,
-            "sensitive_actions" if action in FakeSecurityAgent.sensitive_actions else "normal_actions",
-        )
+
+        try:
+            assert_plan_allows(
+                subscription,
+                "sensitive_actions" if action in FakeSecurityAgent.sensitive_actions else "normal_actions",
+            )
+        except PermissionError as exc:
+            # Every other rejection path here (agent access, security
+            # approval) returns a structured error dict instead of raising
+            # -- a bare, uncaught PermissionError from a plan-limit check
+            # would crash the caller instead of giving it a normal
+            # "denied" response to handle.
+            return error_response(
+                code="PLAN_DENIED",
+                message=str(exc),
+                status_code=402,
+                details={
+                    "plan": subscription.plan.value,
+                    "workspace_id": context.workspace_id,
+                },
+            )
 
         if not self.store.has_agent_access(context.workspace_id, agent_name):
             return error_response(

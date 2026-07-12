@@ -1,401 +1,244 @@
 "use client";
 
-import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+/**
+ * apps/dashboard/src/app/(dashboard)/memory/page.tsx
+ *
+ * William / Jarvis Multi-Agent AI SaaS System by Digital Promotix
+ * Memory Manager dashboard page.
+ *
+ * Wired to the real apps/api/routes/memory.py backend (GET/DELETE /memory,
+ * POST /memory/export, GET /memory/health/status) via the shared
+ * src/lib/auth.ts session module and Bearer-token auth. Previously this page
+ * read sessions straight out of localStorage/sessionStorage with its own
+ * local SessionData type (from before the shared lib/auth.ts module
+ * existed), and fell back to three fabricated LOCAL_DEMO_MEMORIES records
+ * plus a hardcoded fake 7-day activity chart whenever the API call failed.
+ * Both are gone -- the real backend's MemoryRecord shape (memory_type:
+ * short/long/project/client, sensitivity: public/internal/confidential/
+ * restricted) is different from the old invented vocabulary
+ * (type: task/agent/security/... , sensitivity: standard/sensitive/
+ * restricted), so the types below match the real Pydantic/dataclass models
+ * in apps/api/routes/memory.py exactly, not the old guesses.
+ */
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  SessionData,
+  UserRole,
+  clearSession,
+  hasMinRole,
+  hasPermission,
+  readSession,
+} from "@/lib/auth";
+import { EmptyState } from "@/components/state/EmptyState";
+import { ErrorState } from "@/components/state/ErrorState";
+import { ForbiddenState } from "@/components/state/ForbiddenState";
+import { LoadingState } from "@/components/state/LoadingState";
 
-type UserRole = "owner" | "admin" | "member" | "viewer";
-type UserPlan = "free" | "starter" | "pro" | "enterprise";
-type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled";
-type LoadState = "checking_session" | "loading" | "ready" | "empty" | "error";
-type MemoryType = "task" | "agent" | "workspace" | "user" | "security" | "verification" | "workflow";
-type MemorySensitivity = "standard" | "sensitive" | "restricted";
+type LoadState =
+  | "checking_session"
+  | "loading"
+  | "ready"
+  | "empty"
+  | "error"
+  | "forbidden";
 
-type ApiError = {
-  code: string;
-  message: string;
-  status_code?: number;
-  details?: Record<string, unknown>;
-};
+type MemoryType = "short" | "long" | "project" | "client";
+type MemorySensitivity = "public" | "internal" | "confidential" | "restricted";
+type MemorySource = "user" | "master_agent" | "memory_agent" | "system" | "api";
 
-type ApiResponse<T> = {
-  success: boolean;
-  data: T | null;
-  error: ApiError | null;
-};
-
-type SessionData = {
-  accessToken: string;
-  refreshToken?: string;
-  user_id: string;
-  workspace_id: string;
-  email: string;
-  name: string;
-  role: UserRole;
-  plan: UserPlan;
-  subscription_status: SubscriptionStatus;
-  permissions: string[];
-  workspace_name: string;
-  workspace_slug: string;
-  saved_at: string;
-};
-
+// Matches apps/api/routes/memory.py's MemoryRecord.visible_dict() exactly.
 type MemoryRecord = {
-  memory_id: string;
+  id: string;
   user_id: string;
   workspace_id: string;
-  title: string;
-  summary: string;
-  key: string;
-  type: MemoryType;
-  sensitivity: MemorySensitivity;
-  source_agent: string;
+  memory_type: MemoryType;
+  content: string;
+  title: string | null;
   tags: string[];
+  source: MemorySource;
+  sensitivity: MemorySensitivity;
+  project_id: string | null;
+  client_id: string | null;
+  metadata: Record<string, unknown>;
   created_at: string;
-  updated_at?: string | null;
-  last_used_at?: string | null;
+  updated_at: string;
+  deleted_at: string | null;
+  created_by: string | null;
+  updated_by: string | null;
 };
 
-type MemorySummary = {
-  totalRecords: number;
-  standardRecords: number;
-  sensitiveRecords: number;
-  restrictedRecords: number;
-  exportedRecords: number;
-  deletedThisMonth: number;
-  storageUsedMb: number;
-  storageLimitMb: number;
-  chart: {
-    labels: string[];
-    standard: number[];
-    sensitive: number[];
-  };
+// The real GET /memory/health/status response's `data` shape.
+type MemoryHealth = {
+  active_memory_count: number;
+  total_scoped_memory_count: number;
+  memory_limit: number;
 };
 
-type MemoryPageData = {
-  summary: MemorySummary;
+type BackendEnvelope<T> = {
+  ok: boolean;
+  message: string;
+  data: T;
+  verification?: Record<string, unknown>;
+  request_id?: string;
+};
+
+type MemorySearchEnvelope = {
+  ok: boolean;
+  message: string;
   records: MemoryRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  request_id?: string;
 };
 
-type MemoryActionResponse = {
-  memory_id?: string;
-  exported_file_url?: string;
-  deleted_count?: number;
-  audit?: {
-    event_id?: string;
-    action: "memory.delete" | "memory.export";
-  };
-  security?: {
-    routed_to_security_agent: boolean;
-    approved: boolean;
-    risk_level: "low" | "medium" | "high";
-  };
-  verification?: {
-    verification_id?: string;
-    status: "prepared" | "completed" | "pending";
-  };
+type ApiClientOptions = {
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  body?: unknown;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
-const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
-  owner: [
-    "dashboard:read",
-    "workspace:read",
-    "memory:read",
-    "memory:write",
-    "memory:delete",
-    "memory:export",
-    "security:approve",
-    "audit:read",
-  ],
-  admin: [
-    "dashboard:read",
-    "workspace:read",
-    "memory:read",
-    "memory:write",
-    "memory:delete",
-    "memory:export",
-    "audit:read",
-  ],
-  member: ["dashboard:read", "workspace:read", "memory:read", "memory:write"],
-  viewer: ["dashboard:read", "workspace:read", "memory:read"],
-};
-
-const PLAN_MEMORY_LIMIT_MB: Record<UserPlan, number> = {
-  free: 128,
-  starter: 1024,
-  pro: 10240,
-  enterprise: 102400,
-};
-
-const DEFAULT_SUMMARY: MemorySummary = {
-  totalRecords: 0,
-  standardRecords: 0,
-  sensitiveRecords: 0,
-  restrictedRecords: 0,
-  exportedRecords: 0,
-  deletedThisMonth: 0,
-  storageUsedMb: 0,
-  storageLimitMb: 0,
-  chart: {
-    labels: [],
-    standard: [],
-    sensitive: [],
-  },
-};
-
-const LOCAL_DEMO_MEMORIES: MemoryRecord[] = [
-  {
-    memory_id: "memory_master_flow",
-    user_id: "local_user",
-    workspace_id: "local_workspace",
-    title: "Master Agent Flow Rule",
-    summary:
-      "Every command must include user_id and workspace_id before planner, security, execution, and verification.",
-    key: "master.flow.required_context",
-    type: "agent",
-    sensitivity: "standard",
-    source_agent: "master_agent",
-    tags: ["routing", "workspace", "verification"],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    last_used_at: new Date().toISOString(),
-  },
-  {
-    memory_id: "memory_security_sensitive_actions",
-    user_id: "local_user",
-    workspace_id: "local_workspace",
-    title: "Sensitive Action Policy",
-    summary:
-      "Delete, export, billing, system, browser submit, and device actions require Security Agent approval.",
-    key: "security.sensitive_actions.policy",
-    type: "security",
-    sensitivity: "sensitive",
-    source_agent: "security_agent",
-    tags: ["security", "approval", "audit"],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    last_used_at: new Date().toISOString(),
-  },
-  {
-    memory_id: "memory_verification_payload",
-    user_id: "local_user",
-    workspace_id: "local_workspace",
-    title: "Verification Payload Format",
-    summary:
-      "Completed tasks should create a verification payload with task id, agent name, action, status, and evidence.",
-    key: "verification.payload.format",
-    type: "verification",
-    sensitivity: "standard",
-    source_agent: "verification_agent",
-    tags: ["verification", "completion", "evidence"],
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    last_used_at: null,
-  },
-];
-
-function createSafeError<T = never>(
-  code: string,
-  message: string,
-  statusCode = 400,
-  details: Record<string, unknown> = {},
-): ApiResponse<T> {
-  return {
-    success: false,
-    data: null,
-    error: {
-      code,
-      message,
-      status_code: statusCode,
-      details,
-    },
-  };
+function canWriteMemory(role: UserRole): boolean {
+  return hasMinRole(role, "user");
 }
 
-function readSession(): SessionData | null {
-  if (typeof window === "undefined") return null;
+function canDeleteMemory(role: UserRole): boolean {
+  return hasMinRole(role, "manager");
+}
 
-  const raw =
-    window.localStorage.getItem("william.session") ||
-    window.sessionStorage.getItem("william.session");
+function canExportMemory(role: UserRole): boolean {
+  return hasMinRole(role, "manager");
+}
 
-  if (!raw) return null;
+function canViewRestricted(role: UserRole): boolean {
+  return hasMinRole(role, "admin");
+}
 
-  try {
-    const session = JSON.parse(raw) as SessionData;
-
+function sanitizeError(error: unknown): string {
+  if (error instanceof Error && error.message) {
     if (
-      !session.accessToken ||
-      !session.user_id ||
-      !session.workspace_id ||
-      !session.role ||
-      !session.plan ||
-      !["active", "trialing"].includes(session.subscription_status)
+      /token|secret|password|key|authorization|credential/i.test(error.message)
     ) {
-      return null;
+      return "Request failed safely. Sensitive error details were hidden.";
     }
-
-    return session;
-  } catch {
-    return null;
+    return error.message;
   }
-}
-
-function clearSession(): void {
-  if (typeof window === "undefined") return;
-
-  window.localStorage.removeItem("william.session");
-  window.localStorage.removeItem("william.access_token");
-  window.localStorage.removeItem("william.refresh_token");
-  window.sessionStorage.removeItem("william.session");
-  window.sessionStorage.removeItem("william.access_token");
-  window.sessionStorage.removeItem("william.refresh_token");
-}
-
-function hasPermission(session: SessionData, permission: string): boolean {
-  const merged = new Set([
-    ...(ROLE_PERMISSIONS[session.role] || []),
-    ...(session.permissions || []),
-  ]);
-
-  return merged.has(permission);
-}
-
-function validateAccess(session: SessionData): ApiResponse<SessionData> {
-  if (!session.user_id || !session.workspace_id) {
-    return createSafeError(
-      "ISOLATION_CONTEXT_MISSING",
-      "Session is missing user_id or workspace_id.",
-      403,
-    );
-  }
-
-  if (!["active", "trialing"].includes(session.subscription_status)) {
-    return createSafeError(
-      "SUBSCRIPTION_INACTIVE",
-      "Your workspace subscription is not active.",
-      402,
-      { status: session.subscription_status },
-    );
-  }
-
-  if (!hasPermission(session, "memory:read")) {
-    return createSafeError(
-      "MEMORY_READ_DENIED",
-      "Your role cannot view workspace memory.",
-      403,
-      { role: session.role },
-    );
-  }
-
-  return {
-    success: true,
-    data: session,
-    error: null,
-  };
-}
-
-async function parseApiJson<T>(response: Response): Promise<ApiResponse<T>> {
-  try {
-    const json = (await response.json()) as ApiResponse<T>;
-
-    if (
-      typeof json === "object" &&
-      json !== null &&
-      typeof json.success === "boolean" &&
-      "data" in json &&
-      "error" in json
-    ) {
-      return json;
-    }
-
-    return createSafeError<T>(
-      "INVALID_API_RESPONSE",
-      "The API returned an invalid response shape.",
-      response.status,
-    );
-  } catch {
-    return createSafeError<T>(
-      "INVALID_JSON_RESPONSE",
-      "The API response could not be parsed.",
-      response.status,
-    );
-  }
+  return "Request failed safely. Please try again.";
 }
 
 async function apiRequest<T>(
-  endpoint: string,
-  session: SessionData,
-  options: RequestInit = {},
-): Promise<ApiResponse<T>> {
-  if (!API_BASE_URL) {
-    return createSafeError<T>(
-      "API_BASE_URL_MISSING",
-      "API is not connected. Set NEXT_PUBLIC_API_BASE_URL in your environment.",
-      503,
-      { required_env: "NEXT_PUBLIC_API_BASE_URL" },
-    );
-  }
-
-  const baseUrl = API_BASE_URL.replace(/\/$/, "");
-  const url = `${baseUrl}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
-
-  try {
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${session.accessToken}`,
-        "X-User-ID": session.user_id,
-        "X-Workspace-ID": session.workspace_id,
-        "X-Client-App": "william-dashboard",
-        "X-Audit-Enabled": "true",
-        ...(options.headers || {}),
-      },
-      credentials: "include",
-    });
-
-    const body = await parseApiJson<T>(response);
-
-    if (!response.ok) {
-      if (!body.success && body.error) return body;
-
-      return createSafeError<T>("HTTP_ERROR", "Request failed.", response.status);
-    }
-
-    return body;
-  } catch {
-    return createSafeError<T>(
-      "NETWORK_ERROR",
-      "Could not connect to the William API.",
-      503,
-    );
-  }
-}
-
-function buildLocalSummary(records: MemoryRecord[], session: SessionData): MemorySummary {
-  const storageLimitMb = PLAN_MEMORY_LIMIT_MB[session.plan];
-
-  return {
-    totalRecords: records.length,
-    standardRecords: records.filter((record) => record.sensitivity === "standard").length,
-    sensitiveRecords: records.filter((record) => record.sensitivity === "sensitive").length,
-    restrictedRecords: records.filter((record) => record.sensitivity === "restricted").length,
-    exportedRecords: 0,
-    deletedThisMonth: 0,
-    storageUsedMb: Math.max(1, Math.round(records.length * 0.7)),
-    storageLimitMb,
-    chart: {
-      labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-      standard: [4, 6, 5, 8, 7, 9, 6],
-      sensitive: [1, 2, 1, 3, 2, 2, 1],
-    },
+  path: string,
+  options: ApiClientOptions = {},
+): Promise<T> {
+  const activeSession = readSession();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
   };
+
+  if (activeSession?.accessToken) {
+    headers.Authorization = `Bearer ${activeSession.accessToken}`;
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: options.method || "GET",
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    credentials: "include",
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? await response.json()
+    : { ok: false, error: { message: "Server returned a non-JSON response." } };
+
+  if (!response.ok) {
+    throw new Error(
+      payload?.error?.message || payload?.message || "API request failed.",
+    );
+  }
+
+  return payload as T;
 }
 
-function formatNumber(value?: number): string {
-  return new Intl.NumberFormat("en-US").format(value || 0);
+async function loadMemoryRecords(filters: {
+  query: string;
+  memoryType: "all" | MemoryType;
+}): Promise<{ records: MemoryRecord[]; total: number }> {
+  const params = new URLSearchParams();
+  if (filters.query.trim()) params.set("query", filters.query.trim());
+  if (filters.memoryType !== "all")
+    params.set("memory_type", filters.memoryType);
+  params.set("limit", "100");
+
+  const response = await apiRequest<MemorySearchEnvelope>(
+    `/memory?${params.toString()}`,
+  );
+  if (!response.ok)
+    throw new Error(response.message || "Unable to load memory records.");
+  return { records: response.records, total: response.total };
+}
+
+async function loadMemoryHealth(): Promise<MemoryHealth> {
+  const response = await apiRequest<BackendEnvelope<MemoryHealth>>(
+    "/memory/health/status",
+  );
+  if (!response.ok)
+    throw new Error(response.message || "Unable to load memory status.");
+  return response.data;
+}
+
+async function deleteMemoryRecords(
+  memoryIds: string[],
+): Promise<{ deleted_ids: string[]; deleted_count: number }> {
+  const response = await apiRequest<
+    BackendEnvelope<{
+      deleted_ids: string[];
+      deleted_count: number;
+      hard_delete: boolean;
+    }>
+  >("/memory", {
+    method: "DELETE",
+    body: { memory_ids: memoryIds },
+  });
+
+  if (!response.ok)
+    throw new Error(response.message || "Memory records could not be deleted.");
+  return response.data;
+}
+
+// The real POST /memory/export only filters by memory_types/tags/project_id/
+// client_id -- there is no memory_ids field, so "export selected records"
+// isn't something the real backend supports. This exports every record
+// matching the current type filter instead of fabricating an ID-based
+// filter the API doesn't have.
+async function exportMemoryRecords(
+  memoryType: "all" | MemoryType,
+): Promise<{ records: MemoryRecord[]; count: number }> {
+  const response = await apiRequest<{
+    ok: boolean;
+    message: string;
+    count: number;
+    records: MemoryRecord[];
+  }>("/memory/export", {
+    method: "POST",
+    body: {
+      memory_types: memoryType === "all" ? [] : [memoryType],
+      export_format: "json",
+    },
+  });
+
+  if (!response.ok)
+    throw new Error(response.message || "Memory export could not be prepared.");
+  return { records: response.records, count: response.count };
+}
+
+function formatNumber(value?: number | null): string {
+  if (value === null || value === undefined) return "Not available";
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 function formatDate(value?: string | null): string {
@@ -414,23 +257,27 @@ function formatDate(value?: string | null): string {
   }
 }
 
+function formatLabel(value: string): string {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function getTypeIcon(type: MemoryType): string {
   const icons: Record<MemoryType, string> = {
-    task: "☷",
-    agent: "✦",
-    workspace: "▦",
-    user: "◎",
-    security: "▣",
-    verification: "✓",
-    workflow: "⌘",
+    short: "☷",
+    long: "▦",
+    project: "◎",
+    client: "✦",
   };
-
   return icons[type];
 }
 
 function getSensitivityStyle(sensitivity: MemorySensitivity): string {
-  if (sensitivity === "standard") return "bg-emerald-50 text-emerald-700";
-  if (sensitivity === "sensitive") return "bg-orange-50 text-orange-700";
+  if (sensitivity === "public") return "bg-emerald-50 text-emerald-700";
+  if (sensitivity === "internal") return "bg-blue-50 text-blue-700";
+  if (sensitivity === "confidential") return "bg-orange-50 text-orange-700";
   return "bg-red-50 text-red-700";
 }
 
@@ -468,7 +315,9 @@ function StatCard({
         <span
           className={[
             "grid h-9 w-9 place-items-center rounded-full text-sm",
-            highlight ? "bg-white/15 text-white" : "bg-neutral-100 text-neutral-500",
+            highlight
+              ? "bg-white/15 text-white"
+              : "bg-neutral-100 text-neutral-500",
           ].join(" ")}
         >
           {icon}
@@ -487,63 +336,50 @@ function StatCard({
   );
 }
 
-function LoadingPanel() {
-  return (
-    <div className="grid min-h-[420px] place-items-center rounded-[2rem] bg-white shadow-sm">
-      <div className="text-center">
-        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-neutral-200 border-t-[#ff5a3d]" />
-        <p className="mt-4 text-sm font-black text-neutral-950">Loading memory layer...</p>
-        <p className="mt-1 text-xs font-medium text-neutral-500">
-          Reading isolated workspace memory records.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function ErrorPanel({
-  message,
-  onRetry,
+function DistributionCard({
+  title,
+  subtitle,
+  entries,
 }: {
-  message: string;
-  onRetry: () => void;
+  title: string;
+  subtitle: string;
+  entries: { label: string; count: number }[];
 }) {
-  return (
-    <div className="grid min-h-[420px] place-items-center rounded-[2rem] border border-red-100 bg-red-50 p-8 text-center">
-      <div>
-        <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-white text-2xl shadow-sm">
-          !
-        </div>
-        <h2 className="mt-5 text-2xl font-black tracking-[-0.04em] text-red-900">
-          Memory could not load
-        </h2>
-        <p className="mt-2 max-w-md text-sm font-medium text-red-700">{message}</p>
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-6 rounded-2xl bg-red-600 px-5 py-3 text-sm font-black text-white transition hover:bg-red-700"
-        >
-          Retry
-        </button>
-      </div>
-    </div>
-  );
-}
+  const max = Math.max(...entries.map((entry) => entry.count), 1);
 
-function EmptyPanel() {
   return (
-    <div className="grid min-h-[320px] place-items-center rounded-[1.6rem] border border-dashed border-neutral-200 bg-white p-8 text-center">
-      <div>
-        <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-neutral-100 text-xl">
-          ∅
-        </div>
-        <h3 className="mt-4 text-xl font-black tracking-[-0.03em] text-neutral-950">
-          No memory records found
-        </h3>
-        <p className="mt-2 max-w-md text-sm font-medium text-neutral-500">
-          Once agents complete useful work, Memory Agent will store isolated workspace context here.
-        </p>
+    <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
+      <div className="mb-5">
+        <p className="text-base font-black text-neutral-950">{title}</p>
+        <p className="text-xs font-medium text-neutral-500">{subtitle}</p>
       </div>
+
+      {entries.every((entry) => entry.count === 0) ? (
+        <EmptyState
+          variant="light"
+          title="No memory records found"
+          message="Once agents complete useful work, Memory Agent will store isolated workspace context here."
+        />
+      ) : (
+        <div className="space-y-3">
+          {entries.map((entry) => (
+            <div key={entry.label}>
+              <div className="mb-1 flex items-center justify-between text-xs font-bold text-neutral-500">
+                <span>{entry.label}</span>
+                <span>{entry.count}</span>
+              </div>
+              <div className="h-2.5 overflow-hidden rounded-full bg-neutral-100">
+                <div
+                  className="h-full rounded-full bg-[#ff5a3d]"
+                  style={{
+                    width: `${Math.max(4, (entry.count / max) * 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -552,148 +388,117 @@ export default function Page() {
   const router = useRouter();
 
   const [session, setSession] = useState<SessionData | null>(null);
-  const [summary, setSummary] = useState<MemorySummary>(DEFAULT_SUMMARY);
+  const [health, setHealth] = useState<MemoryHealth | null>(null);
   const [records, setRecords] = useState<MemoryRecord[]>([]);
+  const [total, setTotal] = useState(0);
   const [selectedMemoryIds, setSelectedMemoryIds] = useState<string[]>([]);
   const [state, setState] = useState<LoadState>("checking_session");
   const [errorMessage, setErrorMessage] = useState("");
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | MemoryType>("all");
-  const [sensitivityFilter, setSensitivityFilter] = useState<"all" | MemorySensitivity>("all");
-  const [busyAction, setBusyAction] = useState<"delete" | "export" | null>(null);
+  const [sensitivityFilter, setSensitivityFilter] = useState<
+    "all" | MemorySensitivity
+  >("all");
+  const [busyAction, setBusyAction] = useState<"delete" | "export" | null>(
+    null,
+  );
   const [notice, setNotice] = useState<{
     type: "success" | "error" | "info";
     message: string;
   } | null>(null);
 
-  const canDeleteMemory = useMemo(() => {
-    if (!session) return false;
-    return hasPermission(session, "memory:delete");
-  }, [session]);
-
-  const canExportMemory = useMemo(() => {
-    if (!session) return false;
-    return hasPermission(session, "memory:export");
-  }, [session]);
-
-  const canApproveSecurity = useMemo(() => {
-    if (!session) return false;
-    return hasPermission(session, "security:approve");
-  }, [session]);
+  const canDelete = useMemo(
+    () => (session ? canDeleteMemory(session.role) : false),
+    [session],
+  );
+  const canExport = useMemo(
+    () => (session ? canExportMemory(session.role) : false),
+    [session],
+  );
+  const canViewRestrictedRecords = useMemo(
+    () => (session ? canViewRestricted(session.role) : false),
+    [session],
+  );
 
   const filteredRecords = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
 
     return records.filter((record) => {
-      const sameWorkspace =
-        !session ||
-        (record.user_id === session.user_id && record.workspace_id === session.workspace_id);
-
-      const matchesSearch =
-        !normalizedSearch ||
-        record.title.toLowerCase().includes(normalizedSearch) ||
-        record.summary.toLowerCase().includes(normalizedSearch) ||
-        record.key.toLowerCase().includes(normalizedSearch) ||
-        record.source_agent.toLowerCase().includes(normalizedSearch) ||
-        record.tags.some((tag) => tag.toLowerCase().includes(normalizedSearch));
-
-      const matchesType = typeFilter === "all" || record.type === typeFilter;
       const matchesSensitivity =
         sensitivityFilter === "all" || record.sensitivity === sensitivityFilter;
+      const matchesSearch =
+        !normalizedSearch ||
+        (record.title || "").toLowerCase().includes(normalizedSearch) ||
+        record.content.toLowerCase().includes(normalizedSearch) ||
+        record.tags.some((tag) => tag.toLowerCase().includes(normalizedSearch));
+      const visibleRestricted =
+        record.sensitivity !== "restricted" || canViewRestrictedRecords;
 
-      return sameWorkspace && matchesSearch && matchesType && matchesSensitivity;
+      return matchesSensitivity && matchesSearch && visibleRestricted;
     });
-  }, [records, search, session, sensitivityFilter, typeFilter]);
+  }, [records, search, sensitivityFilter, canViewRestrictedRecords]);
 
-  const selectedRecords = useMemo(() => {
-    const selected = new Set(selectedMemoryIds);
-    return records.filter((record) => selected.has(record.memory_id));
-  }, [records, selectedMemoryIds]);
+  const sensitivityBreakdown = useMemo(() => {
+    const buckets: Record<MemorySensitivity, number> = {
+      public: 0,
+      internal: 0,
+      confidential: 0,
+      restricted: 0,
+    };
+    records.forEach((record) => {
+      buckets[record.sensitivity] += 1;
+    });
+    return buckets;
+  }, [records]);
 
-  const selectedHasSensitive = selectedRecords.some(
-    (record) => record.sensitivity === "sensitive" || record.sensitivity === "restricted",
-  );
+  const typeBreakdown = useMemo(() => {
+    const buckets: Record<MemoryType, number> = {
+      short: 0,
+      long: 0,
+      project: 0,
+      client: 0,
+    };
+    records.forEach((record) => {
+      buckets[record.memory_type] += 1;
+    });
+    return buckets;
+  }, [records]);
 
-  const storagePercent = useMemo(() => {
-    if (!summary.storageLimitMb) return 0;
-    return Math.min(100, Math.round((summary.storageUsedMb / summary.storageLimitMb) * 100));
-  }, [summary.storageLimitMb, summary.storageUsedMb]);
-
-  const chartMax = useMemo(() => {
-    return Math.max(...summary.chart.standard, ...summary.chart.sensitive, 1);
-  }, [summary.chart.sensitive, summary.chart.standard]);
+  const recordLimitPercent = useMemo(() => {
+    if (!health || !health.memory_limit) return 0;
+    return Math.min(
+      100,
+      Math.round((health.active_memory_count / health.memory_limit) * 100),
+    );
+  }, [health]);
 
   const loadMemory = useCallback(
-    async (activeSession: SessionData) => {
+    async (
+      activeSession: SessionData,
+      currentQuery: string,
+      currentType: "all" | MemoryType,
+    ) => {
       setState("loading");
       setErrorMessage("");
 
-      const access = validateAccess(activeSession);
+      try {
+        const [{ records: loadedRecords, total: loadedTotal }, loadedHealth] =
+          await Promise.all([
+            loadMemoryRecords({ query: currentQuery, memoryType: currentType }),
+            loadMemoryHealth(),
+          ]);
 
-      if (!access.success) {
-        clearSession();
-        router.replace("/login");
-        return;
-      }
-
-      const response = await apiRequest<MemoryPageData>(
-        `/memory?user_id=${encodeURIComponent(activeSession.user_id)}&workspace_id=${encodeURIComponent(
-          activeSession.workspace_id,
-        )}`,
-        activeSession,
-        {
-          method: "GET",
-          headers: {
-            "X-Action": "memory.read",
-          },
-        },
-      );
-
-      if (!response.success) {
-        if (response.error?.code === "API_BASE_URL_MISSING") {
-          const localRecords = LOCAL_DEMO_MEMORIES.map((record) => ({
-            ...record,
-            user_id: activeSession.user_id,
-            workspace_id: activeSession.workspace_id,
-          }));
-
-          setRecords(localRecords);
-          setSummary(buildLocalSummary(localRecords, activeSession));
-          setState("ready");
-          setNotice({
-            type: "info",
-            message:
-              "API is not connected yet, so this page is showing local Memory Agent structure. Connect NEXT_PUBLIC_API_BASE_URL for live database memory records.",
-          });
-          return;
-        }
-
+        setRecords(loadedRecords);
+        setTotal(loadedTotal);
+        setHealth(loadedHealth);
+        setSelectedMemoryIds([]);
+        setState(loadedRecords.length > 0 ? "ready" : "empty");
+      } catch (error) {
         setState("error");
-        setErrorMessage(response.error?.message || "Could not load memory records.");
-        return;
+        setErrorMessage(sanitizeError(error));
       }
-
-      const data = response.data || {
-        summary: DEFAULT_SUMMARY,
-        records: [],
-      };
-
-      const safeRecords = data.records.filter(
-        (record) =>
-          record.user_id === activeSession.user_id &&
-          record.workspace_id === activeSession.workspace_id,
-      );
-
-      setSummary({
-        ...data.summary,
-        storageLimitMb:
-          data.summary.storageLimitMb || PLAN_MEMORY_LIMIT_MB[activeSession.plan],
-      });
-      setRecords(safeRecords);
-      setSelectedMemoryIds([]);
-      setState(safeRecords.length > 0 ? "ready" : "empty");
     },
-    [router],
+    [],
   );
 
   useEffect(() => {
@@ -704,9 +509,22 @@ export default function Page() {
       return;
     }
 
+    if (!hasPermission(activeSession, "memory:read")) {
+      setSession(activeSession);
+      setState("forbidden");
+      return;
+    }
+
     setSession(activeSession);
-    void loadMemory(activeSession);
+    void loadMemory(activeSession, search, typeFilter);
+    // Only re-run on mount -- search/typeFilter changes are applied via the
+    // explicit "Apply Filters" action below, not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadMemory, router]);
+
+  function applyFilters() {
+    if (session) void loadMemory(session, search, typeFilter);
+  }
 
   function toggleSelected(memoryId: string) {
     setSelectedMemoryIds((current) =>
@@ -717,15 +535,21 @@ export default function Page() {
   }
 
   function toggleSelectAllVisible() {
-    const visibleIds = filteredRecords.map((record) => record.memory_id);
-    const allVisibleSelected = visibleIds.every((id) => selectedMemoryIds.includes(id));
+    const visibleIds = filteredRecords.map((record) => record.id);
+    const allVisibleSelected = visibleIds.every((id) =>
+      selectedMemoryIds.includes(id),
+    );
 
     if (allVisibleSelected) {
-      setSelectedMemoryIds((current) => current.filter((id) => !visibleIds.includes(id)));
+      setSelectedMemoryIds((current) =>
+        current.filter((id) => !visibleIds.includes(id)),
+      );
       return;
     }
 
-    setSelectedMemoryIds((current) => Array.from(new Set([...current, ...visibleIds])));
+    setSelectedMemoryIds((current) =>
+      Array.from(new Set([...current, ...visibleIds])),
+    );
   }
 
   async function handleDeleteSelected() {
@@ -734,7 +558,7 @@ export default function Page() {
       return;
     }
 
-    if (!canDeleteMemory) {
+    if (!canDelete) {
       setNotice({
         type: "error",
         message: "Your role cannot delete memory records.",
@@ -750,88 +574,34 @@ export default function Page() {
       return;
     }
 
-    if (selectedHasSensitive && !canApproveSecurity) {
-      setNotice({
-        type: "error",
-        message:
-          "Deleting sensitive/restricted memory requires Security Agent approval permission.",
-      });
-      return;
-    }
-
     setBusyAction("delete");
     setNotice(null);
 
-    const response = await apiRequest<MemoryActionResponse>("/memory/delete", session, {
-      method: "POST",
-      headers: {
-        "X-Action": "memory.delete",
-        "X-Sensitive-Action": selectedHasSensitive ? "true" : "false",
-      },
-      body: JSON.stringify({
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
-        memory_ids: selectedMemoryIds,
-        route: {
-          master_agent: true,
-          security_agent: selectedHasSensitive,
-          memory_agent: true,
-          verification_agent: true,
-        },
-        clientContext: {
-          app: "william-dashboard",
-          module: "memory.manager",
-          action: "memory.delete",
-          requiresAudit: true,
-          requiresSecurityRoute: selectedHasSensitive,
-          memoryCompatible: true,
-          verificationCompatible: true,
-        },
-      }),
-    });
-
-    if (!response.success || !response.data) {
-      if (response.error?.code === "API_BASE_URL_MISSING") {
-        setRecords((current) =>
-          current.filter((record) => !selectedMemoryIds.includes(record.memory_id)),
-        );
-        setSelectedMemoryIds([]);
-        setNotice({
-          type: "info",
-          message:
-            "Local memory records removed from UI. Connect the API to delete from the database.",
-        });
-        setBusyAction(null);
-        return;
-      }
-
+    try {
+      const result = await deleteMemoryRecords(selectedMemoryIds);
+      setRecords((current) =>
+        current.filter((record) => !result.deleted_ids.includes(record.id)),
+      );
+      setTotal((current) => Math.max(0, current - result.deleted_count));
+      setSelectedMemoryIds([]);
       setNotice({
-        type: "error",
-        message: response.error?.message || "Memory records could not be deleted.",
+        type: "success",
+        message: `${result.deleted_count} memory record(s) deleted. Security route, audit log, and verification payload were prepared server-side.`,
       });
+    } catch (error) {
+      setNotice({ type: "error", message: sanitizeError(error) });
+    } finally {
       setBusyAction(null);
-      return;
     }
-
-    setRecords((current) =>
-      current.filter((record) => !selectedMemoryIds.includes(record.memory_id)),
-    );
-    setSelectedMemoryIds([]);
-    setNotice({
-      type: "success",
-      message:
-        "Memory records deleted. Security route, audit log, and verification payload were prepared.",
-    });
-    setBusyAction(null);
   }
 
-  async function handleExportSelected() {
+  async function handleExport() {
     if (!session) {
       router.replace("/login");
       return;
     }
 
-    if (!canExportMemory) {
+    if (!canExport) {
       setNotice({
         type: "error",
         message: "Your role cannot export memory records.",
@@ -839,117 +609,44 @@ export default function Page() {
       return;
     }
 
-    const exportIds =
-      selectedMemoryIds.length > 0
-        ? selectedMemoryIds
-        : filteredRecords.map((record) => record.memory_id);
-
-    if (exportIds.length === 0) {
-      setNotice({
-        type: "error",
-        message: "No memory records available to export.",
-      });
-      return;
-    }
-
-    const exportRecords = records.filter((record) => exportIds.includes(record.memory_id));
-    const exportHasSensitive = exportRecords.some(
-      (record) => record.sensitivity === "sensitive" || record.sensitivity === "restricted",
-    );
-
-    if (exportHasSensitive && !canApproveSecurity) {
-      setNotice({
-        type: "error",
-        message:
-          "Exporting sensitive/restricted memory requires Security Agent approval permission.",
-      });
-      return;
-    }
-
     setBusyAction("export");
     setNotice(null);
 
-    const response = await apiRequest<MemoryActionResponse>("/memory/export", session, {
-      method: "POST",
-      headers: {
-        "X-Action": "memory.export",
-        "X-Sensitive-Action": exportHasSensitive ? "true" : "false",
-      },
-      body: JSON.stringify({
-        user_id: session.user_id,
-        workspace_id: session.workspace_id,
-        memory_ids: exportIds,
-        format: "json",
-        route: {
-          master_agent: true,
-          security_agent: exportHasSensitive,
-          memory_agent: true,
-          verification_agent: true,
-        },
-        clientContext: {
-          app: "william-dashboard",
-          module: "memory.manager",
-          action: "memory.export",
-          requiresAudit: true,
-          requiresSecurityRoute: exportHasSensitive,
-          memoryCompatible: true,
-          verificationCompatible: true,
-        },
-      }),
-    });
+    try {
+      const result = await exportMemoryRecords(typeFilter);
 
-    if (!response.success || !response.data) {
-      if (response.error?.code === "API_BASE_URL_MISSING") {
-        const blob = new Blob(
-          [
-            JSON.stringify(
-              {
-                user_id: session.user_id,
-                workspace_id: session.workspace_id,
-                exported_at: new Date().toISOString(),
-                records: exportRecords,
-              },
-              null,
-              2,
-            ),
-          ],
-          { type: "application/json" },
-        );
+      const blob = new Blob(
+        [
+          JSON.stringify(
+            {
+              workspace_id: session.workspace_id,
+              exported_at: new Date().toISOString(),
+              count: result.count,
+              records: result.records,
+            },
+            null,
+            2,
+          ),
+        ],
+        { type: "application/json" },
+      );
 
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = `william-memory-${session.workspace_slug}.json`;
-        anchor.click();
-        URL.revokeObjectURL(url);
-
-        setNotice({
-          type: "info",
-          message:
-            "Local JSON export created. Connect the API for database-backed export with audit and verification.",
-        });
-        setBusyAction(null);
-        return;
-      }
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `william-memory-${session.workspace_slug}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
 
       setNotice({
-        type: "error",
-        message: response.error?.message || "Memory export could not be prepared.",
+        type: "success",
+        message: `Exported ${result.count} memory record(s). Security route, audit log, and verification payload were prepared server-side.`,
       });
+    } catch (error) {
+      setNotice({ type: "error", message: sanitizeError(error) });
+    } finally {
       setBusyAction(null);
-      return;
     }
-
-    if (response.data.exported_file_url) {
-      window.open(response.data.exported_file_url, "_blank", "noopener,noreferrer");
-    }
-
-    setNotice({
-      type: "success",
-      message:
-        "Memory export prepared. Security route, audit log, and verification payload are ready.",
-    });
-    setBusyAction(null);
   }
 
   function handleLogout() {
@@ -960,408 +657,404 @@ export default function Page() {
   if (state === "checking_session" || !session) {
     return (
       <div className="grid min-h-[420px] place-items-center text-neutral-950">
-        <div className="rounded-[2rem] bg-white px-8 py-7 text-center shadow-2xl shadow-black/10">
-          <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-neutral-200 border-t-[#ff5a3d]" />
-          <p className="mt-4 text-sm font-black">Checking memory access...</p>
-          <p className="mt-1 text-xs font-medium text-neutral-500">
-            Validating user_id and workspace_id.
-          </p>
-        </div>
+        <LoadingState
+          variant="light"
+          title="Checking memory access..."
+          subtitle="Validating user_id and workspace_id."
+        />
+      </div>
+    );
+  }
+
+  if (state === "forbidden") {
+    return (
+      <div className="text-neutral-950">
+        <ForbiddenState
+          variant="light"
+          message="Your role cannot view workspace memory."
+        />
       </div>
     );
   }
 
   return (
     <div className="text-neutral-950">
-        <section className="flex min-w-0 flex-1 flex-col px-0">
-          <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h1 className="text-4xl font-black tracking-[-0.055em] text-neutral-950 lg:text-5xl">
-                Memory Manager
-              </h1>
-              <p className="mt-2 text-sm font-medium text-neutral-500">
-                Search, export, and delete workspace-safe memory records without leaking user context.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="relative w-full max-w-md">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400">
-                  ⌕
-                </span>
-                <input
-                  type="search"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search memory, agents, tags, keys..."
-                  className="h-12 w-full rounded-full border border-neutral-200 bg-white px-11 text-sm font-semibold outline-none transition placeholder:text-neutral-400 focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
-                />
-              </div>
-              <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
-                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-neutral-400">
-                  Workspace
-                </p>
-                <p className="mt-1 text-sm font-black text-neutral-950">
-                  {session.workspace_name}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="rounded-2xl bg-white px-4 py-3 text-xs font-black text-neutral-500 shadow-sm transition hover:text-[#ff5a3d]"
-                aria-label="Logout"
-              >
-                ↩ Logout
-              </button>
-            </div>
+      <section className="flex min-w-0 flex-1 flex-col px-0">
+        <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h1 className="text-4xl font-black tracking-[-0.055em] text-neutral-950 lg:text-5xl">
+              Memory Manager
+            </h1>
+            <p className="mt-2 text-sm font-medium text-neutral-500">
+              Search, export, and delete workspace-safe memory records without
+              leaking user context.
+            </p>
           </div>
 
-          {notice ? (
-            <div
-              className={[
-                "mb-5 rounded-2xl px-4 py-3 text-sm font-bold",
-                notice.type === "success"
-                  ? "border border-emerald-100 bg-emerald-50 text-emerald-700"
-                  : notice.type === "error"
-                    ? "border border-red-100 bg-red-50 text-red-700"
-                    : "border border-amber-100 bg-amber-50 text-amber-800",
-              ].join(" ")}
-            >
-              {notice.message}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative w-full max-w-md">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400">
+                ⌕
+              </span>
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") applyFilters();
+                }}
+                placeholder="Search memory content, titles, tags..."
+                className="h-12 w-full rounded-full border border-neutral-200 bg-white px-11 text-sm font-semibold outline-none transition placeholder:text-neutral-400 focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
+              />
             </div>
-          ) : null}
+            <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
+              <p className="text-[11px] font-black uppercase tracking-[0.18em] text-neutral-400">
+                Workspace
+              </p>
+              <p className="mt-1 text-sm font-black text-neutral-950">
+                {session.workspace_name}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-2xl bg-white px-4 py-3 text-xs font-black text-neutral-500 shadow-sm transition hover:text-[#ff5a3d]"
+              aria-label="Logout"
+            >
+              ↩ Logout
+            </button>
+          </div>
+        </div>
 
-          {state === "loading" ? (
-            <LoadingPanel />
-          ) : state === "error" ? (
-            <ErrorPanel
-              message={errorMessage}
-              onRetry={() => {
-                if (session) void loadMemory(session);
-              }}
-            />
-          ) : (
-            <div className="space-y-5">
-              <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-                <StatCard
-                  title="Total Memory"
-                  value={formatNumber(summary.totalRecords)}
-                  subtitle="Workspace-scoped"
-                  icon="◌"
-                  highlight
-                />
-                <StatCard
-                  title="Standard"
-                  value={formatNumber(summary.standardRecords)}
-                  subtitle="Low risk"
-                  icon="✓"
-                />
-                <StatCard
-                  title="Sensitive"
-                  value={formatNumber(summary.sensitiveRecords)}
-                  subtitle="Security routed"
-                  icon="▣"
-                />
-                <StatCard
-                  title="Restricted"
-                  value={formatNumber(summary.restrictedRecords)}
-                  subtitle="Approval required"
-                  icon="!"
-                />
-                <StatCard
-                  title="Exports"
-                  value={formatNumber(summary.exportedRecords)}
-                  subtitle="Audit tracked"
-                  icon="↥"
-                />
-                <StatCard
-                  title="Deleted"
-                  value={formatNumber(summary.deletedThisMonth)}
-                  subtitle="This month"
-                  icon="×"
-                />
-              </section>
+        {notice ? (
+          <div
+            className={[
+              "mb-5 rounded-2xl px-4 py-3 text-sm font-bold",
+              notice.type === "success"
+                ? "border border-emerald-100 bg-emerald-50 text-emerald-700"
+                : notice.type === "error"
+                  ? "border border-red-100 bg-red-50 text-red-700"
+                  : "border border-amber-100 bg-amber-50 text-amber-800",
+            ].join(" ")}
+          >
+            {notice.message}
+          </div>
+        ) : null}
 
-              <section className="grid gap-5 xl:grid-cols-[0.75fr_1.25fr]">
-                <div className="space-y-5">
-                  <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
-                    <div className="mb-5 flex items-center justify-between">
-                      <div>
-                        <p className="text-base font-black text-neutral-950">Storage Usage</p>
-                        <p className="text-xs font-medium text-neutral-500">
-                          Plan-based memory capacity.
-                        </p>
-                      </div>
-                      <span className="rounded-full bg-[#fff3ed] px-3 py-1 text-xs font-black text-[#ff5a3d]">
-                        {session.plan}
-                      </span>
-                    </div>
+        {state === "loading" ? (
+          <LoadingState
+            variant="light"
+            title="Loading memory layer..."
+            subtitle="Reading isolated workspace memory records."
+          />
+        ) : state === "error" ? (
+          <ErrorState
+            variant="light"
+            title="Memory could not load"
+            message={errorMessage}
+            onRetry={() => {
+              if (session) void loadMemory(session, search, typeFilter);
+            }}
+          />
+        ) : (
+          <div className="space-y-5">
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <StatCard
+                title="Total Memory"
+                value={formatNumber(total)}
+                subtitle="Workspace-scoped"
+                icon="◌"
+                highlight
+              />
+              <StatCard
+                title="Public / Internal"
+                value={formatNumber(
+                  sensitivityBreakdown.public + sensitivityBreakdown.internal,
+                )}
+                subtitle="Standard visibility"
+                icon="✓"
+              />
+              <StatCard
+                title="Confidential"
+                value={formatNumber(sensitivityBreakdown.confidential)}
+                subtitle="Security routed"
+                icon="▣"
+              />
+              <StatCard
+                title="Restricted"
+                value={formatNumber(sensitivityBreakdown.restricted)}
+                subtitle="Owner/Admin only"
+                icon="!"
+              />
+            </section>
 
-                    <div className="h-3 overflow-hidden rounded-full bg-neutral-100">
-                      <div
-                        className="h-full rounded-full bg-[#ff5a3d]"
-                        style={{ width: `${storagePercent}%` }}
-                      />
-                    </div>
-
-                    <div className="mt-3 flex items-center justify-between text-xs font-bold text-neutral-500">
-                      <span>{summary.storageUsedMb} MB used</span>
-                      <span>{summary.storageLimitMb} MB limit</span>
-                    </div>
-                  </div>
-
-                  <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
-                    <div className="mb-5">
+            <section className="grid gap-5 xl:grid-cols-[0.75fr_1.25fr]">
+              <div className="space-y-5">
+                <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
+                  <div className="mb-5 flex items-center justify-between">
+                    <div>
                       <p className="text-base font-black text-neutral-950">
-                        Memory Activity
+                        Plan Capacity
                       </p>
                       <p className="text-xs font-medium text-neutral-500">
-                        Standard vs sensitive records.
+                        Active records against your plan&apos;s record limit.
                       </p>
                     </div>
-
-                    {summary.chart.labels.length === 0 ? (
-                      <EmptyPanel />
-                    ) : (
-                      <div className="flex h-56 items-end gap-4 rounded-2xl bg-neutral-50 px-5 py-4">
-                        {summary.chart.labels.map((label, index) => {
-                          const standard = summary.chart.standard[index] || 0;
-                          const sensitive = summary.chart.sensitive[index] || 0;
-
-                          return (
-                            <div
-                              key={`${label}-${index}`}
-                              className="flex flex-1 flex-col items-center justify-end gap-2"
-                            >
-                              <div className="flex h-40 items-end gap-1">
-                                <div
-                                  className="w-5 rounded-t-xl bg-[#ff5a3d]"
-                                  style={{
-                                    height: `${Math.max(8, (standard / chartMax) * 100)}%`,
-                                  }}
-                                  title={`Standard: ${standard}`}
-                                />
-                                <div
-                                  className="w-5 rounded-t-xl bg-neutral-950"
-                                  style={{
-                                    height: `${Math.max(8, (sensitive / chartMax) * 100)}%`,
-                                  }}
-                                  title={`Sensitive: ${sensitive}`}
-                                />
-                              </div>
-                              <span className="text-[11px] font-black text-neutral-400">
-                                {label}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                    <span className="rounded-full bg-[#fff3ed] px-3 py-1 text-xs font-black text-[#ff5a3d]">
+                      {session.plan}
+                    </span>
                   </div>
 
-                  <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
-                    <p className="text-base font-black text-neutral-950">Filters</p>
+                  <div className="h-3 overflow-hidden rounded-full bg-neutral-100">
+                    <div
+                      className="h-full rounded-full bg-[#ff5a3d]"
+                      style={{ width: `${recordLimitPercent}%` }}
+                    />
+                  </div>
 
-                    <div className="mt-5 space-y-4">
-                      <div>
-                        <label className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-neutral-400">
-                          Type
-                        </label>
-                        <select
-                          value={typeFilter}
-                          onChange={(event) =>
-                            setTypeFilter(event.target.value as "all" | MemoryType)
-                          }
-                          className="h-12 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-4 text-sm font-bold outline-none focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
-                        >
-                          <option value="all">All Types</option>
-                          <option value="task">Task</option>
-                          <option value="agent">Agent</option>
-                          <option value="workspace">Workspace</option>
-                          <option value="user">User</option>
-                          <option value="security">Security</option>
-                          <option value="verification">Verification</option>
-                          <option value="workflow">Workflow</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-neutral-400">
-                          Sensitivity
-                        </label>
-                        <select
-                          value={sensitivityFilter}
-                          onChange={(event) =>
-                            setSensitivityFilter(
-                              event.target.value as "all" | MemorySensitivity,
-                            )
-                          }
-                          className="h-12 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-4 text-sm font-bold outline-none focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
-                        >
-                          <option value="all">All Sensitivity</option>
-                          <option value="standard">Standard</option>
-                          <option value="sensitive">Sensitive</option>
-                          <option value="restricted">Restricted</option>
-                        </select>
-                      </div>
-                    </div>
+                  <div className="mt-3 flex items-center justify-between text-xs font-bold text-neutral-500">
+                    <span>
+                      {formatNumber(health?.active_memory_count)} records used
+                    </span>
+                    <span>
+                      {formatNumber(health?.memory_limit)} record limit
+                    </span>
                   </div>
                 </div>
+
+                <DistributionCard
+                  title="Memory by Type"
+                  subtitle="short / long / project / client"
+                  entries={(Object.keys(typeBreakdown) as MemoryType[]).map(
+                    (type) => ({
+                      label: formatLabel(type),
+                      count: typeBreakdown[type],
+                    }),
+                  )}
+                />
 
                 <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
-                  <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <p className="text-base font-black text-neutral-950">
+                    Filters
+                  </p>
+
+                  <div className="mt-5 space-y-4">
                     <div>
-                      <p className="text-lg font-black tracking-[-0.03em] text-neutral-950">
-                        Memory Records
-                      </p>
-                      <p className="text-sm font-medium text-neutral-500">
-                        {selectedMemoryIds.length} selected · {filteredRecords.length} visible
-                      </p>
+                      <label className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-neutral-400">
+                        Type
+                      </label>
+                      <select
+                        value={typeFilter}
+                        onChange={(event) =>
+                          setTypeFilter(
+                            event.target.value as "all" | MemoryType,
+                          )
+                        }
+                        className="h-12 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-4 text-sm font-bold outline-none focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
+                      >
+                        <option value="all">All Types</option>
+                        <option value="short">Short</option>
+                        <option value="long">Long</option>
+                        <option value="project">Project</option>
+                        <option value="client">Client</option>
+                      </select>
                     </div>
 
-                    <div className="flex flex-wrap gap-3">
-                      <button
-                        type="button"
-                        onClick={toggleSelectAllVisible}
-                        disabled={filteredRecords.length === 0 || busyAction !== null}
-                        className="rounded-full border border-neutral-200 bg-white px-4 py-2 text-xs font-black text-neutral-700 transition hover:border-[#ff5a3d] hover:text-[#ff5a3d] disabled:cursor-not-allowed disabled:opacity-50"
+                    <div>
+                      <label className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-neutral-400">
+                        Sensitivity
+                      </label>
+                      <select
+                        value={sensitivityFilter}
+                        onChange={(event) =>
+                          setSensitivityFilter(
+                            event.target.value as "all" | MemorySensitivity,
+                          )
+                        }
+                        className="h-12 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-4 text-sm font-bold outline-none focus:border-[#ff5a3d] focus:ring-4 focus:ring-[#ff5a3d]/10"
                       >
-                        Select Visible
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleExportSelected()}
-                        disabled={!canExportMemory || busyAction !== null}
-                        className="rounded-full bg-neutral-950 px-4 py-2 text-xs font-black text-white transition hover:bg-[#ff5a3d] disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {busyAction === "export" ? "Exporting..." : "Export"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteSelected()}
-                        disabled={!canDeleteMemory || selectedMemoryIds.length === 0 || busyAction !== null}
-                        className="rounded-full bg-red-600 px-4 py-2 text-xs font-black text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {busyAction === "delete" ? "Deleting..." : "Delete"}
-                      </button>
+                        <option value="all">All Sensitivity</option>
+                        <option value="public">Public</option>
+                        <option value="internal">Internal</option>
+                        <option value="confidential">Confidential</option>
+                        <option value="restricted">Restricted</option>
+                      </select>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={applyFilters}
+                      className="h-12 w-full rounded-2xl bg-neutral-950 text-sm font-black text-white transition hover:bg-[#ff5a3d]"
+                    >
+                      Apply Filters
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
+                <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-lg font-black tracking-[-0.03em] text-neutral-950">
+                      Memory Records
+                    </p>
+                    <p className="text-sm font-medium text-neutral-500">
+                      {selectedMemoryIds.length} selected ·{" "}
+                      {filteredRecords.length} visible
+                    </p>
                   </div>
 
-                  {state === "empty" || filteredRecords.length === 0 ? (
-                    <EmptyPanel />
-                  ) : (
-                    <div className="space-y-4">
-                      {filteredRecords.map((record) => {
-                        const isSelected = selectedMemoryIds.includes(record.memory_id);
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={toggleSelectAllVisible}
+                      disabled={
+                        filteredRecords.length === 0 || busyAction !== null
+                      }
+                      className="rounded-full border border-neutral-200 bg-white px-4 py-2 text-xs font-black text-neutral-700 transition hover:border-[#ff5a3d] hover:text-[#ff5a3d] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Select Visible
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleExport()}
+                      disabled={!canExport || busyAction !== null}
+                      className="rounded-full bg-neutral-950 px-4 py-2 text-xs font-black text-white transition hover:bg-[#ff5a3d] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyAction === "export"
+                        ? "Exporting..."
+                        : "Export (current filter)"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteSelected()}
+                      disabled={
+                        !canDelete ||
+                        selectedMemoryIds.length === 0 ||
+                        busyAction !== null
+                      }
+                      className="rounded-full bg-red-600 px-4 py-2 text-xs font-black text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyAction === "delete"
+                        ? "Deleting..."
+                        : "Delete Selected"}
+                    </button>
+                  </div>
+                </div>
 
-                        return (
-                          <article
-                            key={record.memory_id}
-                            className={[
-                              "rounded-[1.5rem] border p-4 transition",
-                              isSelected
-                                ? "border-[#ff5a3d]/40 bg-[#fff3ed]"
-                                : "border-neutral-100 bg-neutral-50 hover:bg-white",
-                            ].join(" ")}
-                          >
-                            <div className="mb-4 flex items-start justify-between gap-4">
-                              <div className="flex min-w-0 items-start gap-3">
-                                <button
-                                  type="button"
-                                  onClick={() => toggleSelected(record.memory_id)}
-                                  className={[
-                                    "mt-1 grid h-6 w-6 shrink-0 place-items-center rounded-lg border text-xs font-black transition",
-                                    isSelected
-                                      ? "border-[#ff5a3d] bg-[#ff5a3d] text-white"
-                                      : "border-neutral-300 bg-white text-transparent",
-                                  ].join(" ")}
-                                  aria-label={`Select ${record.title}`}
-                                >
-                                  ✓
-                                </button>
+                {state === "empty" || filteredRecords.length === 0 ? (
+                  <EmptyState
+                    variant="light"
+                    title="No memory records found"
+                    message="Once agents complete useful work, Memory Agent will store isolated workspace context here."
+                  />
+                ) : (
+                  <div className="space-y-4">
+                    {filteredRecords.map((record) => {
+                      const isSelected = selectedMemoryIds.includes(record.id);
 
-                                <div
-                                  className={[
-                                    "grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-lg font-black",
-                                    isSelected
-                                      ? "bg-[#ff5a3d] text-white shadow-lg shadow-[#ff5a3d]/25"
-                                      : "bg-white text-neutral-500",
-                                  ].join(" ")}
-                                >
-                                  {getTypeIcon(record.type)}
-                                </div>
-
-                                <div className="min-w-0">
-                                  <h2 className="truncate text-base font-black text-neutral-950">
-                                    {record.title}
-                                  </h2>
-                                  <p className="truncate text-xs font-bold text-neutral-400">
-                                    {record.key}
-                                  </p>
-                                </div>
-                              </div>
-
-                              <span
+                      return (
+                        <article
+                          key={record.id}
+                          className={[
+                            "rounded-[1.5rem] border p-4 transition",
+                            isSelected
+                              ? "border-[#ff5a3d]/40 bg-[#fff3ed]"
+                              : "border-neutral-100 bg-neutral-50 hover:bg-white",
+                          ].join(" ")}
+                        >
+                          <div className="mb-4 flex items-start justify-between gap-4">
+                            <div className="flex min-w-0 items-start gap-3">
+                              <button
+                                type="button"
+                                onClick={() => toggleSelected(record.id)}
                                 className={[
-                                  "rounded-full px-3 py-1 text-[11px] font-black capitalize",
-                                  getSensitivityStyle(record.sensitivity),
+                                  "mt-1 grid h-6 w-6 shrink-0 place-items-center rounded-lg border text-xs font-black transition",
+                                  isSelected
+                                    ? "border-[#ff5a3d] bg-[#ff5a3d] text-white"
+                                    : "border-neutral-300 bg-white text-transparent",
+                                ].join(" ")}
+                                aria-label={`Select ${record.title || record.id}`}
+                              >
+                                ✓
+                              </button>
+
+                              <div
+                                className={[
+                                  "grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-lg font-black",
+                                  isSelected
+                                    ? "bg-[#ff5a3d] text-white shadow-lg shadow-[#ff5a3d]/25"
+                                    : "bg-white text-neutral-500",
                                 ].join(" ")}
                               >
-                                {record.sensitivity}
-                              </span>
+                                {getTypeIcon(record.memory_type)}
+                              </div>
+
+                              <div className="min-w-0">
+                                <h2 className="truncate text-base font-black text-neutral-950">
+                                  {record.title || "Untitled memory"}
+                                </h2>
+                                <p className="truncate text-xs font-bold text-neutral-400">
+                                  {record.id}
+                                </p>
+                              </div>
                             </div>
 
-                            <p className="text-sm font-medium leading-6 text-neutral-500">
-                              {record.summary}
-                            </p>
+                            <span
+                              className={[
+                                "rounded-full px-3 py-1 text-[11px] font-black capitalize",
+                                getSensitivityStyle(record.sensitivity),
+                              ].join(" ")}
+                            >
+                              {record.sensitivity}
+                            </span>
+                          </div>
 
-                            <div className="mt-4 flex flex-wrap gap-2">
-                              <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-neutral-600">
-                                {record.source_agent}
-                              </span>
-                              <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-neutral-600 capitalize">
-                                {record.type}
-                              </span>
-                              {record.tags.map((tag) => (
-                                <span
-                                  key={`${record.memory_id}-${tag}`}
-                                  className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-neutral-500"
-                                >
-                                  #{tag}
-                                </span>
-                              ))}
-                            </div>
+                          <p className="line-clamp-3 text-sm font-medium leading-6 text-neutral-500">
+                            {record.content}
+                          </p>
 
-                            <div className="mt-4 grid gap-3 rounded-2xl bg-white p-3 text-xs font-medium text-neutral-500 sm:grid-cols-3">
-                              <span>
-                                Created:{" "}
-                                <strong className="text-neutral-800">
-                                  {formatDate(record.created_at)}
-                                </strong>
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-neutral-600">
+                              {formatLabel(record.source)}
+                            </span>
+                            <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black capitalize text-neutral-600">
+                              {record.memory_type}
+                            </span>
+                            {record.tags.map((tag) => (
+                              <span
+                                key={`${record.id}-${tag}`}
+                                className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-neutral-500"
+                              >
+                                #{tag}
                               </span>
-                              <span>
-                                Updated:{" "}
-                                <strong className="text-neutral-800">
-                                  {formatDate(record.updated_at)}
-                                </strong>
-                              </span>
-                              <span>
-                                Last used:{" "}
-                                <strong className="text-neutral-800">
-                                  {formatDate(record.last_used_at)}
-                                </strong>
-                              </span>
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </section>
-            </div>
-          )}
-        </section>
+                            ))}
+                          </div>
+
+                          <div className="mt-4 grid gap-3 rounded-2xl bg-white p-3 text-xs font-medium text-neutral-500 sm:grid-cols-2">
+                            <span>
+                              Created:{" "}
+                              <strong className="text-neutral-800">
+                                {formatDate(record.created_at)}
+                              </strong>
+                            </span>
+                            <span>
+                              Updated:{" "}
+                              <strong className="text-neutral-800">
+                                {formatDate(record.updated_at)}
+                              </strong>
+                            </span>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
