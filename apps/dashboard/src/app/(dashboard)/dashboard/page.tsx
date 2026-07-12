@@ -12,10 +12,23 @@ import { EmptyState } from "@/components/state/EmptyState";
 import { ErrorState } from "@/components/state/ErrorState";
 import { LoadingState } from "@/components/state/LoadingState";
 import { WilliamVoicePanel } from "@/components/voice/WilliamVoicePanel";
+import {
+  type SessionData,
+  readSession,
+  clearSession,
+  hasPermission,
+  canUseDashboard,
+} from "@/lib/auth";
 
-type UserRole = "owner" | "admin" | "member" | "viewer";
-type UserPlan = "free" | "starter" | "pro" | "enterprise";
-type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled";
+// Previously this file had its own local SessionData/UserRole/UserPlan/
+// readSession/hasPermission/canUseDashboard duplicating (and drifting from)
+// @/lib/auth.ts -- its local UserRole was missing 4 of the real backend's 8
+// roles (manager/developer/analyst/agent/user) and its UserPlan was missing
+// "business" (1 of 5 real plans). Any session with one of those real,
+// backend-issued values fell through this file's permission-map lookups to
+// an empty/undefined result, which could incorrectly bounce a legitimately
+// logged-in non-owner/admin/member/viewer user back to /login. Now uses the
+// same shared, already-correct module every other page uses.
 
 type ApiError = {
   code: string;
@@ -28,22 +41,6 @@ type ApiResponse<T> = {
   success: boolean;
   data: T | null;
   error: ApiError | null;
-};
-
-type SessionData = {
-  accessToken: string;
-  refreshToken?: string;
-  user_id: string;
-  workspace_id: string;
-  email: string;
-  name: string;
-  role: UserRole;
-  plan: UserPlan;
-  subscription_status: SubscriptionStatus;
-  permissions: string[];
-  workspace_name: string;
-  workspace_slug: string;
-  saved_at: string;
 };
 
 type DashboardSummary = {
@@ -115,6 +112,108 @@ type DashboardData = {
 
 type LoadState = "checking_session" | "loading" | "ready" | "empty" | "error";
 
+// Real response shapes (apps/api/main.py::dashboard_summary,
+// apps/api/routes/agents.py::list_agents, apps/api/routes/tasks.py::
+// list_tasks/TaskRecord) -- these bear no resemblance to the fabricated
+// DashboardSummary/AgentItem/TaskItem shapes above, which is why every
+// dashboard load previously either 404'd (wrong endpoint) or silently
+// rendered nothing (shape mismatch on a 200). Map real -> display shape
+// explicitly instead of assuming they match.
+type RawDashboardSummary = {
+  scope: { user_id: string; workspace_id: string; role: string; plan: string };
+  analytics: {
+    audit_events: number;
+    state_changing_requests: number;
+    agent_tasks: number;
+  };
+  recent_activity: Array<Record<string, unknown>>;
+};
+
+type RawAgentListEntry = {
+  agent: {
+    agent_name: string;
+    display_name: string;
+    description: string;
+    core_agent?: boolean;
+  };
+  workspace_config?: { enabled?: boolean } | null;
+  health?: { status?: string } | null;
+};
+
+type RawTaskRecord = {
+  task_id: string;
+  preferred_agent?: string | null;
+  action: string;
+  status: string;
+  created_at: string;
+  completed_at?: string | null;
+  // The real backend shape (apps/api/routes/tasks.py::TaskRecord.error) can
+  // be either a short string (e.g. MasterAgent's own step-aggregation
+  // failure "ONE_OR_MORE_STEPS_FAILED") or a structured {code, detail} dict
+  // from an individual agent result -- never assume just one shape.
+  error?: string | { code?: string; detail?: unknown; message?: string } | null;
+  result?: unknown;
+};
+
+function formatTaskError(error: RawTaskRecord["error"]): string {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  if (typeof error.message === "string" && error.message) return error.message;
+  if (typeof error.detail === "string" && error.detail) return error.detail;
+  if (error.code) return String(error.code);
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "";
+  }
+}
+
+function mapDashboardSummary(raw: RawDashboardSummary): DashboardSummary {
+  return {
+    ...EMPTY_SUMMARY,
+    metrics: {
+      ...EMPTY_SUMMARY.metrics,
+      completedTasks: raw.analytics.agent_tasks,
+      securityChecks: raw.analytics.state_changing_requests,
+    },
+  };
+}
+
+function mapAgentListEntry(raw: RawAgentListEntry): AgentItem {
+  const enabled = raw.workspace_config?.enabled ?? false;
+  const healthy = (raw.health?.status || "").toLowerCase() === "healthy";
+
+  return {
+    agent_id: raw.agent.agent_name,
+    key: raw.agent.agent_name,
+    name: raw.agent.display_name,
+    description: raw.agent.description,
+    status: !enabled ? "inactive" : healthy ? "active" : "pending",
+  };
+}
+
+function mapTaskRecord(raw: RawTaskRecord): TaskItem {
+  const knownStatuses = new Set([
+    "completed",
+    "pending",
+    "in_progress",
+    "failed",
+    "blocked",
+  ]);
+  const status = knownStatuses.has(raw.status)
+    ? (raw.status as TaskItem["status"])
+    : "pending";
+
+  return {
+    task_id: raw.task_id,
+    agent_name: raw.preferred_agent || "master",
+    action: raw.action,
+    status,
+    created_at: raw.created_at,
+    completed_at: raw.completed_at ?? null,
+  };
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 
 const EMPTY_SUMMARY: DashboardSummary = {
@@ -139,41 +238,6 @@ const EMPTY_SUMMARY: DashboardSummary = {
     taskCounts: [],
     securityCounts: [],
   },
-};
-
-const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
-  owner: [
-    "dashboard:read",
-    "workspace:read",
-    "tasks:write",
-    "agents:run",
-    "security:approve",
-    "audit:read",
-    "memory:read",
-  ],
-  admin: [
-    "dashboard:read",
-    "workspace:read",
-    "tasks:write",
-    "agents:run",
-    "audit:read",
-    "memory:read",
-  ],
-  member: [
-    "dashboard:read",
-    "workspace:read",
-    "tasks:write",
-    "agents:run",
-    "memory:read",
-  ],
-  viewer: ["dashboard:read", "workspace:read", "memory:read"],
-};
-
-const PLAN_ACCESS: Record<UserPlan, boolean> = {
-  free: true,
-  starter: true,
-  pro: true,
-  enterprise: true,
 };
 
 const SENSITIVE_ACTION_WORDS = [
@@ -205,101 +269,6 @@ function createSafeError<T = never>(
       status_code: statusCode,
       details,
     },
-  };
-}
-
-function readSession(): SessionData | null {
-  if (typeof window === "undefined") return null;
-
-  const raw =
-    window.localStorage.getItem("william.session") ||
-    window.sessionStorage.getItem("william.session");
-
-  if (!raw) return null;
-
-  try {
-    const session = JSON.parse(raw) as SessionData;
-
-    if (
-      !session.accessToken ||
-      !session.user_id ||
-      !session.workspace_id ||
-      !session.role ||
-      !session.plan ||
-      !["active", "trialing"].includes(session.subscription_status)
-    ) {
-      return null;
-    }
-
-    return session;
-  } catch {
-    return null;
-  }
-}
-
-function clearSession(): void {
-  if (typeof window === "undefined") return;
-
-  window.localStorage.removeItem("william.session");
-  window.localStorage.removeItem("william.access_token");
-  window.localStorage.removeItem("william.refresh_token");
-  window.sessionStorage.removeItem("william.session");
-  window.sessionStorage.removeItem("william.access_token");
-  window.sessionStorage.removeItem("william.refresh_token");
-}
-
-function hasPermission(session: SessionData, permission: string): boolean {
-  const sessionPermissions = new Set([
-    ...(ROLE_PERMISSIONS[session.role] || []),
-    ...(session.permissions || []),
-  ]);
-
-  return sessionPermissions.has(permission);
-}
-
-function canUseDashboard(session: SessionData): ApiResponse<SessionData> {
-  if (!session.user_id || !session.workspace_id) {
-    return createSafeError(
-      "ISOLATION_CONTEXT_MISSING",
-      "Session is missing user_id or workspace_id.",
-      403,
-    );
-  }
-
-  if (!PLAN_ACCESS[session.plan]) {
-    return createSafeError(
-      "PLAN_ACCESS_DENIED",
-      "Your plan cannot access the dashboard.",
-      402,
-      { plan: session.plan },
-    );
-  }
-
-  if (!["active", "trialing"].includes(session.subscription_status)) {
-    return createSafeError(
-      "SUBSCRIPTION_INACTIVE",
-      "Your workspace subscription is not active.",
-      402,
-      { status: session.subscription_status },
-    );
-  }
-
-  if (
-    !hasPermission(session, "dashboard:read") &&
-    !hasPermission(session, "workspace:read")
-  ) {
-    return createSafeError(
-      "PERMISSION_DENIED",
-      "Your role cannot open this dashboard.",
-      403,
-      { role: session.role },
-    );
-  }
-
-  return {
-    success: true,
-    data: session,
-    error: null,
   };
 }
 
@@ -518,6 +487,10 @@ export default function Page() {
   });
   const [state, setState] = useState<LoadState>("checking_session");
   const [errorMessage, setErrorMessage] = useState("");
+  const [notice, setNotice] = useState<{
+    type: "info" | "warning";
+    message: string;
+  } | null>(null);
   const [command, setCommand] = useState("");
   const [commandState, setCommandState] = useState<
     "idle" | "submitting" | "success" | "error"
@@ -562,77 +535,100 @@ export default function Page() {
 
       const accessCheck = canUseDashboard(activeSession);
 
-      if (!accessCheck.success) {
+      if (!accessCheck.allowed) {
         clearSession();
         router.replace("/login");
         return;
       }
 
+      // Real endpoint paths only. /master/command and /tasks/recent never
+      // existed anywhere in the backend (apps/api/main.py / apps/api/routes/
+      // tasks.py) -- every command submission and "recent activity" load
+      // 404'd. The real routes are GET /agents (unchanged), GET /tasks
+      // (list, not /tasks/recent), and POST /tasks/run for command
+      // execution (fixed separately in handleCommandSubmit below).
       const [summaryResponse, agentsResponse, tasksResponse] =
         await Promise.all([
-          apiRequest<DashboardSummary>(
-            `/dashboard/summary?user_id=${encodeURIComponent(
-              activeSession.user_id,
-            )}&workspace_id=${encodeURIComponent(activeSession.workspace_id)}`,
+          apiRequest<RawDashboardSummary>(
+            "/dashboard/summary",
             activeSession,
-            {
-              method: "GET",
-              headers: {
-                "X-Action": "dashboard.summary",
-              },
-            },
+            { method: "GET", headers: { "X-Action": "dashboard.summary" } },
           ),
-          apiRequest<AgentItem[]>(
-            `/agents?user_id=${encodeURIComponent(
-              activeSession.user_id,
-            )}&workspace_id=${encodeURIComponent(activeSession.workspace_id)}`,
+          apiRequest<{ agents: RawAgentListEntry[]; count: number }>(
+            "/agents",
             activeSession,
-            {
-              method: "GET",
-              headers: {
-                "X-Action": "agents.list",
-              },
-            },
+            { method: "GET", headers: { "X-Action": "agents.list" } },
           ),
-          apiRequest<TaskItem[]>(
-            `/tasks/recent?user_id=${encodeURIComponent(
-              activeSession.user_id,
-            )}&workspace_id=${encodeURIComponent(activeSession.workspace_id)}`,
+          apiRequest<{ tasks: RawTaskRecord[] }>(
+            "/tasks?limit=10&include_workspace_tasks=true",
             activeSession,
-            {
-              method: "GET",
-              headers: {
-                "X-Action": "tasks.recent",
-              },
-            },
+            { method: "GET", headers: { "X-Action": "tasks.list" } },
           ),
         ]);
 
-      if (!summaryResponse.success || !summaryResponse.data) {
+      // /dashboard/summary requires a Pro+ plan (require_plan(Plan.PRO) in
+      // apps/api/main.py) -- every free-tier workspace (the default for a
+      // brand-new registration) gets a 402/403 here. That is a legitimate
+      // plan boundary, not an outage, so it must not block the rest of the
+      // page (agents/tasks/command console all still work); show an honest
+      // notice instead of either faking numbers or hard-failing.
+      let summaryNotice: string | null = null;
+      let summary = EMPTY_SUMMARY;
+
+      if (summaryResponse.success && summaryResponse.data) {
+        summary = mapDashboardSummary(summaryResponse.data);
+      } else if (
+        summaryResponse.error?.code === "API_BASE_URL_MISSING" ||
+        summaryResponse.error?.code === "NETWORK_ERROR"
+      ) {
+        summaryNotice =
+          "Backend API is not reachable right now, so usage analytics are unavailable. Agents and commands below still work once the backend responds.";
+      } else if (
+        summaryResponse.error?.status_code === 402 ||
+        summaryResponse.error?.status_code === 403
+      ) {
+        summaryNotice =
+          "Detailed usage analytics require a Pro plan or higher. Upgrade your workspace plan to unlock this section.";
+      } else if (summaryResponse.error) {
+        summaryNotice =
+          summaryResponse.error.message ||
+          "Could not load dashboard summary from the API.";
+      }
+
+      const agents = (agentsResponse.success && agentsResponse.data?.agents
+        ? agentsResponse.data.agents
+        : []
+      ).map(mapAgentListEntry);
+
+      const recentTasks = (
+        tasksResponse.success && tasksResponse.data?.tasks
+          ? tasksResponse.data.tasks
+          : []
+      ).map(mapTaskRecord);
+
+      setDashboard({ summary, agents, recentTasks });
+      setNotice(
+        summaryNotice
+          ? { type: "info", message: summaryNotice }
+          : null,
+      );
+
+      if (
+        !agentsResponse.success &&
+        (agentsResponse.error?.code === "API_BASE_URL_MISSING" ||
+          agentsResponse.error?.code === "NETWORK_ERROR")
+      ) {
         setState("error");
         setErrorMessage(
-          summaryResponse.error?.message ||
-            "Could not load dashboard summary from the API.",
+          agentsResponse.error?.message ||
+            "Could not connect to the William API. Confirm the backend is running and NEXT_PUBLIC_API_BASE_URL is set correctly.",
         );
         return;
       }
 
-      const agents =
-        agentsResponse.success && agentsResponse.data
-          ? agentsResponse.data
-          : [];
-      const recentTasks =
-        tasksResponse.success && tasksResponse.data ? tasksResponse.data : [];
-
-      setDashboard({
-        summary: summaryResponse.data,
-        agents,
-        recentTasks,
-      });
-
       const hasAnyData =
-        summaryResponse.data.metrics.totalAgents > 0 ||
-        summaryResponse.data.metrics.completedTasks > 0 ||
+        summary.metrics.totalAgents > 0 ||
+        summary.metrics.completedTasks > 0 ||
         agents.length > 0 ||
         recentTasks.length > 0;
 
@@ -688,36 +684,32 @@ export default function Page() {
     setCommandState("submitting");
     setCommandMessage("");
 
-    const action = extractAction(trimmedCommand);
-
-    const response = await apiRequest<CommandResponse>(
-      "/master/command",
+    // POST /master/command never existed anywhere in the backend (every
+    // submission 404'd). The real pipeline entrypoint is POST /tasks/run
+    // (apps/api/routes/tasks.py::create_and_run_task), which accepts
+    // {action, message, input_data, metadata} and routes through the real
+    // MasterAgent -> Planner -> Router -> SecurityAgent -> agent ->
+    // VerificationAgent -> MemoryAgent pipeline. "general_request" is the
+    // real, working action value (the Planner infers intent from `message`
+    // itself); extractAction()'s categories were never a recognized action
+    // vocabulary on the backend, so they're kept only as local UI metadata.
+    const response = await apiRequest<{ task: RawTaskRecord }>(
+      "/tasks/run",
       session,
       {
         method: "POST",
         headers: {
-          "X-Action": action,
+          "X-Action": extractAction(trimmedCommand),
           "X-Sensitive-Action": sensitive ? "true" : "false",
         },
         body: JSON.stringify({
-          user_id: session.user_id,
-          workspace_id: session.workspace_id,
-          command: trimmedCommand,
-          action,
-          route: {
-            planner: true,
-            security_agent: sensitive,
-            memory_agent: true,
-            verification_agent: true,
-            master_agent: true,
-          },
-          clientContext: {
-            app: "william-dashboard",
-            module: "dashboard.command_console",
-            requiresAudit: true,
-            requiresSecurityRoute: sensitive,
-            memoryCompatible: true,
-            verificationCompatible: true,
+          action: "general_request",
+          message: trimmedCommand,
+          input_data: {},
+          metadata: {
+            source: "dashboard.command_console",
+            client_hint_action: extractAction(trimmedCommand),
+            sensitive_hint: sensitive,
           },
         }),
       },
@@ -731,10 +723,18 @@ export default function Page() {
       return;
     }
 
-    setCommandState("success");
+    const task = response.data.task;
+    const taskSucceeded = task.status === "completed";
+
+    const errorDetail = formatTaskError(task.error);
+
+    setCommandState(taskSucceeded ? "success" : "error");
     setCommandMessage(
-      response.data.message ||
-        `Task ${response.data.task_id} routed through Master Agent successfully.`,
+      taskSucceeded
+        ? `Task ${task.task_id} completed successfully.`
+        : `Task ${task.task_id} finished with status "${task.status}"${
+            errorDetail ? `: ${errorDetail}` : ""
+          }.`,
     );
     setCommand("");
     void loadDashboard(session);
@@ -807,7 +807,22 @@ export default function Page() {
             }}
           />
         ) : (
-          <div className="grid gap-5 xl:grid-cols-[1fr_1.45fr]">
+          <div className="space-y-5">
+            {notice ? (
+              <div
+                className={[
+                  "rounded-2xl border px-4 py-3 text-sm font-semibold",
+                  notice.type === "warning"
+                    ? "border-amber-200 bg-amber-50 text-amber-800"
+                    : "border-neutral-200 bg-neutral-50 text-neutral-600",
+                ].join(" ")}
+                role="status"
+              >
+                {notice.message}
+              </div>
+            ) : null}
+
+            <div className="grid gap-5 xl:grid-cols-[1fr_1.45fr]">
             <section className="space-y-5">
               <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
                 <div className="mb-5 flex items-center justify-between">
@@ -1179,6 +1194,7 @@ export default function Page() {
                 </div>
               </div>
             </section>
+            </div>
           </div>
         )}
       </section>

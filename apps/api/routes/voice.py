@@ -382,7 +382,14 @@ class VoiceCommandRequest(BaseModel):
     speaker_profile_id: Optional[str] = None
     voice_sample_ref: Optional[str] = None
     session_id: Optional[str] = None
-    wake_word: Optional[str] = "william"
+    # No implicit default: this field means "the worker locally detected a
+    # real wake word for this command" (see apps/worker_nodes/voice/
+    # voice_worker.py::send_command, which only ever passes a real trigger
+    # string or None). Defaulting it to a fixed "william" made every
+    # command silently claim a detected wake word regardless of whether one
+    # actually occurred, which made the standby-mode wake-word gate below a
+    # no-op.
+    wake_word: Optional[str] = None
 
 
 class PushToTalkTextRequest(BaseModel):
@@ -418,9 +425,66 @@ async def get_voice_status(context: "AuthContext" = Depends(get_current_auth_con
         dependency_status = compute_dependency_status()
         settings = vs.record_dependency_status(db, context.workspace_id, dependency_status)
 
+        missing_dependencies = [key for key, value in dependency_status.items() if value not in ("configured", "available")]
+        worker_connected = vs.compute_worker_connected(settings)
+        # The raw stored flag is overwritten with the staleness-aware value
+        # in the response only -- the DB row itself is untouched here, so a
+        # genuinely-recent heartbeat elsewhere in the same request isn't lost.
+        settings = {**settings, "voice_worker_connected": worker_connected}
+        runtime_state = vs.compute_runtime_state(
+            mode=settings["mode"], missing_dependencies=missing_dependencies, worker_connected=worker_connected,
+        )
+        last_speaker_name = vs.resolve_last_speaker_name(db, context.workspace_id, settings)
+        active_sessions = vs.count_active_sessions(db, context.workspace_id)
+
     return api_success(
         "Voice status loaded.",
-        data={"settings": settings, "wake_word_default": "william"},
+        data={
+            "settings": settings,
+            "wake_word_default": "william",
+            # Flattened, dashboard-shaped view of the same settings row --
+            # kept alongside `settings` (not replacing it) so existing
+            # callers reading data.settings.* keep working unchanged.
+            "mode": settings["mode"],
+            "enabled": settings["mode"] != "disabled",
+            "runtime_state": runtime_state,
+            "wake_word_enabled": settings["mode"] in ("wake_word_admin", "wake_word_trusted_users", "continuous_conversation", "standby"),
+            "wake_word_phrase": settings["wake_word"],
+            "worker_connected": worker_connected,
+            "worker_last_seen_at": settings["voice_worker_last_seen_at"],
+            "dependencies": dependency_status,
+            "missing_dependencies": missing_dependencies,
+            "active_sessions": active_sessions,
+            "last_wake_event": settings["last_wake_event_at"],
+            "last_command": settings["last_command_transcript"],
+            "last_detected_language": settings["last_detected_language"],
+            "last_speaker_name": last_speaker_name,
+            "last_routed_agent": settings["last_routed_agent"],
+            "last_error": settings["last_error_message"],
+            "user_id": context.user_id,
+            "workspace_id": context.workspace_id,
+        },
+        request_id=context.request_id,
+    )
+
+
+@router.post("/worker/heartbeat")
+async def voice_worker_heartbeat(context: "AuthContext" = Depends(get_current_auth_context)) -> Dict[str, Any]:
+    """
+    Called periodically by apps/worker_nodes/voice/voice_worker.py's idle
+    loop so the dashboard can show a real worker_connected/worker_offline
+    state instead of only updating on a wake event (a worker that's alive
+    but hasn't heard a wake word yet should still show as connected).
+    """
+    from database.db import db_manager
+    from apps.api.services import voice_service as vs
+
+    with db_manager.session_scope() as db:
+        settings = vs.record_worker_heartbeat(db, context.workspace_id)
+
+    return api_success(
+        "Heartbeat received.",
+        data={"worker_connected": True, "worker_last_seen_at": settings["voice_worker_last_seen_at"]},
         request_id=context.request_id,
     )
 
@@ -596,7 +660,7 @@ async def submit_voice_command(
     context: "AuthContext" = Depends(get_current_auth_context),
 ) -> Dict[str, Any]:
     from database.db import db_manager
-    from database.models.voice import VoiceSettings, VOICE_MODE_DISABLED
+    from database.models.voice import VoiceSettings, VOICE_MODE_DISABLED, VOICE_MODE_STANDBY, VOICE_MODE_PUSH_TO_TALK
     from agents.voice_agent.speaker_recognition import SpeakerRecognitionEngine
     from apps.api.services import voice_service as vs
 
@@ -608,6 +672,33 @@ async def submit_voice_command(
 
         if mode == VOICE_MODE_DISABLED:
             raise_api_error(status.HTTP_403_FORBIDDEN, "Voice mode is disabled for this workspace.", "VOICE_DISABLED", context.request_id)
+
+        if mode == VOICE_MODE_STANDBY:
+            # Only a worker-detected wake word (payload.wake_word set) may
+            # reach the pipeline while in standby -- an ambient/typed
+            # command with no wake word is refused, matching "stop
+            # processing commands until wake word is used again". Landing
+            # back in push_to_talk on reactivation is a deliberate
+            # simplification: it is always safe/functional immediately,
+            # rather than replaying a previously-approved wake-word mode
+            # without re-running that approval.
+            if not payload.wake_word:
+                raise_api_error(
+                    status.HTTP_403_FORBIDDEN,
+                    "Voice is in standby mode. Say the wake word to resume.",
+                    "VOICE_STANDBY",
+                    context.request_id,
+                )
+            settings_row.mode = VOICE_MODE_PUSH_TO_TALK
+            settings_row.updated_by_user_id = context.user_id
+            settings_row.updated_at = datetime.now(timezone.utc)
+            db.flush()
+            vs.record_voice_event(
+                db, workspace_id=context.workspace_id, session_id=session_id, profile_id=None,
+                user_id=context.user_id, event_type="config_changed",
+                payload={"mode": VOICE_MODE_PUSH_TO_TALK, "trigger": "wake_word_reactivation"},
+            )
+            mode = VOICE_MODE_PUSH_TO_TALK
 
         profile: Optional[Dict[str, Any]] = None
 

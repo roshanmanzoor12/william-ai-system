@@ -123,15 +123,20 @@ logger.setLevel(os.getenv("WILLIAM_LOG_LEVEL", "INFO").upper())
 
 DEFAULT_API_BASE_URL = "http://localhost:8000/api/v1"
 DEFAULT_WAKE_WORD = "william"
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30
 
 # Modes (from database/models/voice.py::VALID_VOICE_MODES) that require a
 # detected wake word before the worker will bother sending a command at
 # all. push_to_talk and continuous_conversation do not gate on wake word
 # server-side, but the worker still respects wake-word semantics locally
 # for the gated modes per the mission's client-side-responsibility rule.
+# standby is included -- the server refuses any /voice/command in standby
+# mode that doesn't carry a detected wake word (see apps/api/routes/
+# voice.py::submit_voice_command), so the worker must gate identically.
 VOICE_MODE_DISABLED = "disabled"
 VOICE_MODE_PUSH_TO_TALK = "push_to_talk"
-WAKE_WORD_GATED_MODES = {"wake_word_admin", "wake_word_trusted_users"}
+VOICE_MODE_STANDBY = "standby"
+WAKE_WORD_GATED_MODES = {"wake_word_admin", "wake_word_trusted_users", "standby"}
 
 
 class VoiceWorkerState(str, Enum):
@@ -361,6 +366,16 @@ class VoiceWorker:
     def fetch_status(self, max_attempts: Optional[int] = None) -> Dict[str, Any]:
         return self._call_with_backoff(lambda: self._call_api("GET", "/voice/status"), max_attempts=max_attempts)
 
+    def send_heartbeat(self) -> Dict[str, Any]:
+        """
+        Tells the backend this worker is alive right now, independent of
+        wake events -- without this, voice_worker_connected only ever got
+        set True on a wake event, so a worker that was up but hadn't heard
+        the wake word yet incorrectly showed as "Worker Offline" on the
+        dashboard.
+        """
+        return self._call_with_backoff(lambda: self._call_api("POST", "/voice/worker/heartbeat"), max_attempts=1)
+
     def send_wake_event(self, confidence: float, activation_type: str = "wake_word") -> Dict[str, Any]:
         payload = {
             "session_id": self.session_id,
@@ -406,7 +421,12 @@ class VoiceWorker:
             self._log(f"Status re-check: mode={mode} wake_word={wake_word!r} deps={dependency_status}")
             return
 
-        self._log(f"Voice mode for this workspace: {mode}")
+        if mode == VOICE_MODE_DISABLED:
+            self._log("Voice disabled for this workspace.")
+        elif mode == VOICE_MODE_STANDBY:
+            self._log(f"Voice is in standby. Say {wake_word!r} to resume processing commands.")
+        else:
+            self._log(f"Voice mode for this workspace: {mode}")
         self._log(f"Configured wake word: {wake_word!r}")
         self._log("Dependency status:")
         for key in (
@@ -623,6 +643,13 @@ class VoiceWorker:
             self._set_state(VoiceWorkerState.IDLE, "simulate-text run complete")
             return 0 if (sent or status_result.get("ok")) else 1
 
+        if status_result.get("ok"):
+            heartbeat_result = self.send_heartbeat()
+            if heartbeat_result["ok"]:
+                self._log("Heartbeat sent. Dashboard should show this worker as connected.")
+            else:
+                self._log("Heartbeat failed; dashboard may show this worker as offline until the next successful check-in.")
+
         try:
             if sys.stdin.isatty():
                 self._run_interactive_loop()
@@ -638,12 +665,18 @@ class VoiceWorker:
         self._set_state(
             VoiceWorkerState.IDLE,
             "no --simulate-text given and stdin is not a TTY; entering safe idle loop "
-            f"(re-checking /voice/status every {self.config.poll_interval_seconds}s, Ctrl+C to stop)",
+            f"(re-checking /voice/status and sending a heartbeat every "
+            f"{self.config.poll_interval_seconds}s, Ctrl+C to stop). This is the real "
+            "'ears on' background listening loop: no dashboard tab needs to stay open "
+            "for this process to keep reporting connected and, once a real "
+            "audio/STT/wake-word provider is configured, to keep listening.",
         )
         while True:
             time.sleep(self.config.poll_interval_seconds)
             status_result = self.fetch_status(max_attempts=1)
             self._report_dependency_status(status_result, brief=True)
+            if status_result.get("ok"):
+                self.send_heartbeat()
 
     def _run_interactive_loop(self) -> None:
         self._set_state(VoiceWorkerState.IDLE, "interactive fallback mode ready")
@@ -663,6 +696,8 @@ class VoiceWorker:
                 break
 
             status_result = self.fetch_status(max_attempts=3)
+            if status_result.get("ok"):
+                self.send_heartbeat()
             self._handle_input_text(line, status_result)
             self._set_state(VoiceWorkerState.IDLE, "waiting for next input")
 

@@ -140,6 +140,29 @@ def _safe_json(value: Any) -> str:
         return str(value)
 
 
+_KEYWORD_PATTERN_CACHE: Dict[str, "re.Pattern[str]"] = {}
+
+
+def _keyword_matches(keyword: str, text: str) -> bool:
+    """
+    Word/phrase-boundary keyword match -- NOT a raw substring check.
+
+    A plain `keyword in text` check false-positives whenever the keyword is
+    a substring of an unrelated word: e.g. the routing keyword "click"
+    (meant to detect browser actions) matched inside the brand name
+    "ClickRonix", silently routing "create a VEO prompt for ClickRonix" to
+    a browser_action step instead of the Creator Agent. `\\b` boundaries
+    require the keyword to start/end on a real word edge, so "click"
+    matches "click here" but not "clickronix", while multi-word phrases
+    like "open website" still match as a whole phrase.
+    """
+    pattern = _KEYWORD_PATTERN_CACHE.get(keyword)
+    if pattern is None:
+        pattern = re.compile(r"\b" + re.escape(keyword) + r"\b")
+        _KEYWORD_PATTERN_CACHE[keyword] = pattern
+    return pattern.search(text) is not None
+
+
 def _dedupe_keep_order(items: List[str]) -> List[str]:
     """Deduplicate list while preserving order."""
     seen = set()
@@ -995,11 +1018,11 @@ class Planner:
 
         for agent, keywords in self.agent_keywords.items():
             for keyword in keywords:
-                if keyword in combined_text:
+                if _keyword_matches(keyword, combined_text):
                     scores[agent] = scores.get(agent, 0) + 1
 
         # Master should not normally become primary unless explicitly requested.
-        if "master agent" in combined_text or "main brain" in combined_text or "jarvis" in combined_text:
+        if _keyword_matches("master agent", combined_text) or _keyword_matches("main brain", combined_text) or _keyword_matches("jarvis", combined_text):
             scores["master"] = scores.get("master", 0) + 3
         else:
             scores["master"] = max(0, scores.get("master", 0) - 2)
@@ -1021,7 +1044,7 @@ class Planner:
         ]
 
         for intent, keywords in intent_patterns:
-            if any(keyword in combined_text for keyword in keywords):
+            if any(_keyword_matches(keyword, combined_text) for keyword in keywords):
                 return f"{intent}_{primary_agent}"
 
         return f"general_{primary_agent}"
@@ -1037,7 +1060,7 @@ class Planner:
             return action_text
 
         for action, keywords in self.action_keywords.items():
-            if any(keyword in combined_text for keyword in keywords):
+            if any(_keyword_matches(keyword, combined_text) for keyword in keywords):
                 return action
 
         return f"{primary_agent}_assist"
@@ -1062,7 +1085,7 @@ class Planner:
 
         for level, keywords in self.risk_keywords.items():
             for keyword in keywords:
-                if keyword in combined_text:
+                if _keyword_matches(keyword, combined_text):
                     if level == "critical":
                         risk_score += 4
                     elif level == "high":
@@ -1464,6 +1487,12 @@ class Planner:
                 "caption",
                 "post",
                 "creative",
+                "veo",
+                "video prompt",
+                "video ad",
+                "thumbnail",
+                "storyboard",
+                "voiceover",
             ],
             "master": [
                 "master",

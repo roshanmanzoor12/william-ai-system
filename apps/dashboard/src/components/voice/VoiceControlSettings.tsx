@@ -21,6 +21,7 @@ import {
   type VoiceDependencyStatusValue,
   type VoiceMode,
   type VoiceSettings,
+  type VoiceStatusData,
 } from "@/lib/api-client";
 import { LoadingState } from "@/components/state/LoadingState";
 import { ErrorState } from "@/components/state/ErrorState";
@@ -63,7 +64,38 @@ const VOICE_MODE_OPTIONS: {
     description: "Always-listening conversational mode.",
     requiresApproval: true,
   },
+  {
+    value: "standby",
+    label: "Standby",
+    description:
+      "Worker stays connected but ignores commands until the wake word is heard again or voice is re-enabled here.",
+    requiresApproval: false,
+  },
 ];
+
+function runtimeStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    disabled: "Disabled",
+    push_to_talk: "Push to Talk",
+    worker_offline: "Worker Offline",
+    dependency_required: "Dependency Required",
+    listening: "Listening",
+    standby: "Standby",
+  };
+  return labels[state] || state.replace(/_/g, " ");
+}
+
+function runtimeStateStyle(state: string): string {
+  if (state === "listening")
+    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-300";
+  if (state === "push_to_talk")
+    return "border-blue-400/20 bg-blue-400/10 text-blue-300";
+  if (state === "worker_offline" || state === "dependency_required")
+    return "border-orange-400/25 bg-orange-500/10 text-orange-300";
+  if (state === "standby")
+    return "border-purple-400/25 bg-purple-500/10 text-purple-300";
+  return "border-red-400/25 bg-red-500/10 text-red-300";
+}
 
 const DEPENDENCY_LABELS: Record<keyof VoiceDependencyStatus, string> = {
   wake_word_engine: "Wake word engine",
@@ -117,6 +149,7 @@ export function VoiceControlSettings() {
   const [state, setState] = useState<LoadState>("loading");
   const [errorMessage, setErrorMessage] = useState("");
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
+  const [status, setStatus] = useState<VoiceStatusData | null>(null);
   const [wakeWordDefault, setWakeWordDefault] = useState("william");
   const [wakeWordInput, setWakeWordInput] = useState("");
   const [savingMode, setSavingMode] = useState<VoiceMode | null>(null);
@@ -143,6 +176,7 @@ export function VoiceControlSettings() {
     }
 
     setSettings(response.data.settings);
+    setStatus(response.data);
     setWakeWordDefault(response.data.wake_word_default || "william");
     setWakeWordInput(response.data.settings.wake_word || "");
     setState("ready");
@@ -171,6 +205,7 @@ export function VoiceControlSettings() {
     }
 
     setSettings(response.data.settings);
+    void load();
 
     if (response.data.requires_approval && !response.data.approved) {
       setNotice({
@@ -265,7 +300,7 @@ export function VoiceControlSettings() {
             </div>
           ) : null}
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-3">
             <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
                 Current mode
@@ -287,6 +322,26 @@ export function VoiceControlSettings() {
 
             <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                Runtime state
+              </p>
+              {status ? (
+                <span
+                  className={`mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-black ${runtimeStateStyle(
+                    status.runtime_state,
+                  )}`}
+                >
+                  {runtimeStateLabel(status.runtime_state)}
+                </span>
+              ) : (
+                <p className="mt-2 text-sm font-bold text-zinc-500">—</p>
+              )}
+              <p className="mt-1 text-xs text-zinc-500">
+                Active sessions: {status?.active_sessions ?? 0}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
                 Voice worker
               </p>
               <p className="mt-2 text-sm font-bold text-white">
@@ -297,6 +352,21 @@ export function VoiceControlSettings() {
               </p>
             </div>
           </div>
+
+          {status && status.missing_dependencies.length > 0 ? (
+            <div className="rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3 text-xs font-bold text-orange-200">
+              Missing providers: {status.missing_dependencies.join(", ")}. The
+              dashboard never simulates a working microphone/speaker/speaker-ID
+              pipeline -- connect real providers to move past{" "}
+              {runtimeStateLabel("dependency_required")}.
+            </div>
+          ) : null}
+
+          {settings.last_error_message ? (
+            <div className="rounded-2xl border border-red-400/25 bg-red-500/10 px-4 py-3 text-xs font-bold text-red-300">
+              Last error: {settings.last_error_message}
+            </div>
+          ) : null}
 
           <div>
             <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
@@ -435,7 +505,10 @@ export function VoiceControlSettings() {
                   Recognized speaker
                 </p>
                 <p className="mt-1 truncate text-sm font-bold text-white">
-                  {fieldValue(settings.last_recognized_speaker_profile_id)}
+                  {fieldValue(
+                    settings.last_speaker_display_name ||
+                      settings.last_recognized_speaker_profile_id,
+                  )}
                 </p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-black/25 p-3">

@@ -67,6 +67,13 @@ DEFAULT_BLOCKED_FOR_NON_OWNER = {"finance", "security"}
 
 UNAUTHORIZED_SPEAKER_MESSAGE = "You are not authorized to use this William workspace."
 
+# Voice-native control phrases, handled entirely inside this module (never
+# forwarded to MasterAgent -- these change voice runtime state itself, not
+# a task). Matched as a simple case-insensitive substring, consistent with
+# infer_target_agent's keyword-heuristic approach elsewhere in this file.
+STANDBY_PHRASES = ("standby", "stand by")
+SHUTDOWN_VOICE_PHRASES = ("shutdown voice", "shut down voice", "disable voice", "turn off voice")
+
 
 # =============================================================================
 # Keyword-based agent intent inference (a real, local heuristic -- not a
@@ -236,6 +243,109 @@ def record_dependency_status(db, workspace_id: str, dependency_status: Dict[str,
     settings.dependency_status = dependency_status
     db.flush()
     return settings.to_dict()
+
+
+# Worker considered offline if no heartbeat/wake-event has been seen in this
+# many seconds -- prevents a worker that crashed or lost its network from
+# showing as "Connected" forever just because voice_worker_connected was
+# once set True and never explicitly cleared.
+WORKER_STALE_AFTER_SECONDS = 90
+
+
+def record_worker_heartbeat(db, workspace_id: str) -> Dict[str, Any]:
+    from database.models.voice import VoiceSettings
+
+    settings = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == workspace_id).first()
+    if settings is None:
+        settings, _ = _get_or_create_settings_row(db, workspace_id, "system")
+
+    settings.voice_worker_connected = True
+    settings.voice_worker_last_seen_at = _utc_now()
+    db.flush()
+    return settings.to_dict()
+
+
+def compute_worker_connected(settings: Dict[str, Any]) -> bool:
+    """Staleness-aware read of voice_worker_connected -- a worker that
+    hasn't heartbeated/wake-evented recently is honestly reported as not
+    connected, even if the stored flag was never explicitly cleared."""
+    if not settings.get("voice_worker_connected"):
+        return False
+    last_seen = settings.get("voice_worker_last_seen_at")
+    if not last_seen:
+        return False
+    try:
+        last_seen_dt = datetime.fromisoformat(last_seen)
+    except (TypeError, ValueError):
+        return False
+    # SQLite doesn't reliably round-trip tzinfo through DateTime(timezone=
+    # True) columns -- a naive value here is always UTC (every write path
+    # in this module uses _utc_now()), so attach it explicitly rather than
+    # let the subtraction below raise "can't subtract offset-naive and
+    # offset-aware datetimes".
+    if last_seen_dt.tzinfo is None:
+        last_seen_dt = last_seen_dt.replace(tzinfo=UTC)
+    age_seconds = (_utc_now() - last_seen_dt).total_seconds()
+    return age_seconds <= WORKER_STALE_AFTER_SECONDS
+
+
+def compute_runtime_state(
+    *,
+    mode: str,
+    missing_dependencies: List[str],
+    worker_connected: bool,
+) -> str:
+    """
+    Single source of truth for the dashboard's runtime_state field --
+    matches the Voice Control UI's documented states exactly (Disabled/
+    Push To Talk/Worker Offline/Dependency Required/Listening/Standby).
+    Processing/Speaking are transient states set by the caller for the
+    duration of a single synchronous /voice/command request only (this
+    backend has no async task queue for voice commands), not computed here.
+    """
+    from database.models.voice import (
+        VOICE_MODE_DISABLED,
+        VOICE_MODE_STANDBY,
+        VOICE_MODE_PUSH_TO_TALK,
+        WAKE_WORD_GATED_MODES,
+    )
+
+    if mode == VOICE_MODE_DISABLED:
+        return "disabled"
+    if mode == VOICE_MODE_STANDBY:
+        return "standby"
+    if mode == VOICE_MODE_PUSH_TO_TALK:
+        return "push_to_talk"
+    if mode in WAKE_WORD_GATED_MODES or mode not in (VOICE_MODE_DISABLED, VOICE_MODE_STANDBY, VOICE_MODE_PUSH_TO_TALK):
+        if missing_dependencies:
+            return "dependency_required"
+        if not worker_connected:
+            return "worker_offline"
+        return "listening"
+    return "disabled"
+
+
+def resolve_last_speaker_name(db, workspace_id: str, settings: Dict[str, Any]) -> Optional[str]:
+    """Prefers the display name captured at command time; falls back to a
+    profile lookup for rows written before last_speaker_display_name
+    existed."""
+    if settings.get("last_speaker_display_name"):
+        return settings["last_speaker_display_name"]
+    profile_id = settings.get("last_recognized_speaker_profile_id")
+    if not profile_id:
+        return None
+    profile = get_profile(db, workspace_id, profile_id)
+    return profile.display_name if profile is not None else None
+
+
+def count_active_sessions(db, workspace_id: str) -> int:
+    from database.models.voice import VoiceSession, SESSION_STATUS_ACTIVE
+
+    return (
+        db.query(VoiceSession)
+        .filter(VoiceSession.workspace_id == workspace_id, VoiceSession.status == SESSION_STATUS_ACTIVE)
+        .count()
+    )
 
 
 # =============================================================================
@@ -502,6 +612,90 @@ def build_master_agent_payload(
     }
 
 
+def _matches_control_phrase(transcript: str, phrases: Tuple[str, ...]) -> bool:
+    lowered = (transcript or "").strip().lower()
+    return any(phrase in lowered for phrase in phrases)
+
+
+def try_handle_voice_control_phrase(
+    db,
+    *,
+    workspace_id: str,
+    user_id: str,
+    profile: Dict[str, Any],
+    transcript: str,
+    session_id: str,
+    request_id: str,
+    tts_available: bool,
+) -> Optional[Dict[str, Any]]:
+    """
+    Intercepts "William standby" / "William shutdown voice" before any
+    MasterAgent handoff -- these change voice runtime state itself, not a
+    task, so they are handled entirely here (voice never plans/routes/
+    executes; this is the one narrow exception, and it only ever touches
+    this workspace's own VoiceSettings.mode, never another agent).
+
+    Returns a ready response envelope if a control phrase matched, else
+    None (caller falls through to normal permission-check + MasterAgent
+    routing).
+    """
+    from database.models.voice import VoiceSettings, VOICE_MODE_DISABLED, VOICE_MODE_STANDBY
+
+    is_admin_like = bool(
+        profile.get("role") in ("owner", "admin") or profile.get("is_owner_virtual_profile")
+    )
+
+    if _matches_control_phrase(transcript, SHUTDOWN_VOICE_PHRASES):
+        if not is_admin_like:
+            return None
+        settings = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == workspace_id).first()
+        if settings is not None:
+            settings.mode = VOICE_MODE_DISABLED
+            settings.updated_by_user_id = user_id
+            settings.updated_at = _utc_now()
+            db.flush()
+        record_voice_event(
+            db, workspace_id=workspace_id, session_id=session_id, profile_id=profile.get("id"),
+            user_id=user_id, event_type="config_changed",
+            payload={"mode": VOICE_MODE_DISABLED, "trigger": "voice_command"},
+        )
+        write_voice_audit(
+            db, user_id=user_id, workspace_id=workspace_id, action="voice.config.updated",
+            metadata={"mode": VOICE_MODE_DISABLED, "trigger": "voice_command"},
+        )
+        message = "Voice disabled for this workspace."
+        return _voice_response_envelope(
+            success=True, message=message, response_text=message,
+            reply_language=_resolve_reply_language(profile, "en"), tts_available=tts_available,
+            master_result=None, request_id=request_id,
+        )
+
+    if _matches_control_phrase(transcript, STANDBY_PHRASES):
+        settings = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == workspace_id).first()
+        if settings is not None:
+            settings.mode = VOICE_MODE_STANDBY
+            settings.updated_by_user_id = user_id
+            settings.updated_at = _utc_now()
+            db.flush()
+        record_voice_event(
+            db, workspace_id=workspace_id, session_id=session_id, profile_id=profile.get("id"),
+            user_id=user_id, event_type="config_changed",
+            payload={"mode": VOICE_MODE_STANDBY, "trigger": "voice_command"},
+        )
+        write_voice_audit(
+            db, user_id=user_id, workspace_id=workspace_id, action="voice.config.updated",
+            metadata={"mode": VOICE_MODE_STANDBY, "trigger": "voice_command"},
+        )
+        message = "Standing by. Say the wake word to resume."
+        return _voice_response_envelope(
+            success=True, message=message, response_text=message,
+            reply_language=_resolve_reply_language(profile, "en"), tts_available=tts_available,
+            master_result=None, request_id=request_id,
+        )
+
+    return None
+
+
 async def route_voice_command_to_master_agent(
     *,
     db,
@@ -516,12 +710,19 @@ async def route_voice_command_to_master_agent(
     tts_available: bool = False,
 ) -> Dict[str, Any]:
     """
-    The full voice command handoff: permission pre-check -> MasterAgent ->
-    normalized voice-response envelope (with reply_language +
-    speech_output_status, never claiming spoken output happened without a
-    real TTS provider).
+    The full voice command handoff: control-phrase check -> permission
+    pre-check -> MasterAgent -> normalized voice-response envelope (with
+    reply_language + speech_output_status, never claiming spoken output
+    happened without a real TTS provider).
     """
     request_id = request_id or _new_id("req")
+
+    control_response = try_handle_voice_control_phrase(
+        db, workspace_id=workspace_id, user_id=user_id, profile=profile, transcript=transcript,
+        session_id=session_id, request_id=request_id, tts_available=tts_available,
+    )
+    if control_response is not None:
+        return control_response
 
     allowed, reason, inferred_agent = check_profile_permission(profile, transcript)
 
@@ -591,7 +792,11 @@ async def route_voice_command_to_master_agent(
         request_id=request_id,
     )
 
-    _update_settings_last_command(db, workspace_id, profile, transcript, detected_language, response_text)
+    _update_settings_last_command(
+        db, workspace_id, profile, transcript, detected_language, response_text,
+        success=bool(master_result.get("success")),
+        error_message=None if master_result.get("success") else (master_result.get("message") or response_text),
+    )
     return envelope
 
 
@@ -644,7 +849,17 @@ def _voice_response_envelope(
     }
 
 
-def _update_settings_last_command(db, workspace_id: str, profile: Dict[str, Any], transcript: str, detected_language: str, response_text: str) -> None:
+def _update_settings_last_command(
+    db,
+    workspace_id: str,
+    profile: Dict[str, Any],
+    transcript: str,
+    detected_language: str,
+    response_text: str,
+    *,
+    success: bool = True,
+    error_message: Optional[str] = None,
+) -> None:
     from database.models.voice import VoiceSettings
 
     settings = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == workspace_id).first()
@@ -654,6 +869,16 @@ def _update_settings_last_command(db, workspace_id: str, profile: Dict[str, Any]
     settings.last_detected_language = detected_language
     settings.last_response_text = (response_text or "")[:2000]
     settings.last_recognized_speaker_profile_id = profile.get("id")
+    settings.last_speaker_display_name = profile.get("display_name")
+    # Reflects the CURRENT problem state, not a permanent history -- cleared
+    # on the next successful command so a live status dashboard doesn't keep
+    # alarming about an issue that already resolved.
+    if success:
+        settings.last_error_message = None
+        settings.last_error_at = None
+    else:
+        settings.last_error_message = (error_message or "The command could not be completed.")[:2000]
+        settings.last_error_at = _utc_now()
     settings.updated_at = _utc_now()
     db.flush()
 

@@ -188,8 +188,10 @@ class Settings:
             os.getenv("WILLIAM_CORS_ORIGINS"),
             [
                 "http://localhost:3000",
+                "http://localhost:3001",
                 "http://localhost:5173",
                 "http://127.0.0.1:3000",
+                "http://127.0.0.1:3001",
                 "http://127.0.0.1:5173",
             ],
         )
@@ -200,17 +202,46 @@ class Settings:
             ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         )
     )
+    # Starlette's CORSMiddleware returns its own 400 "Disallowed CORS ..."
+    # response (before the request ever reaches routing/auth) whenever a
+    # preflight's Origin or Access-Control-Request-Headers isn't covered by
+    # these lists. Two rounds of this bug: round 1 was missing Accept/
+    # Origin/X-Requested-With, which real browsers/axios always include on
+    # preflighted cross-origin requests. Round 2 (this list) was still
+    # missing the DASHBOARD'S OWN APP-SPECIFIC custom headers -- grepped
+    # directly from apps/dashboard/src/ rather than guessed: several pages'
+    # local `apiRequest` helpers (apps/dashboard/src/app/(dashboard)/
+    # {dashboard,agents,tasks}/page.tsx) send X-Action/X-Client-App/
+    # X-Audit-Enabled/X-Audit-Action/X-Sensitive-Action on every request,
+    # none of which were ever in this list, so the browser's preflight
+    # Access-Control-Request-Headers always included at least one disallowed
+    # header and CORSMiddleware always 400'd -- verified live: `curl -X
+    # OPTIONS ... -H "Access-Control-Request-Headers: authorization,
+    # content-type,x-action,x-client-app,x-audit-enabled"` reproduced the
+    # exact reported 400 "Disallowed CORS headers" before this fix.
+    # X-User-ID/X-Workspace-ID/X-User-Role/X-Subscription-Plan stay listed
+    # for legacy callers that still send them, but get_current_auth_context()
+    # (apps/api/routes/auth.py) never trusts them for identity -- only a
+    # verified JWT does.
     allowed_headers: List[str] = field(
         default_factory=lambda: parse_csv(
             os.getenv("WILLIAM_CORS_HEADERS"),
             [
                 "Authorization",
                 "Content-Type",
+                "Accept",
+                "Origin",
+                "X-Requested-With",
                 "X-Request-ID",
                 "X-User-ID",
                 "X-Workspace-ID",
                 "X-User-Role",
                 "X-Subscription-Plan",
+                "X-Action",
+                "X-Client-App",
+                "X-Audit-Enabled",
+                "X-Audit-Action",
+                "X-Sensitive-Action",
             ],
         )
     )
@@ -1260,6 +1291,7 @@ OPTIONAL_ROUTERS: List[Tuple[str, str, str]] = [
     ("apps.api.routes.subscriptions", "router", "/subscriptions"),
     ("apps.api.routes.files", "router", "/files"),
     ("apps.api.routes.voice", "router", "/voice"),
+    ("apps.api.routes.agent_permissions", "router", "/agent-permissions"),
     # No apps.api.routes.devices entry: no device-pairing concept exists
     # anywhere else in this codebase (no model, no agent, no worker
     # protocol for it) to build a real router against -- inventing one
@@ -1497,6 +1529,8 @@ class Main:
         app.state.started_at = utc_now()
         app.state.audit_store = AUDIT_STORE
 
+        self._initialize_database()
+
         self._add_middleware(app)
         self._add_exception_handlers(app)
         self._add_builtin_routers(app)
@@ -1513,7 +1547,64 @@ class Main:
 
         return app
 
+    def _initialize_database(self) -> None:
+        """
+        Ensure every model's table exists before the app starts serving
+        requests.
+
+        Root cause this fixes: nothing in this app's boot path ever
+        imported the model modules or called Base.metadata.create_all() --
+        tests/conftest.py and database/migrations/env.py each had their own
+        copy of that "import every model, then create_all" pattern, but the
+        real app never did. A fresh or deleted-and-recreated SQLite dev
+        database therefore had zero tables until something else (a manual
+        Alembic run, or the test suite happening to run first and sharing
+        no state with the real app anyway) populated it, so a clean
+        `DELETE william.db && restart` produced "no such table: users" on
+        the very first request.
+
+        Only auto-creates for the SQLite dev fallback -- a real Postgres
+        deployment must go through `python -m alembic upgrade head`, which
+        stays authoritative there (this never runs a migration, only
+        `create_all()`, which is additive/idempotent and a poor substitute
+        for real migrations on a shared production database). Safe to call
+        on every boot: `create_all()` only creates tables that don't
+        already exist, so this is a no-op once Alembic (or a previous boot)
+        has already built the schema.
+        """
+        try:
+            from database.db import Base, db_manager
+            from database.models import MODEL_MODULES, import_all_models
+
+            import_all_models(MODEL_MODULES)
+
+            if db_manager.engine.dialect.name == "sqlite":
+                Base.metadata.create_all(bind=db_manager.engine)
+                logger.info(
+                    "SQLite dev database ensured at startup | tables=%d",
+                    len(Base.metadata.tables),
+                )
+        except Exception:
+            logger.exception(
+                "Database auto-initialization failed at startup; routes touching "
+                "the database may error until this is resolved."
+            )
+
     def _add_middleware(self, app: FastAPI) -> None:
+        # Middleware registration order matters: Starlette wraps each
+        # subsequently-added middleware AROUND the previous stack, so the
+        # LAST middleware added ends up OUTERMOST (it sees every request
+        # first and every response last) -- verified empirically, not just
+        # from docs, since this is easy to get backwards. Registering
+        # request_id_middleware and audit_middleware first, then
+        # CORSMiddleware last via add_middleware(), already puts CORS
+        # outermost correctly: it is the first thing every request hits and
+        # can short-circuit a disallowed preflight before request_id/audit
+        # bookkeeping or routing/auth ever run. (The actual root cause of
+        # the reported CORS 400s was never middleware order -- it was
+        # Settings.allowed_headers being incomplete, see above -- but CORS
+        # being outermost is still the correct, intentional order and is
+        # kept that way here.)
         app.middleware("http")(request_id_middleware)
         app.middleware("http")(audit_middleware)
 

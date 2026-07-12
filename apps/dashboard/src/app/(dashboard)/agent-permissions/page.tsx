@@ -12,8 +12,13 @@ import { EmptyState } from "@/components/state/EmptyState";
 import { ErrorState } from "@/components/state/ErrorState";
 import { LoadingState } from "@/components/state/LoadingState";
 
-type UserRole = "owner" | "admin" | "member" | "viewer";
-type UserPlan = "free" | "starter" | "pro" | "enterprise";
+// The real backend vocabulary (database.models.workspace.WorkspaceMemberRole
+// via apps/api/routes/agent_permissions.py::UI_ROLES) has 5 values, and
+// Plan has 5 tiers including "business" -- both were previously missing
+// "manager"/"business" here, the same incomplete-local-vocabulary bug class
+// already fixed on the agents and dashboard pages.
+type UserRole = "owner" | "admin" | "manager" | "member" | "viewer";
+type UserPlan = "free" | "starter" | "pro" | "business" | "enterprise";
 type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled";
 type LoadState = "checking_session" | "loading" | "ready" | "empty" | "error";
 
@@ -143,6 +148,13 @@ const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "agent_permissions:write",
     "audit:read",
   ],
+  manager: [
+    "dashboard:read",
+    "workspace:read",
+    "agents:read",
+    "agents:run",
+    "agent_permissions:read",
+  ],
   member: [
     "dashboard:read",
     "workspace:read",
@@ -162,13 +174,15 @@ const PLAN_ORDER: Record<UserPlan, number> = {
   free: 1,
   starter: 2,
   pro: 3,
-  enterprise: 4,
+  business: 4,
+  enterprise: 5,
 };
 
 const PLAN_AGENT_LIMITS: Record<UserPlan, number> = {
   free: 2,
   starter: 5,
   pro: 14,
+  business: 14,
   enterprise: 14,
 };
 
@@ -192,6 +206,17 @@ const DEFAULT_ROLE_MATRIX: RolePermissionMatrix = {
   admin: [
     "master_agent",
     "security_agent",
+    "verification_agent",
+    "memory_agent",
+    "code_agent",
+    "browser_agent",
+    "visual_agent",
+    "workflow_agent",
+    "business_agent",
+    "creator_agent",
+  ],
+  manager: [
+    "master_agent",
     "verification_agent",
     "memory_agent",
     "code_agent",

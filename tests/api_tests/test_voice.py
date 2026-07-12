@@ -41,6 +41,32 @@ class TestVoiceStatus:
         # Text-based wake word detection is real, local, and needs no provider.
         assert deps["wake_word_engine"] == "available"
 
+    def test_status_flattened_shape_matches_dashboard_contract(self, client, make_owner) -> None:
+        owner = make_owner()
+        payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        for field in (
+            "mode", "enabled", "runtime_state", "wake_word_enabled", "wake_word_phrase",
+            "worker_connected", "worker_last_seen_at", "dependencies", "missing_dependencies",
+            "active_sessions", "last_wake_event", "last_command", "last_detected_language",
+            "last_speaker_name", "last_routed_agent", "last_error", "user_id", "workspace_id",
+        ):
+            assert field in payload, f"{field} missing from /voice/status"
+        assert payload["user_id"] == owner.user_id
+        assert payload["workspace_id"] == owner.workspace_id
+        assert payload["enabled"] is False
+        assert payload["runtime_state"] == "disabled"
+
+    def test_wake_word_admin_reports_dependency_required_runtime_state(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "wake_word_admin"}, headers=owner.headers)
+        payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        # No STT/TTS/speaker-recognition provider is configured in tests --
+        # even if approval was granted, runtime_state must honestly report
+        # the missing providers rather than claim "listening".
+        if payload["mode"] == "wake_word_admin":
+            assert payload["runtime_state"] == "dependency_required"
+            assert "stt_provider" in payload["missing_dependencies"]
+
 
 class TestVoiceConfig:
     def test_admin_can_enable_push_to_talk(self, client, make_owner) -> None:
@@ -77,6 +103,118 @@ class TestVoiceConfig:
         owner = make_owner()
         response = client.post("/api/v1/voice/config", json={"mode": "not_a_real_mode"}, headers=owner.headers)
         assert response.status_code == 400
+
+    def test_owner_can_set_standby_without_security_approval(self, client, make_owner) -> None:
+        owner = make_owner()
+        response = client.post("/api/v1/voice/config", json={"mode": "standby"}, headers=owner.headers)
+        assert response.status_code == 200
+        data = response_json(response)["data"]
+        assert data["settings"]["mode"] == "standby"
+        assert data["approved"] is True
+        assert data["requires_approval"] is False
+
+
+class TestVoiceWorkerHeartbeat:
+    def test_heartbeat_requires_auth(self, client) -> None:
+        response = client.post("/api/v1/voice/worker/heartbeat", json={})
+        assert response.status_code in (401, 403)
+
+    def test_heartbeat_marks_worker_connected(self, client, make_owner) -> None:
+        owner = make_owner()
+
+        before = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert before["worker_connected"] is False
+
+        heartbeat = client.post("/api/v1/voice/worker/heartbeat", json={}, headers=owner.headers)
+        assert heartbeat.status_code == 200
+        assert response_json(heartbeat)["data"]["worker_connected"] is True
+
+        after = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert after["worker_connected"] is True
+        assert after["worker_last_seen_at"] is not None
+
+
+class TestVoiceStandbyAndShutdown:
+    def test_standby_voice_command_pauses_processing(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"transcript": "William standby", "detected_language": "en"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 200
+        data = response_json(response)["data"]
+        assert data["success"] is True
+        assert "standing by" in data["response_text"].lower()
+
+        status_payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert status_payload["mode"] == "standby"
+        assert status_payload["runtime_state"] == "standby"
+
+    def test_standby_mode_refuses_command_without_wake_word(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "standby"}, headers=owner.headers)
+
+        response = client.post(
+            "/api/v1/voice/command",
+            json={"transcript": "what is our business report", "detected_language": "en"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "VOICE_STANDBY"
+
+    def test_standby_mode_reactivates_on_wake_word(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "standby"}, headers=owner.headers)
+
+        response = client.post(
+            "/api/v1/voice/command",
+            json={"transcript": "what is our business report", "detected_language": "en", "wake_word": "william"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 200
+
+        status_payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert status_payload["mode"] == "push_to_talk"
+
+    def test_shutdown_voice_command_disables_workspace_voice(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"transcript": "William shutdown voice", "detected_language": "en"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 200
+        assert response_json(response)["data"]["success"] is True
+
+        status_payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert status_payload["mode"] == "disabled"
+
+    def test_shutdown_voice_by_non_admin_profile_is_ignored(self, client, make_owner) -> None:
+        """A non-owner/admin trusted profile saying "shutdown voice" must not
+        be able to kill the whole workspace's voice mode -- the phrase falls
+        through to normal permission/routing handling instead."""
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        create = client.post(
+            "/api/v1/voice/profiles",
+            json={"display_name": "Guest", "role": "guest", "allowed_agents": ["creator"]},
+            headers=owner.headers,
+        )
+        profile_id = response_json(create)["data"]["profile"]["id"]
+
+        client.post(
+            "/api/v1/voice/command",
+            json={"transcript": "William shutdown voice", "detected_language": "en", "speaker_profile_id": profile_id},
+            headers=owner.headers,
+        )
+
+        status_payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert status_payload["mode"] == "push_to_talk"
 
 
 class TestVoiceProfiles:

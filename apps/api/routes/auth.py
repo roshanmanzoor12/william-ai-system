@@ -427,6 +427,7 @@ class UserRecord(BaseModel):
 class WorkspaceRecord(BaseModel):
     workspace_id: str
     name: str
+    slug: str = ""
     owner_user_id: str
     plan: str = Plan.FREE.value
     subscription_status: str = "active"
@@ -731,6 +732,7 @@ class DatabaseAuthStore:
         return WorkspaceRecord(
             workspace_id=workspace.id,
             name=workspace.name,
+            slug=workspace.slug or "",
             owner_user_id=workspace.owner_user_id,
             plan=_db_enum_value(workspace.plan),
             subscription_status=_db_enum_value(workspace.subscription_status),
@@ -2347,6 +2349,15 @@ class Auth:
         return {
             "workspace_id": workspace.workspace_id,
             "name": workspace.name,
+            # database/models/workspace.py::Workspace has a real, unique
+            # `slug` column (auto-derived from name via normalize_slug(), so
+            # a workspace named "My Workspace" gets "my-workspace") -- both
+            # this serializer and WorkspaceRecord (the Pydantic model this
+            # method actually receives) previously omitted it entirely, so
+            # every dashboard session fell back to reusing the raw
+            # workspace_id as a "slug" (see
+            # apps/dashboard/src/lib/api-client.ts::normalizeAuthPayload).
+            "slug": workspace.slug,
             "owner_user_id": workspace.owner_user_id,
             "plan": workspace.plan,
             "subscription_status": workspace.subscription_status,

@@ -12,8 +12,25 @@ import { EmptyState } from "@/components/state/EmptyState";
 import { ErrorState } from "@/components/state/ErrorState";
 import { LoadingState } from "@/components/state/LoadingState";
 
-type UserRole = "owner" | "admin" | "member" | "viewer";
-type UserPlan = "free" | "starter" | "pro" | "enterprise";
+// Previously only 4 of the real backend's 8 roles (apps/api/routes/auth.py's
+// Role enum: owner/admin/manager/developer/analyst/agent/user/viewer) and
+// only 4 of the real 5 plans (missing "business") were listed here. Any
+// session with role="manager" (a common, real DB-level WorkspaceMemberRole)
+// or a real "business"-plan workspace fell through ROLE_PERMISSIONS/
+// PLAN_AGENT_LIMITS lookups below to undefined/[], which made
+// validateAccess() incorrectly treat a legitimately logged-in user as
+// unauthorized and bounce them back to /login.
+type UserRole =
+  | "owner"
+  | "admin"
+  | "manager"
+  | "developer"
+  | "analyst"
+  | "agent"
+  | "member"
+  | "user"
+  | "viewer";
+type UserPlan = "free" | "starter" | "pro" | "business" | "enterprise";
 type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled";
 
 type ApiError = {
@@ -260,7 +277,18 @@ const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "agents:configure",
     "audit:read",
   ],
+  manager: [
+    "dashboard:read",
+    "workspace:read",
+    "agents:read",
+    "agents:run",
+    "audit:read",
+  ],
+  developer: ["dashboard:read", "workspace:read", "agents:read", "agents:run"],
+  analyst: ["dashboard:read", "workspace:read", "agents:read"],
+  agent: ["dashboard:read", "workspace:read", "agents:read"],
   member: ["dashboard:read", "workspace:read", "agents:read", "agents:run"],
+  user: ["dashboard:read", "workspace:read", "agents:read", "agents:run"],
   viewer: ["dashboard:read", "workspace:read", "agents:read"],
 };
 
@@ -268,6 +296,7 @@ const PLAN_AGENT_LIMITS: Record<UserPlan, number> = {
   free: 2,
   starter: 5,
   pro: 14,
+  business: 14,
   enterprise: 14,
 };
 
@@ -542,13 +571,22 @@ function readSession(): SessionData | null {
   try {
     const session = JSON.parse(raw) as SessionData;
 
+    // Only checks the session is well-formed here -- whether the workspace
+    // is actually ALLOWED to use the app (an active/trialing subscription)
+    // is validateAccess()'s job below, which can then show an honest
+    // "your subscription is not active" message. Rejecting past_due/
+    // canceled sessions at this layer instead silently treated a real,
+    // logged-in user as not-logged-in and bounced them to /login with no
+    // explanation.
     if (
       !session.accessToken ||
       !session.user_id ||
       !session.workspace_id ||
       !session.role ||
       !session.plan ||
-      !["active", "trialing"].includes(session.subscription_status)
+      !["active", "trialing", "past_due", "canceled"].includes(
+        session.subscription_status,
+      )
     ) {
       return null;
     }
@@ -742,6 +780,39 @@ function getStatusStyle(status: AgentStatus): string {
   if (status === "pending") return "bg-yellow-50 text-yellow-700";
   if (status === "maintenance") return "bg-blue-50 text-blue-700";
   return "bg-red-50 text-red-700";
+}
+
+// The Voice Agent's generic enabled/disabled registry status ("Inactive")
+// doesn't reflect whether voice is actually configured -- a workspace can
+// have voice fully set up (push_to_talk or wake word) while the agent
+// itself is simply not toggled on in the generic registry sense, which
+// read as "broken" even though nothing was wrong. This card shows the
+// real /voice/status runtime_state instead, matching the Voice Control
+// Settings section's own state labels exactly.
+type VoiceRuntimeStateLite =
+  | "disabled"
+  | "push_to_talk"
+  | "worker_offline"
+  | "dependency_required"
+  | "listening"
+  | "standby";
+
+const VOICE_RUNTIME_LABELS: Record<VoiceRuntimeStateLite, string> = {
+  disabled: "Disabled",
+  push_to_talk: "Push to Talk",
+  worker_offline: "Worker Offline",
+  dependency_required: "Dependency Required",
+  listening: "Listening",
+  standby: "Standby",
+};
+
+function getVoiceRuntimeStyle(state: VoiceRuntimeStateLite): string {
+  if (state === "listening") return "bg-emerald-50 text-emerald-700";
+  if (state === "push_to_talk") return "bg-blue-50 text-blue-700";
+  if (state === "worker_offline" || state === "dependency_required")
+    return "bg-orange-50 text-orange-700";
+  if (state === "standby") return "bg-purple-50 text-purple-700";
+  return "bg-neutral-100 text-neutral-600";
 }
 
 function getRiskStyle(risk: AgentRiskLevel): string {
@@ -1433,6 +1504,8 @@ export default function Page() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [capabilityStatusFilter, setCapabilityStatusFilter] =
     useState<CapabilityFilter>("all");
+  const [voiceRuntimeState, setVoiceRuntimeState] =
+    useState<VoiceRuntimeStateLite | null>(null);
 
   const canConfigureAgents = useMemo(() => {
     if (!session) return false;
@@ -1499,10 +1572,12 @@ export default function Page() {
         return;
       }
 
+      // The real backend endpoint (apps/api/routes/agents.py::list_agents)
+      // never binds/reads user_id/workspace_id query params -- it derives
+      // both from the verified JWT via get_current_auth_context. Sending
+      // them was harmless dead weight, not a functional requirement.
       const response = await apiRequest<AgentListResponseApi>(
-        `/agents?user_id=${encodeURIComponent(activeSession.user_id)}&workspace_id=${encodeURIComponent(
-          activeSession.workspace_id,
-        )}`,
+        "/agents",
         activeSession,
         {
           method: "GET",
@@ -1534,6 +1609,15 @@ export default function Page() {
       );
       setAgents(liveAgents);
       setState(liveAgents.length > 0 ? "ready" : "empty");
+
+      if (liveAgents.some((agent) => agent.key === "voice")) {
+        const voiceResponse = await apiRequest<{
+          runtime_state: VoiceRuntimeStateLite;
+        }>("/voice/status", activeSession, { method: "GET" });
+        if (voiceResponse.success && voiceResponse.data) {
+          setVoiceRuntimeState(voiceResponse.data.runtime_state);
+        }
+      }
     },
     [router],
   );
@@ -2115,14 +2199,25 @@ export default function Page() {
                               </div>
                             </div>
 
-                            <span
-                              className={[
-                                "rounded-full px-3 py-1 text-[11px] font-black capitalize",
-                                getStatusStyle(agent.status),
-                              ].join(" ")}
-                            >
-                              {agent.status}
-                            </span>
+                            {agent.key === "voice" && voiceRuntimeState ? (
+                              <span
+                                className={[
+                                  "rounded-full px-3 py-1 text-[11px] font-black",
+                                  getVoiceRuntimeStyle(voiceRuntimeState),
+                                ].join(" ")}
+                              >
+                                {VOICE_RUNTIME_LABELS[voiceRuntimeState]}
+                              </span>
+                            ) : (
+                              <span
+                                className={[
+                                  "rounded-full px-3 py-1 text-[11px] font-black capitalize",
+                                  getStatusStyle(agent.status),
+                                ].join(" ")}
+                              >
+                                {agent.status}
+                              </span>
+                            )}
                           </div>
 
                           <p className="min-h-10 text-sm font-medium leading-5 text-neutral-500">

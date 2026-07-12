@@ -107,8 +107,13 @@ def generate_id(prefix: str) -> str:
 
 def normalize_slug(value: str) -> str:
     cleaned = str(value or "").strip().lower()
-    cleaned = re.sub(r"[^a-z0-9\\s\\-]", "", cleaned)
-    cleaned = re.sub(r"\\s+", "-", cleaned)
+    # These were double-escaped raw-string regexes (r"\\s" is a literal
+    # backslash + "s", not whitespace) -- the first line silently dropped
+    # every space instead of preserving it for the second line to convert
+    # to a hyphen, so "My Workspace" normalized to "myworkspace" instead of
+    # the intended "my-workspace" for every workspace ever created.
+    cleaned = re.sub(r"[^a-z0-9\s\-]", "", cleaned)
+    cleaned = re.sub(r"\s+", "-", cleaned)
     cleaned = re.sub(r"-+", "-", cleaned)
     cleaned = cleaned.strip("-")
     return cleaned[:80] or f"workspace-{uuid.uuid4().hex[:8]}"

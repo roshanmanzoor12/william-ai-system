@@ -122,26 +122,31 @@ target_metadata = _load_project_base_metadata()
 # Safe model imports
 # --------------------------------------------------------------------------------------
 
-MODEL_MODULES: tuple[str, ...] = (
-    # Every real model module under database/models/. Kept as an explicit
-    # list (not a directory scan) so a broken/renamed file fails loudly via
-    # the warning log below rather than silently vanishing from migrations.
-    "database.models.user",
-    "database.models.workspace",
-    "database.models.role_permission",
-    "database.models.subscription",
-    "database.models.agent_registry",
-    "database.models.agent_task",
-    "database.models.agent_event",
-    "database.models.agent",
-    "database.models.memory",
-    "database.models.security",
-    "database.models.file",
-    "database.models.workflow",
-    "database.models.business",
-    "database.models.finance",
-    "database.models.voice",
-)
+try:
+    # Single source of truth for "every real model module" -- previously
+    # this tuple was hand-duplicated here, in tests/conftest.py, and (for
+    # the real running app) nowhere at all, which is how apps/api/main.py
+    # ended up never importing any model module or calling create_all() at
+    # startup. See database/models/__init__.py.
+    from database.models import MODEL_MODULES  # type: ignore
+except Exception:  # pragma: no cover -- keep Alembic import-safe if the package itself is broken
+    MODEL_MODULES: tuple[str, ...] = (
+        "database.models.user",
+        "database.models.workspace",
+        "database.models.role_permission",
+        "database.models.subscription",
+        "database.models.agent_registry",
+        "database.models.agent_task",
+        "database.models.agent_event",
+        "database.models.agent",
+        "database.models.memory",
+        "database.models.security",
+        "database.models.file",
+        "database.models.workflow",
+        "database.models.business",
+        "database.models.finance",
+        "database.models.voice",
+    )
 
 
 def safe_import_model_modules(module_paths: Iterable[str]) -> list[str]:

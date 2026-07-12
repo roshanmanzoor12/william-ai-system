@@ -85,33 +85,11 @@ except Exception:  # pragma: no cover
 # module is imported here so its table registers on Base.metadata, then
 # create_all() builds the schema once for the whole test session before any
 # test touches the database.
-_DB_MODEL_MODULES = (
-    "database.models.user",
-    "database.models.workspace",
-    "database.models.role_permission",
-    "database.models.subscription",
-    "database.models.agent_registry",
-    "database.models.agent_task",
-    "database.models.agent_event",
-    "database.models.agent",
-    "database.models.memory",
-    "database.models.security",
-    "database.models.file",
-    "database.models.workflow",
-    "database.models.business",
-    "database.models.finance",
-    "database.models.voice",
-)
-
 try:
     from database.db import Base as _DB_BASE, db_manager as _DB_MANAGER
+    from database.models import MODEL_MODULES as _DB_MODEL_MODULES, import_all_models as _import_all_models
 
-    for _module_path in _DB_MODEL_MODULES:
-        try:
-            __import__(_module_path)
-        except Exception:  # pragma: no cover
-            pass
-
+    _import_all_models(_DB_MODEL_MODULES)
     _DB_BASE.metadata.create_all(bind=_DB_MANAGER.engine)
 except Exception:  # pragma: no cover
     # database/db.py or a model module isn't importable -- tests that only

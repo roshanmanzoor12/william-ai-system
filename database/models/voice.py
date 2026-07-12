@@ -118,6 +118,7 @@ VOICE_MODE_PUSH_TO_TALK = "push_to_talk"
 VOICE_MODE_WAKE_WORD_ADMIN = "wake_word_admin"
 VOICE_MODE_WAKE_WORD_TRUSTED_USERS = "wake_word_trusted_users"
 VOICE_MODE_CONTINUOUS_CONVERSATION = "continuous_conversation"
+VOICE_MODE_STANDBY = "standby"
 
 VALID_VOICE_MODES = {
     VOICE_MODE_DISABLED,
@@ -125,6 +126,19 @@ VALID_VOICE_MODES = {
     VOICE_MODE_WAKE_WORD_ADMIN,
     VOICE_MODE_WAKE_WORD_TRUSTED_USERS,
     VOICE_MODE_CONTINUOUS_CONVERSATION,
+    VOICE_MODE_STANDBY,
+}
+
+# Modes the worker gates on local wake-word detection before contacting the
+# API at all (apps/worker_nodes/voice/voice_worker.py::WAKE_WORD_GATED_MODES
+# mirrors this set). standby is included: the worker keeps listening
+# locally, but only a detected wake word is allowed to reach
+# /voice/command while standby is active (see voice_service.route_voice_
+# command_to_master_agent's standby gate).
+WAKE_WORD_GATED_MODES = {
+    VOICE_MODE_WAKE_WORD_ADMIN,
+    VOICE_MODE_WAKE_WORD_TRUSTED_USERS,
+    VOICE_MODE_STANDBY,
 }
 
 # Modes that always require Security Agent approval to enable per the mission
@@ -242,10 +256,17 @@ class VoiceSettings(Base):
 
     last_wake_event_at = Column(DateTime(timezone=True), nullable=True)
     last_recognized_speaker_profile_id = Column(String(80), nullable=True)
+    last_speaker_display_name = Column(String(160), nullable=True)
     last_detected_language = Column(String(20), nullable=True)
     last_command_transcript = Column(Text, nullable=True)
     last_routed_agent = Column(String(80), nullable=True)
     last_response_text = Column(Text, nullable=True)
+
+    # Cleared on the next successful command -- reflects the CURRENT problem
+    # state for a live status dashboard, not a permanent error history (the
+    # voice_events table already keeps the full error event history).
+    last_error_message = Column(Text, nullable=True)
+    last_error_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
@@ -277,10 +298,13 @@ class VoiceSettings(Base):
             "voice_worker_last_seen_at": self.voice_worker_last_seen_at.isoformat() if self.voice_worker_last_seen_at else None,
             "last_wake_event_at": self.last_wake_event_at.isoformat() if self.last_wake_event_at else None,
             "last_recognized_speaker_profile_id": self.last_recognized_speaker_profile_id,
+            "last_speaker_display_name": self.last_speaker_display_name,
             "last_detected_language": self.last_detected_language,
             "last_command_transcript": self.last_command_transcript,
             "last_routed_agent": self.last_routed_agent,
             "last_response_text": self.last_response_text,
+            "last_error_message": self.last_error_message,
+            "last_error_at": self.last_error_at.isoformat() if self.last_error_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -547,7 +571,9 @@ __all__ = [
     "VOICE_MODE_WAKE_WORD_ADMIN",
     "VOICE_MODE_WAKE_WORD_TRUSTED_USERS",
     "VOICE_MODE_CONTINUOUS_CONVERSATION",
+    "VOICE_MODE_STANDBY",
     "VALID_VOICE_MODES",
+    "WAKE_WORD_GATED_MODES",
     "VOICE_MODES_REQUIRING_APPROVAL",
     "VOICEPRINT_STATUS_ENROLLED",
     "VOICEPRINT_STATUS_PENDING",

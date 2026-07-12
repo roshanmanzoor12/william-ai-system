@@ -130,12 +130,29 @@ uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
 # Frontend
 cd apps/dashboard && npm run dev
 
-# Voice worker (separate process/machine — the "ears and mouth")
-python -m apps.worker_nodes.voice.voice_worker --token <real JWT access token>
+# Voice worker -- real background listening mode (separate process/machine,
+# the "ears and mouth"; keeps running and sending a heartbeat every
+# --poll-interval seconds without the dashboard tab staying open)
+python -m apps.worker_nodes.voice.voice_worker --token <real JWT access token> --api-base-url http://localhost:8000/api/v1
 
 # Voice worker — text simulation mode (no mic/audio required, for testing)
-python -m apps.worker_nodes.voice.voice_worker --token <token> --simulate-text "William create a VEO prompt for ClickRonix"
+python -m apps.worker_nodes.voice.voice_worker --token <token> --api-base-url http://localhost:8000/api/v1 --simulate-text "William create a VEO prompt for ClickRonix"
 ```
+
+### 4a. Voice modes (database/models/voice.py::VALID_VOICE_MODES)
+
+| Mode | Approval required | Behavior |
+|---|---|---|
+| `disabled` | No | Voice fully off (default for every new workspace). |
+| `push_to_talk` | No | Typed/PTT text only, no wake-word gating. |
+| `wake_word_admin` | Yes | Wake-word listening, owner/admin speakers only. |
+| `wake_word_trusted_users` | Yes | Wake-word listening for any active trusted profile. |
+| `continuous_conversation` | Yes | Always-listening; blocked unless explicitly approved. |
+| `standby` | No | Worker stays connected but /voice/command refuses any request that doesn't carry a locally-detected wake word (`wake_word` field set) -- reactivates into `push_to_talk` automatically on the next wake-word-carrying command. Say "William standby" / "William shutdown voice" to a listening session to reach this or `disabled` without touching the dashboard. |
+
+`GET /voice/status` returns both the raw `settings` object (backward compatible) and a flattened dashboard-shaped view at the top level of `data`: `mode`, `enabled`, `runtime_state` (`disabled`/`push_to_talk`/`worker_offline`/`dependency_required`/`listening`/`standby`), `wake_word_enabled`, `wake_word_phrase`, `worker_connected` (staleness-aware -- false again ~90s after the last heartbeat/wake-event), `worker_last_seen_at`, `dependencies`, `missing_dependencies`, `active_sessions`, `last_wake_event`, `last_command`, `last_detected_language`, `last_speaker_name`, `last_routed_agent`, `last_error`, `user_id`, `workspace_id`.
+
+`POST /voice/worker/heartbeat` -- called by the worker's idle loop independent of wake events, so `worker_connected` reflects a genuinely-alive worker rather than only updating whenever a wake word happens to fire.
 
 ## 5. Dashboard instructions
 
@@ -211,3 +228,4 @@ python -m apps.worker_nodes.voice.voice_worker --simulate-text "William create a
 | `speech_output_status` is always `external_dependency_required` | No `WILLIAM_TTS_PROVIDER` configured | Expected until a real TTS provider is connected — text response still works |
 | Voice worker prints "dependency-check mode" and exits/idles | STT/TTS/speaker-recognition/audio-input libraries genuinely not installed | Expected in this repo by default; connect real providers and set the corresponding env vars |
 | A specific agent (e.g. Code Agent) always returns `Unsupported <Agent> action` after a permission check passes | Pre-existing Planner↔agent action-vocabulary mismatch, unrelated to voice/Phase 9 (see PRODUCTION_READINESS_REPORT.md PART A8 #1) | Not a voice bug — same gap affects typed commands to that agent too |
+| `/voice/status`, `/voice/config`, or `/voice/worker/heartbeat` return a 500 with `no such column: voice_settings.last_speaker_display_name` (or `last_error_message`/`last_error_at`) | The dev-only `william.db` SQLite file was created before this update added new `voice_settings` columns; `Base.metadata.create_all()` only creates missing *tables*, never adds columns to existing ones | Stop the backend, delete the repo-root `william.db` (disposable dev state, not a source of truth — see CLAUDE.md), restart so it's recreated with the current schema |

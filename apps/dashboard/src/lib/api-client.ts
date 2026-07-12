@@ -263,6 +263,7 @@ type RawUserRecord = {
 type RawWorkspaceRecord = {
   workspace_id: string;
   name: string;
+  slug?: string;
   plan: string;
   subscription_status: string;
 };
@@ -313,11 +314,13 @@ const ALLOWED_SUBSCRIPTION_STATUSES: SubscriptionStatus[] = [
 /**
  * apps/api/routes/auth.py's login/register/refresh responses nest tokens
  * under `data.tokens.access_token` and put role/plan/permissions under
- * `data.membership`, not a flat `data.subscription` object -- there is no
- * `workspace.slug` field anywhere in the backend (WorkspaceRecord has no
- * slug concept), so workspace_id is reused for display purposes rather
- * than inventing one. This is the one place that translation happens, so
- * every page can keep reading the already-agreed-on flat SessionData shape.
+ * `data.membership`, not a flat `data.subscription` object. `workspace.slug`
+ * is a real, unique field (database/models/workspace.py::Workspace.slug,
+ * auto-derived from the workspace name) -- fall back to workspace_id only
+ * for defensive safety against an old/cached response shape, not because
+ * the backend lacks the field. This is the one place that translation
+ * happens, so every page can keep reading the already-agreed-on flat
+ * SessionData shape.
  */
 function normalizeAuthPayload(
   raw: RawLoginData,
@@ -347,7 +350,7 @@ function normalizeAuthPayload(
     subscription_status: subscriptionStatus,
     permissions: raw.membership.permissions || [],
     workspace_name: raw.workspace.name,
-    workspace_slug: raw.workspace.workspace_id,
+    workspace_slug: raw.workspace.slug || raw.workspace.workspace_id,
     saved_at: new Date().toISOString(),
   };
 }
@@ -571,7 +574,8 @@ export type VoiceMode =
   | "push_to_talk"
   | "wake_word_admin"
   | "wake_word_trusted_users"
-  | "continuous_conversation";
+  | "continuous_conversation"
+  | "standby";
 
 export type VoiceDependencyStatusValue =
   | "available"
@@ -586,6 +590,14 @@ export type VoiceDependencyStatus = {
   speaker_recognition_provider: VoiceDependencyStatusValue;
 };
 
+export type VoiceRuntimeState =
+  | "disabled"
+  | "push_to_talk"
+  | "worker_offline"
+  | "dependency_required"
+  | "listening"
+  | "standby";
+
 export type VoiceSettings = {
   id: string;
   workspace_id: string;
@@ -597,10 +609,13 @@ export type VoiceSettings = {
   voice_worker_last_seen_at: string | null;
   last_wake_event_at: string | null;
   last_recognized_speaker_profile_id: string | null;
+  last_speaker_display_name: string | null;
   last_detected_language: string | null;
   last_command_transcript: string | null;
   last_routed_agent: string | null;
   last_response_text: string | null;
+  last_error_message: string | null;
+  last_error_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -608,6 +623,32 @@ export type VoiceSettings = {
 export type VoiceStatusData = {
   settings: VoiceSettings;
   wake_word_default: string;
+  // Flattened, dashboard-shaped view of the same settings row (see
+  // apps/api/routes/voice.py::get_voice_status) -- prefer these over
+  // digging into `settings` when driving the Voice Control UI's states.
+  mode: VoiceMode;
+  enabled: boolean;
+  runtime_state: VoiceRuntimeState;
+  wake_word_enabled: boolean;
+  wake_word_phrase: string;
+  worker_connected: boolean;
+  worker_last_seen_at: string | null;
+  dependencies: VoiceDependencyStatus;
+  missing_dependencies: string[];
+  active_sessions: number;
+  last_wake_event: string | null;
+  last_command: string | null;
+  last_detected_language: string | null;
+  last_speaker_name: string | null;
+  last_routed_agent: string | null;
+  last_error: string | null;
+  user_id: string;
+  workspace_id: string;
+};
+
+export type VoiceHeartbeatData = {
+  worker_connected: boolean;
+  worker_last_seen_at: string | null;
 };
 
 export type VoiceConfigUpdateData = {
@@ -804,4 +845,6 @@ export const voiceApi = {
 
   enrollComplete: (payload: VoiceEnrollCompletePayload) =>
     post<VoiceEnrollCompleteData>("/voice/enroll/complete", payload),
+
+  workerHeartbeat: () => post<VoiceHeartbeatData>("/voice/worker/heartbeat", {}),
 };

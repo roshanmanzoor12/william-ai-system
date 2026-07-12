@@ -33,7 +33,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field, validator
@@ -697,7 +697,15 @@ class TaskRecord(BaseModel):
     priority: str = TaskPriority.NORMAL.value
     status: str = TaskStatus.CREATED.value
     result: Optional[Dict[str, Any]] = None
-    error: Optional[Dict[str, Any]] = None
+    # Agent results are not required to shape their own "error" field
+    # consistently -- some return a structured {code, detail} dict, others
+    # (e.g. MasterAgent's own step-aggregation failure) return a short
+    # string like "ONE_OR_MORE_STEPS_FAILED". Both are real, honest values;
+    # this field accepts either instead of silently mis-declaring itself as
+    # dict-only (which previously produced a Pydantic serializer warning on
+    # every string-shaped error and could give frontend callers a false
+    # sense that `.detail`/`.message` always exist).
+    error: Optional[Union[str, Dict[str, Any]]] = None
     approved_by_security: bool = False
     security_result: Optional[Dict[str, Any]] = None
     memory_payload: Optional[Dict[str, Any]] = None
