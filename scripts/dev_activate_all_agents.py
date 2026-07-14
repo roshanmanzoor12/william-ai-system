@@ -35,10 +35,32 @@ routed agents stay security-routed: enabling them here goes through the
 same real security_review() call as always, it just doesn't require a
 human to click through the dashboard for each of the 15.
 
+Previously-live bug this script helped surface (fixed in database/db.py
+and apps/api/routes/agents.py, not here): a relative SQLite dev-database
+path resolved against the CURRENT PROCESS's working directory meant a
+script run from one directory and a backend server started from another
+could silently read/write two different william.db files -- so
+scripts/grant_platform_admin.py could report success while a fresh
+/auth/login against the real running server still showed
+is_platform_admin=False, and every /agents/{name}/enable call then hit a
+second, independent bug: the Security Agent hook crashed with a bare
+TypeError (caught and turned into a blanket 403) for every single agent,
+regardless of role, because it was being called with an incompatible
+argument shape. Both are now fixed at the root (database/db.py anchors
+relative sqlite:/// paths to the repo root regardless of launch-time CWD;
+apps/api/routes/agents.py's OptionalAgentHook now calls check_permission
+with the arguments it actually requires). This script's diagnostics below
+are designed to make either bug immediately visible again if it recurs.
+
 Usage:
     python scripts/dev_activate_all_agents.py --email roshanmanzoor230@gmail.com
     python scripts/dev_activate_all_agents.py --email roshanmanzoor230@gmail.com --password AdminPass123 --workspace-slug digital-promotix-hq
     python scripts/dev_activate_all_agents.py --token <JWT> --api-base-url http://localhost:8000/api/v1
+
+    # Grants platform-admin (scripts/grant_platform_admin.py) for --email
+    # first, in-process against the same database, then logs in and
+    # enables/assigns all 15 agents in one step:
+    python scripts/dev_activate_all_agents.py --email roshanmanzoor230@gmail.com --password AdminPass123 --force-dev-admin
 """
 
 from __future__ import annotations
@@ -83,6 +105,62 @@ def _fail(message: str) -> int:
     return 1
 
 
+def _run_force_dev_admin(email: str) -> bool:
+    """
+    Runs scripts/grant_platform_admin.py's real logic in-process, against
+    the same database this process would otherwise only read via HTTP.
+    This is safe (unlike touching AGENT_STORE) because User.is_platform_admin
+    and Workspace.plan are real, persisted DB rows -- not an in-memory
+    per-process cache -- so writing them here is visible to the live
+    backend server on its very next request, same as running
+    grant_platform_admin.py as its own separate process would be.
+
+    grant_platform_admin.py lives in this same scripts/ directory, so a
+    bare `import grant_platform_admin` resolves it directly (Python adds a
+    directly-run script's own directory to sys.path[0]) without needing a
+    scripts/__init__.py package marker.
+    """
+    try:
+        import grant_platform_admin as gpa
+    except Exception as exc:
+        print(f"WARNING: --force-dev-admin could not import grant_platform_admin.py: {exc}")
+        return False
+
+    print(f"\n--force-dev-admin: granting platform admin for {email} before logging in...")
+    exit_code = gpa.main([email, "--quiet"])
+    if exit_code != 0:
+        print("WARNING: --force-dev-admin's grant step did not report success; continuing to login anyway.")
+        return False
+
+    print(f"--force-dev-admin: platform admin granted for {email}.\n")
+    return True
+
+
+def _db_check_is_platform_admin(email: str) -> "bool | None":
+    """
+    Best-effort, READ-ONLY cross-check against the same database
+    grant_platform_admin.py writes to -- unlike AGENT_STORE, User rows are
+    real and shared, so reading (never writing) them here from a second
+    process is safe and is exactly the kind of independent-process check
+    that would have caught the relative-sqlite-path bug immediately: if
+    this prints a different value than the login response below, the two
+    processes are still reading different database files.
+    Returns None if the database package isn't importable from here
+    (e.g. running against a remote deployment with no local DB access).
+    """
+    try:
+        from database.db import db_manager
+        from database.models.user import User
+
+        with db_manager.session_scope() as db:
+            user = db.query(User).filter(User.email == email.strip().lower()).first()
+            if user is None:
+                return None
+            return bool(user.is_platform_admin)
+    except Exception:
+        return None
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(description="Enable and assign all 15 real agents to one admin user/workspace via the real running backend.")
     parser.add_argument("--email", default=None, help="Login email (mutually exclusive with --token).")
@@ -90,12 +168,23 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--token", default=None, help="A real JWT access token, instead of --email/--password.")
     parser.add_argument("--workspace-slug", default=None, help="Sanity-check the logged-in workspace's slug matches this (does not target a different workspace).")
     parser.add_argument("--api-base-url", default=os.getenv("WILLIAM_API_BASE_URL", DEFAULT_API_BASE_URL))
+    parser.add_argument(
+        "--force-dev-admin",
+        action="store_true",
+        help="Development only: run scripts/grant_platform_admin.py's grant logic for --email first (same database, in-process), then log in and enable/assign all agents in one step.",
+    )
     args = parser.parse_args(argv)
 
     if requests is None:
         return _fail("The 'requests' package is required for this script (pip install requests).")
 
     base_url = args.api_base_url.rstrip("/")
+    print(f"API base URL: {base_url}")
+
+    if args.force_dev_admin:
+        if not args.email:
+            return _fail("--force-dev-admin requires --email.")
+        _run_force_dev_admin(args.email)
 
     token = args.token
     user_id = None
@@ -110,6 +199,8 @@ def main(argv: list | None = None) -> int:
         if not password:
             return _fail("No password given -- pass --password or set WILLIAM_DEV_PASSWORD.")
 
+        db_is_admin = _db_check_is_platform_admin(args.email)
+
         login = requests.post(f"{base_url}/auth/login", json={"email": args.email, "password": password}, timeout=15)
         if login.status_code != 200 or not login.json().get("success"):
             return _fail(f"Login failed ({login.status_code}): {login.text[:300]}")
@@ -121,12 +212,24 @@ def main(argv: list | None = None) -> int:
         workspace_slug = login_data["workspace"].get("slug")
         is_admin = bool(login_data["user"].get("is_platform_admin"))
 
-        print(f"Logged in as {args.email} | user_id={user_id} | workspace={workspace_slug or workspace_id} | is_platform_admin={is_admin}")
+        print(f"Logged in as {args.email} | user_id={user_id} | workspace_id={workspace_id} | workspace_slug={workspace_slug or '(none)'}")
+        print(f"  login response is_platform_admin : {is_admin}")
+        print(f"  DB row is_platform_admin (cross-check) : {db_is_admin if db_is_admin is not None else 'unavailable (no local DB access from this process)'}")
+
+        if db_is_admin is not None and db_is_admin != is_admin:
+            print(
+                "WARNING: the database row and the live login response DISAGREE on is_platform_admin. "
+                "This is exactly the symptom of the backend server and this script reading two different "
+                "database files -- compare this process's resolved DB path against the backend server's own "
+                "startup log line ('SQLite dev database ensured at startup | ... | db_path=...')."
+            )
+
         if not is_admin:
             print(
-                "WARNING: this user is not a platform admin -- agent enable/assign will still be attempted using their "
-                "real workspace role, but plan-gating will NOT be bypassed. Run scripts/grant_platform_admin.py first "
-                "if you want the full dev-unlimited behavior."
+                "WARNING: this user is not a platform admin according to the live backend -- agent enable/assign "
+                "will still be attempted using their real workspace role, but plan-gating will NOT be bypassed. "
+                "Run 'python scripts/grant_platform_admin.py' first, or re-run this command with "
+                "--force-dev-admin, if you want the full dev-unlimited behavior."
             )
         if args.workspace_slug and workspace_slug and args.workspace_slug != workspace_slug:
             print(
@@ -157,7 +260,20 @@ def main(argv: list | None = None) -> int:
             enabled.append(agent_name)
         else:
             failed.append(agent_name)
-            print(f"  could not enable '{agent_name}': {response.status_code} {body.get('message') or response.text[:200]}")
+            error = body.get("error")
+            reason = None
+            if isinstance(error, dict):
+                reason = error.get("code")
+                details = error.get("details")
+                if isinstance(details, dict):
+                    # security_review()'s raw result is embedded here when
+                    # SECURITY_AGENT_DENIED -- surface the actual denial
+                    # message/error instead of just the generic wrapper.
+                    inner_message = details.get("message")
+                    inner_error = details.get("error")
+                    if inner_message or inner_error:
+                        reason = f"{reason}: {inner_message or ''} {inner_error or ''}".strip()
+            print(f"  could not enable '{agent_name}': {response.status_code} {body.get('message') or response.text[:200]} | reason={reason or 'unknown'}")
 
     if enabled:
         assign = requests.put(
@@ -177,11 +293,19 @@ def main(argv: list | None = None) -> int:
         total_count = len(entries)
         enabled_count = sum(1 for entry in entries if (entry.get("workspace_config") or {}).get("enabled"))
 
-    print(f"\nEnabled via /agents/*/enable : {len(enabled)}/{len(ALL_AGENT_NAMES)} ({', '.join(enabled) or 'none'})")
+    permissions = requests.get(f"{base_url}/agent-permissions?workspace_id={workspace_id}", headers=headers, timeout=15)
+    assigned_count = 0
+    if permissions.status_code == 200:
+        users = permissions.json().get("data", {}).get("users", [])
+        me_entry = next((u for u in users if u.get("user_id") == user_id), None)
+        if me_entry:
+            assigned_count = len(me_entry.get("assigned_agents", []))
+
+    print(f"\nEnabled via /agents/*/enable    : {len(enabled)}/{len(ALL_AGENT_NAMES)} ({', '.join(enabled) or 'none'})")
     if failed:
-        print(f"Failed to enable            : {', '.join(failed)}")
-    print(f"Assigned via /agent-permissions : {len(enabled)} agent(s) to user_id={user_id}")
-    print(f"/agents now reports enabled  : {enabled_count}/{total_count}")
+        print(f"Failed to enable                : {', '.join(failed)}")
+    print(f"/agents now reports Enabled      : {enabled_count}/{total_count}")
+    print(f"/agent-permissions reports Assigned : {assigned_count} agent(s) for user_id={user_id}")
     print(
         "\nNote: 'enabled'/'assigned' is not the same as 'active' -- active means a real task or worker has actually "
         "run recently, which this script never fakes. Voice/System agents may show runtime_state=dependency_required "

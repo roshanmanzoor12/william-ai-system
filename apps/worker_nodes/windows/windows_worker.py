@@ -121,6 +121,21 @@ class ActionType(str, Enum):
     HEARTBEAT = "heartbeat"
     NOOP = "noop"
 
+    # Real task-dispatch protocol action names (apps/api/routes/
+    # system_worker.py::WORKER_MVP_ACTIONS) -- these exact string values
+    # must match the server's action_type vocabulary byte-for-byte, since
+    # coerce_action() below matches on value, not name. OPEN_FILE/
+    # OPEN_FOLDER above already match the server's "open_file"/"open_folder"
+    # 1:1, so no new members were needed for those two.
+    OPEN_MICROSOFT_STORE = "open_microsoft_store"
+    OPEN_CHROME = "open_chrome"
+    OPEN_VSCODE = "open_vscode"
+    OPEN_NOTEPAD = "open_notepad"
+    OPEN_EXPLORER = "open_explorer"
+    OPEN_DOWNLOADS_FOLDER = "open_downloads_folder"
+    DOWNLOAD_GENERATED_FILE_TO_DOWNLOADS = "download_generated_file_to_downloads"
+    SHOW_SYSTEM_INFO = "show_system_info"
+
 
 class RiskLevel(str, Enum):
     """Action risk level."""
@@ -306,6 +321,14 @@ class WindowsWorker:
         ActionType.SHUTDOWN: RiskLevel.CRITICAL,
         ActionType.RESTART: RiskLevel.CRITICAL,
         ActionType.SLEEP: RiskLevel.HIGH,
+        ActionType.OPEN_MICROSOFT_STORE: RiskLevel.LOW,
+        ActionType.OPEN_CHROME: RiskLevel.LOW,
+        ActionType.OPEN_VSCODE: RiskLevel.LOW,
+        ActionType.OPEN_NOTEPAD: RiskLevel.LOW,
+        ActionType.OPEN_EXPLORER: RiskLevel.LOW,
+        ActionType.OPEN_DOWNLOADS_FOLDER: RiskLevel.LOW,
+        ActionType.DOWNLOAD_GENERATED_FILE_TO_DOWNLOADS: RiskLevel.LOW,
+        ActionType.SHOW_SYSTEM_INFO: RiskLevel.LOW,
     }
 
     SAFE_APP_ALIASES: dict[str, list[str]] = {
@@ -322,6 +345,7 @@ class WindowsWorker:
         "wordpad": ["write.exe"],
         "store": ["ms-windows-store:"],
         "microsoft_store": ["ms-windows-store:"],
+        "vscode": ["code"],
     }
 
     SAFE_TEXT_EXTENSIONS = {
@@ -382,27 +406,44 @@ class WindowsWorker:
             ActionType.SHUTDOWN: self._handle_shutdown,
             ActionType.RESTART: self._handle_restart,
             ActionType.SLEEP: self._handle_sleep,
+            ActionType.OPEN_MICROSOFT_STORE: self._handle_open_microsoft_store,
+            ActionType.OPEN_CHROME: self._handle_open_chrome,
+            ActionType.OPEN_VSCODE: self._handle_open_vscode,
+            ActionType.OPEN_NOTEPAD: self._handle_open_notepad,
+            ActionType.OPEN_EXPLORER: self._handle_open_explorer,
+            ActionType.OPEN_DOWNLOADS_FOLDER: self._handle_open_downloads_folder,
+            ActionType.DOWNLOAD_GENERATED_FILE_TO_DOWNLOADS: self._handle_download_generated_file,
+            ActionType.SHOW_SYSTEM_INFO: self._handle_system_info,
         }
 
     # -------------------------------------------------------------------------
     # Public lifecycle
     # -------------------------------------------------------------------------
 
-    def register_device(self) -> dict[str, Any]:
-        """Register this Windows worker with the control plane."""
-        payload = {
-            "worker_id": self.device_id,
-            "session_id": self.session_id,
+    # Real server-side allowlist (apps/api/routes/system_worker.py::
+    # WORKER_MVP_ACTIONS) this worker actually implements -- sent on every
+    # heartbeat so the dashboard can show what this specific worker build
+    # supports.
+    SUPPORTED_SERVER_ACTIONS: list[str] = [
+        "open_microsoft_store", "open_chrome", "open_vscode", "open_notepad",
+        "open_explorer", "open_folder", "open_file",
+        "download_generated_file_to_downloads", "open_downloads_folder",
+        "show_system_info",
+    ]
+
+    def _heartbeat_payload(self) -> dict[str, Any]:
+        return {
+            "platform": "windows",
             "device_name": self.config.device_name,
-            "platform": self.platform_info(),
-            "capabilities": self.capabilities(),
-            "status": WorkerStatus.ONLINE.value,
-            "version": self.VERSION,
-            "dry_run": self.config.dry_run,
-            "registered_at": iso_now(),
+            "supported_actions": self.SUPPORTED_SERVER_ACTIONS,
         }
 
-        response = self._post("/worker/register", payload)
+    def register_device(self) -> dict[str, Any]:
+        """A worker's first heartbeat IS its registration -- the real
+        backend route (POST /system/worker/heartbeat) upserts the
+        presence row on every call, so there is no separate register
+        endpoint to hit."""
+        response = self._post("/system/worker/heartbeat", self._heartbeat_payload())
         self._registered = bool(response.get("ok", True))
         self.status = WorkerStatus.ONLINE if self._registered else WorkerStatus.ERROR
 
@@ -427,20 +468,7 @@ class WindowsWorker:
         """Send heartbeat to control plane."""
         self._last_heartbeat_at = utc_now()
 
-        payload = {
-            "worker_id": self.device_id,
-            "session_id": self.session_id,
-            "device_name": self.config.device_name,
-            "status": self.status.value,
-            "current_task_id": self.current_task_id,
-            "platform": self.platform_info(),
-            "capabilities": self.capabilities(),
-            "queue_size": self.task_queue.qsize(),
-            "dry_run": self.config.dry_run,
-            "heartbeat_at": self._last_heartbeat_at.isoformat(),
-        }
-
-        response = self._post("/worker/heartbeat", payload)
+        response = self._post("/system/worker/heartbeat", self._heartbeat_payload())
 
         self.record_event(
             WorkerEventType.HEARTBEAT_SENT,
@@ -460,24 +488,24 @@ class WindowsWorker:
         )
 
     def poll_task(self) -> Optional[WorkerTask]:
-        """Poll one task from the control plane."""
-        response = self._get(
-            "/worker/tasks/poll",
-            query={
-                "worker_id": self.device_id,
-                "session_id": self.session_id,
-            },
-        )
+        """Poll one task from the control plane. The real backend route
+        (GET /system/worker/tasks) returns up to `limit` queued tasks in
+        one list, workspace-scoped by the caller's JWT -- this worker only
+        ever executes one at a time, so it takes the first and leaves the
+        rest queued for the next poll."""
+        response = self._get("/system/worker/tasks", query={"limit": 1})
+
+        tasks = response.get("tasks") or []
+        raw_task = tasks[0] if tasks else None
 
         self.record_event(
             WorkerEventType.TASK_POLLED,
             {
                 "response_ok": response.get("ok", True),
-                "has_task": bool(response.get("task")),
+                "has_task": bool(raw_task),
             },
         )
 
-        raw_task = response.get("task")
         if not raw_task:
             return None
 
@@ -501,7 +529,9 @@ class WindowsWorker:
         """
         self.install_signal_handlers()
         self.status = WorkerStatus.STARTING
+        print(f"[worker] connecting to {self.config.api_base_url or '(no backend configured)'} as \"{self.config.device_name}\"...", flush=True)
         self.register_device()
+        print(f"[worker] connected. device_id={self.device_id}", flush=True)
 
         next_heartbeat = 0.0
 
@@ -512,6 +542,7 @@ class WindowsWorker:
                 self.status = WorkerStatus.PAUSED
                 if now >= next_heartbeat:
                     self.heartbeat()
+                    print("[worker] heartbeat sent (paused)", flush=True)
                     next_heartbeat = now + self.config.heartbeat_interval_seconds
                 time.sleep(1)
                 continue
@@ -519,24 +550,43 @@ class WindowsWorker:
             if now >= next_heartbeat:
                 self.status = WorkerStatus.IDLE if not self.current_task_id else WorkerStatus.BUSY
                 self.heartbeat()
+                print(f"[worker] heartbeat sent | status={self.status.value}", flush=True)
                 next_heartbeat = now + self.config.heartbeat_interval_seconds
 
-            task = self.poll_task()
+            try:
+                task = self.poll_task()
+            except Exception as exc:
+                print(f"[worker] error polling for tasks: {exc}", flush=True)
+                task = None
+
             if task:
-                self.execute_task(task)
+                print(f"[worker] task received: {task.action.value} ({task.task_id})", flush=True)
+                print(f"[worker] executing {task.action.value}...", flush=True)
+                result = self.execute_task(task)
+                print(f"[worker] result: {'OK' if result.get('ok') else 'FAILED'} - {result.get('message')}", flush=True)
+                print("[worker] result reported to backend", flush=True)
+            else:
+                print("[worker] waiting for tasks...", flush=True)
 
             time.sleep(self.config.poll_interval_seconds)
 
         self.status = WorkerStatus.OFFLINE
         self.record_event(WorkerEventType.WORKER_STOPPED, {"stopped_at": iso_now()})
-        self._post(
-            "/worker/offline",
-            {
-                "worker_id": self.device_id,
-                "session_id": self.session_id,
-                "offline_at": iso_now(),
-            },
-        )
+        print("[worker] shutting down", flush=True)
+        try:
+            # No matching /worker/offline route exists server-side yet
+            # (out of scope for this MVP -- the presence heartbeat's own
+            # WORKER_STALE_AFTER_SECONDS staleness window already makes a
+            # worker look offline again on its own once heartbeats stop).
+            # This call is best-effort only; a graceful-shutdown signal
+            # isn't required for correctness.
+            self._post(
+                "/system/worker/offline",
+                {"worker_id": self.device_id, "session_id": self.session_id, "offline_at": iso_now()},
+                fail_silently=True,
+            )
+        except Exception:
+            pass
 
     def stop(self) -> dict[str, Any]:
         """Stop worker safely."""
@@ -715,7 +765,10 @@ class WindowsWorker:
         task_id = str(raw.get("task_id") or raw.get("id") or "").strip()
         user_id = str(raw.get("user_id") or "").strip()
         workspace_id = str(raw.get("workspace_id") or "").strip()
-        action_raw = str(raw.get("action") or "").strip()
+        # Real backend rows (database/models/worker_task.py::WorkerTask.to_dict())
+        # use "action_type"/"action_payload"; "action"/"payload" kept as a
+        # fallback for any other hypothetical raw task shape.
+        action_raw = str(raw.get("action_type") or raw.get("action") or "").strip()
 
         if not task_id:
             raise ValueError("task_id is required.")
@@ -733,7 +786,7 @@ class WindowsWorker:
             user_id=user_id,
             workspace_id=workspace_id,
             action=action,
-            payload=self.sanitize_payload(raw.get("payload") or {}),
+            payload=self.sanitize_payload(raw.get("action_payload") or raw.get("payload") or {}),
             requested_by=raw.get("requested_by"),
             role=raw.get("role"),
             subscription_plan=raw.get("subscription_plan"),
@@ -925,6 +978,57 @@ class WindowsWorker:
 
         os.startfile(str(path))  # type: ignore[attr-defined]
         return self.success_response("Folder opened.", {"path": str(path)})
+
+    def _handle_aliased_open_app(self, task: WorkerTask, *, alias: str, args: Optional[list[str]] = None) -> dict[str, Any]:
+        """Shared by the OPEN_MICROSOFT_STORE/OPEN_CHROME/OPEN_VSCODE/
+        OPEN_NOTEPAD/OPEN_EXPLORER handlers below -- injects the known
+        SAFE_APP_ALIASES key into the task's own payload, then reuses
+        _handle_open_app's existing, already-tested resolve/launch logic
+        rather than duplicating it per app."""
+        task.payload["app"] = alias
+        if args:
+            task.payload["args"] = args
+        return self._handle_open_app(task)
+
+    def _handle_open_microsoft_store(self, task: WorkerTask) -> dict[str, Any]:
+        return self._handle_aliased_open_app(task, alias="store")
+
+    def _handle_open_chrome(self, task: WorkerTask) -> dict[str, Any]:
+        return self._handle_aliased_open_app(task, alias="chrome")
+
+    def _handle_open_vscode(self, task: WorkerTask) -> dict[str, Any]:
+        return self._handle_aliased_open_app(task, alias="vscode", args=["."])
+
+    def _handle_open_notepad(self, task: WorkerTask) -> dict[str, Any]:
+        return self._handle_aliased_open_app(task, alias="notepad")
+
+    def _handle_open_explorer(self, task: WorkerTask) -> dict[str, Any]:
+        return self._handle_aliased_open_app(task, alias="explorer")
+
+    def _handle_open_downloads_folder(self, task: WorkerTask) -> dict[str, Any]:
+        task.payload["path"] = str(Path.home() / "Downloads")
+        return self._handle_open_folder(task)
+
+    def _handle_download_generated_file(self, task: WorkerTask) -> dict[str, Any]:
+        """Honest failure when nothing real is reachable -- real file
+        generation isn't built yet (a later phase), so this never fakes a
+        successful download; it only ever succeeds once a real,
+        server-populated download_url is actually present and fetchable."""
+        download_url = task.payload.get("download_url")
+        if not download_url:
+            raise ValueError("No generated file is available to download yet.")
+
+        filename = task.payload.get("filename") or Path(urlparse(download_url).path).name or "download"
+        destination = Path.home() / "Downloads" / filename
+
+        if self.config.dry_run:
+            return self.success_response("Dry-run: download skipped.", {"download_url": download_url, "destination": str(destination)})
+
+        request = Request(download_url, headers=self._headers(), method="GET")
+        with urlopen(request, timeout=self.config.request_timeout_seconds) as response:
+            destination.write_bytes(response.read())
+
+        return self.success_response("File downloaded.", {"download_url": download_url, "destination": str(destination)})
 
     def _handle_open_url(self, task: WorkerTask) -> dict[str, Any]:
         url = self.safe_url(task.payload.get("url"))
@@ -1351,21 +1455,25 @@ class WindowsWorker:
         status: TaskStatus,
         result: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Send task result to control plane."""
-        payload = {
-            "worker_id": self.device_id,
-            "session_id": self.session_id,
-            "task_id": task.task_id,
-            "user_id": task.user_id,
-            "workspace_id": task.workspace_id,
-            "status": status.value,
-            "action": task.action.value,
-            "correlation_id": task.correlation_id,
-            "result": self.sanitize_payload(result),
-            "reported_at": iso_now(),
-        }
+        """Send task result to control plane. The real backend route only
+        understands two outcomes (completed/failed) -- every other
+        WorkerTask-local status (rejected/waiting_security/cancelled/
+        skipped) is honestly reported as failed with a real error_code
+        explaining why, never silently dropped or reported as completed."""
+        is_completed = status == TaskStatus.COMPLETED
+        sanitized_result = self.sanitize_payload(result)
 
-        return self._post("/worker/tasks/report", payload)
+        payload: dict[str, Any] = {
+            "status": "completed" if is_completed else "failed",
+            "device_id": self.device_id,
+        }
+        if is_completed:
+            payload["result_message"] = sanitized_result.get("message") or "Action completed."
+        else:
+            payload["error_code"] = status.value
+            payload["error_details"] = sanitized_result.get("message") or json.dumps(sanitized_result)[:2000]
+
+        return self._post(f"/system/worker/tasks/{task.task_id}/result", payload)
 
     def prepare_security_payload(self, task: WorkerTask) -> dict[str, Any]:
         """Prepare Security Agent review payload."""
@@ -1485,7 +1593,7 @@ class WindowsWorker:
             self.audit_events = self.audit_events[-500:]
 
         try:
-            self._post("/worker/events", event, fail_silently=True)
+            self._post("/system/worker/events", event, fail_silently=True)
         except Exception:
             pass
 
@@ -1516,7 +1624,7 @@ class WindowsWorker:
         fail_silently: bool = False,
     ) -> dict[str, Any]:
         if self.http_client:
-            return self.http_client("POST", path, payload)
+            return self._unwrap_envelope(self.http_client("POST", path, payload))
 
         if not self.config.api_base_url:
             return {
@@ -1545,7 +1653,7 @@ class WindowsWorker:
         query: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         if self.http_client:
-            return self.http_client("GET", path, query or {})
+            return self._unwrap_envelope(self.http_client("GET", path, query or {}))
 
         if not self.config.api_base_url:
             return {
@@ -1575,11 +1683,39 @@ class WindowsWorker:
             return {"ok": True}
         try:
             decoded = json.loads(raw.decode("utf-8"))
-            if isinstance(decoded, dict):
-                return decoded
-            return {"ok": True, "data": decoded}
         except json.JSONDecodeError:
             return {"ok": True, "raw": raw.decode("utf-8", errors="replace")}
+
+        if not isinstance(decoded, dict):
+            return {"ok": True, "data": decoded}
+
+        return WindowsWorker._unwrap_envelope(decoded)
+
+    @staticmethod
+    def _unwrap_envelope(decoded: Mapping[str, Any]) -> dict[str, Any]:
+        """Real backend routes (apps/api/routes/system_worker.py) always
+        answer with the William/Jarvis {success, message, data, error,
+        metadata} envelope, not the {ok, ...} shape the rest of this file
+        was originally written against. Called from BOTH the real urlopen
+        path (_decode_http_response) AND the http_client test-injection
+        path in _post/_get, so a test double returning a real envelope
+        (matching what the actual backend sends) behaves identically to a
+        live network call -- every other method (poll_task/
+        register_device/heartbeat/report_task_result) keeps using
+        response.get("ok")/response.get(field) unchanged, while still
+        reading real values out of "data"."""
+        if not isinstance(decoded, dict) or "success" not in decoded:
+            return dict(decoded) if isinstance(decoded, dict) else {"ok": True, "data": decoded}
+
+        unwrapped: dict[str, Any] = {"ok": bool(decoded.get("success"))}
+        data = decoded.get("data")
+        if isinstance(data, dict):
+            unwrapped.update(data)
+        if not decoded.get("success"):
+            error = decoded.get("error") or {}
+            unwrapped["error"] = (error.get("code") if isinstance(error, dict) else None) or decoded.get("message")
+        unwrapped["_envelope"] = decoded
+        return unwrapped
 
     # -------------------------------------------------------------------------
     # Utility helpers
@@ -1750,11 +1886,20 @@ def main() -> int:
     parser.add_argument("--demo-action", type=str, help="Run one local demo action.")
     parser.add_argument("--payload-json", type=str, default="{}", help="JSON payload for demo action.")
     parser.add_argument("--dry-run", action="store_true", help="Force dry-run mode.")
+    parser.add_argument("--token", type=str, default=None, help="Real JWT access token (overrides WILLIAM_WORKER_TOKEN).")
+    parser.add_argument("--api-base-url", type=str, default=None, help="Backend API base URL, e.g. http://localhost:8001/api/v1 (overrides WILLIAM_WORKER_API_BASE_URL).")
+    parser.add_argument("--device-name", type=str, default=None, help='Display name for this device, e.g. "Roshan Windows Laptop" (overrides WILLIAM_WORKER_DEVICE_NAME).')
     args = parser.parse_args()
 
     config = WorkerConfig()
     if args.dry_run:
         config.dry_run = True
+    if args.token:
+        config.worker_token = args.token
+    if args.api_base_url:
+        config.api_base_url = args.api_base_url.rstrip("/")
+    if args.device_name:
+        config.device_name = args.device_name
 
     worker = WindowsWorker(config=config)
 
@@ -1786,7 +1931,14 @@ def main() -> int:
             )
             return 1
 
-    if args.run:
+    # A real token + api-base-url with no other explicit one-shot flag
+    # means "run live" -- matches the documented command:
+    #   python -m apps.worker_nodes.windows.windows_worker --token <JWT>
+    #     --api-base-url http://localhost:8001/api/v1 --device-name "..."
+    # (no --run needed when both are supplied this way).
+    should_run = args.run or (bool(config.worker_token) and bool(config.api_base_url))
+
+    if should_run:
         worker.run_forever()
         return 0
 

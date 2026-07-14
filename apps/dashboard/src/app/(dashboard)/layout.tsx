@@ -52,6 +52,7 @@ type NavItem = {
 
 const primaryNavItems: NavItem[] = [
   { label: "AI Console", href: "/", icon: Home },
+  { label: "Assistant", href: "/assistant", icon: MessageSquareText },
   { label: "Dashboard", href: "/dashboard", icon: Gauge },
   { label: "Agents", href: "/agents", icon: Bot },
   { label: "Tasks", href: "/tasks", icon: FileClock },

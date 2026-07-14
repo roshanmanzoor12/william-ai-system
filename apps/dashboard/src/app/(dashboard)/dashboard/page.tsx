@@ -12,6 +12,7 @@ import { EmptyState } from "@/components/state/EmptyState";
 import { ErrorState } from "@/components/state/ErrorState";
 import { LoadingState } from "@/components/state/LoadingState";
 import { WilliamVoicePanel } from "@/components/voice/WilliamVoicePanel";
+import { WindowsWorkerStatusCard } from "@/components/system/WindowsWorkerStatusCard";
 import {
   type SessionData,
   readSession,
@@ -968,6 +969,7 @@ export default function Page() {
               </div>
 
               <WilliamVoicePanel />
+              <WindowsWorkerStatusCard variant="compact" />
             </section>
 
             <section className="space-y-5">

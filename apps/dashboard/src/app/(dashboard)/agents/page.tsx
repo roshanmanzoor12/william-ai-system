@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 import { EmptyState } from "@/components/state/EmptyState";
 import { ErrorState } from "@/components/state/ErrorState";
 import { LoadingState } from "@/components/state/LoadingState";
+import { WindowsWorkerStatusCard } from "@/components/system/WindowsWorkerStatusCard";
 
 // Previously only 4 of the real backend's 8 roles (apps/api/routes/auth.py's
 // Role enum: owner/admin/manager/developer/analyst/agent/user/viewer) and
@@ -929,6 +930,11 @@ function deriveAgentStatus(
   if (health.status === "degraded") return "maintenance";
   if (health.status === "unavailable") return "blocked";
   if (health.status === "disabled") return "inactive";
+  // System Agent (and any future agent whose real "active" signal is
+  // actual task/worker activity, not just a successful module import)
+  // reports "idle" when enabled and loaded but nothing has really run
+  // recently -- shown as "pending" so it never reads as falsely active.
+  if (health.status === "idle") return "pending";
   return "active";
 }
 
@@ -2320,6 +2326,12 @@ export default function Page() {
                               </p>
                             </div>
                           </div>
+
+                          {agent.key === "system" && (
+                            <div className="mt-4">
+                              <WindowsWorkerStatusCard variant="full" />
+                            </div>
+                          )}
 
                           <div className="mt-4 flex flex-wrap items-center gap-2">
                             <span

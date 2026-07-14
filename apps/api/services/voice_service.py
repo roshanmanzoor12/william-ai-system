@@ -40,6 +40,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("william.api.services.voice_service")
 
+try:
+    from core.final_response_builder import build_final_response
+except Exception:  # pragma: no cover
+    build_final_response = None  # type: ignore
+
 UTC = timezone.utc
 
 
@@ -810,6 +815,16 @@ def _resolve_reply_language(profile: Dict[str, Any], detected_language: str) -> 
 
 
 def _extract_response_text(master_result: Optional[Dict[str, Any]]) -> str:
+    """Delegates to core/final_response_builder.py's shared, smarter
+    synthesis (generalized from this function's own original 3-tier
+    fallback: message -> data.summary/data.message -> generic canned
+    string) so voice and the Phase 1 assistant route share one
+    implementation instead of two. Falls back to the original inline
+    logic only if the shared module somehow isn't importable, to keep this
+    function import-safe."""
+    if build_final_response is not None:
+        return build_final_response(master_result)["final_answer"]
+
     if not master_result:
         return ""
     if master_result.get("message"):

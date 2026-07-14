@@ -1294,6 +1294,8 @@ OPTIONAL_ROUTERS: List[Tuple[str, str, str]] = [
     ("apps.api.routes.agent_permissions", "router", "/agent-permissions"),
     ("apps.api.routes.admin", "router", "/admin"),
     ("apps.api.routes.system_worker", "router", "/system"),
+    ("apps.api.routes.capabilities", "router", "/system"),
+    ("apps.api.routes.assistant", "router", "/assistant"),
     # No apps.api.routes.devices entry: no device-pairing concept exists
     # anywhere else in this codebase (no model, no agent, no worker
     # protocol for it) to build a real router against -- inventing one
@@ -1583,8 +1585,9 @@ class Main:
             if db_manager.engine.dialect.name == "sqlite":
                 Base.metadata.create_all(bind=db_manager.engine)
                 logger.info(
-                    "SQLite dev database ensured at startup | tables=%d",
+                    "SQLite dev database ensured at startup | tables=%d | db_path=%s",
                     len(Base.metadata.tables),
+                    db_manager.engine.url.render_as_string(hide_password=True),
                 )
         except Exception:
             logger.exception(

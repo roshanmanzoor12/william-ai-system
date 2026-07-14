@@ -26,10 +26,16 @@ import re
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Generator, Iterable, List, Mapping, Optional, Tuple, Union
 
+# database/db.py lives at <repo_root>/database/db.py -- anchoring here
+# (rather than trusting the process's current working directory) is what
+# makes the SQLite dev-fallback path deterministic. See _resolve_database_url.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 try:
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import create_engine, event, text
     from sqlalchemy.engine import Engine
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import Session, declarative_base, sessionmaker
@@ -156,6 +162,9 @@ class Db:
     - Memory payload compatibility
     """
 
+    # Kept relative in source for readability; _resolve_database_url()
+    # rewrites this (and any other relative sqlite:/// URL) to an absolute
+    # path anchored at REPO_ROOT before it ever reaches SQLAlchemy/sqlite3.
     DEFAULT_SQLITE_URL = "sqlite:///./william.db"
 
     READ_ONLY_PATTERN = re.compile(
@@ -206,9 +215,41 @@ class Db:
         ).strip()
 
         if not url:
-            return self.DEFAULT_SQLITE_URL
+            url = self.DEFAULT_SQLITE_URL
 
-        return url
+        return self._anchor_relative_sqlite_url(url)
+
+    @staticmethod
+    def _anchor_relative_sqlite_url(url: str) -> str:
+        """
+        A relative sqlite:/// URL (e.g. "sqlite:///./william.db" or
+        "sqlite:///william.db") is resolved by sqlite3 against the
+        CURRENT WORKING DIRECTORY of whatever process opens it -- not
+        against this repo. Two processes launched from different working
+        directories (e.g. `uvicorn` started from apps/api/ vs.
+        `python scripts/grant_platform_admin.py` run from the repo root)
+        would silently open two different, unrelated william.db files with
+        no error from either side: a script could report
+        is_platform_admin=True while every real API request kept reading a
+        different, unmodified database. Anchoring every relative sqlite
+        path to REPO_ROOT makes the DB file identical regardless of
+        launch-time CWD. Absolute sqlite URLs (sqlite:////already/absolute
+        or sqlite:///C:/...) and non-sqlite URLs (postgres, in-memory) pass
+        through unchanged.
+        """
+        if not url.startswith("sqlite:///") or ":memory:" in url:
+            return url
+
+        raw_path = url[len("sqlite:///"):]
+
+        # sqlite:////abs/unix/path (4 slashes total) or a Windows drive
+        # letter path (sqlite:///C:/...) are already absolute.
+        if raw_path.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", raw_path):
+            return url
+
+        relative_path = raw_path[2:] if raw_path.startswith("./") else raw_path
+        absolute_path = (REPO_ROOT / relative_path).resolve()
+        return f"sqlite:///{absolute_path.as_posix()}"
 
     def _resolve_echo(self, echo: Optional[bool]) -> bool:
         if echo is not None:
@@ -225,8 +266,16 @@ class Db:
             "pool_pre_ping": True,
         }
 
-        if database_url.startswith("sqlite"):
+        is_sqlite = database_url.startswith("sqlite")
+
+        if is_sqlite:
             connect_args["check_same_thread"] = False
+            # SQLite's own busy-retry (default 5s) is too short once the API
+            # server, the Windows worker's heartbeat/poll loop, and the
+            # assistant chat path are all hitting the same file concurrently
+            # -- without this, a slightly slow writer trips "database is
+            # locked" in a sibling request instead of just waiting its turn.
+            connect_args["timeout"] = int(os.getenv("SQLITE_BUSY_TIMEOUT_SECONDS", "30"))
 
             # A plain sqlite:///:memory: URL gives every checked-out
             # connection its own private, empty in-memory database under
@@ -243,11 +292,28 @@ class Db:
             engine_kwargs["max_overflow"] = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
             engine_kwargs["pool_recycle"] = int(os.getenv("DATABASE_POOL_RECYCLE", "1800"))
 
-        return create_engine(
+        engine = create_engine(
             database_url,
             connect_args=connect_args,
             **engine_kwargs,
         )
+
+        if is_sqlite and ":memory:" not in database_url:
+            # WAL lets readers and a writer proceed concurrently instead of
+            # the default rollback-journal mode's stricter single-writer,
+            # blocking-readers behavior -- the other half of making
+            # concurrent worker heartbeats/polls + normal API traffic safe
+            # against the same file. Set on every new DBAPI connection, not
+            # just once, since journal_mode is a per-connection pragma in
+            # older SQLite builds.
+            @event.listens_for(engine, "connect")
+            def _set_sqlite_pragmas(dbapi_connection, connection_record):  # noqa: ANN001
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.close()
+
+        return engine
 
     def _safe_database_url(self) -> str:
         """

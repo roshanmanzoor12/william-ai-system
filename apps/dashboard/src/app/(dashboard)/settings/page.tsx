@@ -39,6 +39,7 @@ import {
   Zap,
 } from "lucide-react";
 import { VoiceControlSettings } from "@/components/voice/VoiceControlSettings";
+import { WindowsWorkerStatusCard } from "@/components/system/WindowsWorkerStatusCard";
 import { TrustedVoiceProfiles } from "@/components/voice/TrustedVoiceProfiles";
 
 type RoleLevel = "owner" | "admin" | "manager" | "member" | "viewer";
@@ -775,6 +776,22 @@ export default function SettingsPage() {
                 />
               ))}
             </div>
+          </section>
+
+          <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
+            <div className="mb-6">
+              <p className="text-sm font-bold text-[#ff5a3d]">Device Worker</p>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-neutral-950">
+                Windows Worker
+              </h2>
+              <p className="mt-1 text-sm font-medium text-neutral-500">
+                Lets System Agent actually open apps/folders/files on your
+                Windows device. Never fakes a connection -- start the worker
+                below to go live.
+              </p>
+            </div>
+
+            <WindowsWorkerStatusCard variant="full" />
           </section>
 
           <section className="rounded-[32px] border border-neutral-100 bg-neutral-50 p-5 md:p-6">

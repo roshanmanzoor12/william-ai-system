@@ -498,6 +498,56 @@ class TestAdminEnablesAllAgents:
         )
         assert after_enabled == len(KNOWN_AGENT_IDS) == 15
 
+    def test_non_admin_role_cannot_enable_agents(self, client, make_owner, make_member) -> None:
+        """POST /agents/{name}/enable requires Role.ADMIN or higher
+        (require_auth_role) -- a "member" must be rejected before the
+        request ever reaches the Security Agent hook."""
+        owner = make_owner()
+        member = make_member(owner, role="member")
+
+        response = client.post(
+            "/api/v1/agents/creator/enable",
+            json={"reason": "should be denied"},
+            headers=member.headers,
+        )
+        assert response.status_code == 403
+
+    def test_free_plan_owner_cannot_enable_a_starter_plan_agent(
+        self, client, make_owner
+    ) -> None:
+        """A real (non-admin) owner on the free plan must still be
+        plan-gated when calling POST /agents/{name}/enable directly --
+        the Security Agent hook fix must not have created a bypass."""
+        owner = make_owner()
+
+        response = client.post(
+            "/api/v1/agents/business/enable",
+            json={"reason": "should be plan-blocked"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 402
+        assert response.json()["error"]["code"] == "PLAN_REQUIRED"
+
+    def test_security_review_no_longer_crashes_but_still_requires_real_role_gate(
+        self, client, make_owner
+    ) -> None:
+        """Regression test for the Security Agent hook fix itself: a plan-
+        and role-eligible owner enabling a single core agent must succeed
+        cleanly (no 500, no SECURITY_AGENT_DENIED from the previous
+        check_permission() TypeError), while the enable-endpoint's real
+        role/plan gates (proven by the two tests above) remain intact."""
+        owner = make_owner()
+
+        response = client.post(
+            "/api/v1/agents/memory/enable",
+            json={"reason": "core agent, free plan, owner role"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"]["workspace_config"]["enabled"] is True
+
 
 class TestTaskCreationAndIsolation:
     """POST /api/v1/tasks -- the real way to 'run agent X', per tasks.py's TaskCreateRequest."""

@@ -37,7 +37,8 @@ class TestSystemWorkerStatus:
         owner = make_owner()
 
         heartbeat = client.post(
-            "/api/v1/system/worker/heartbeat?platform=windows",
+            "/api/v1/system/worker/heartbeat",
+            json={"platform": "windows"},
             headers=owner.headers,
         )
         assert heartbeat.status_code == 200
@@ -50,7 +51,7 @@ class TestSystemWorkerStatus:
         owner_a = make_owner()
         owner_b = make_owner()
 
-        client.post("/api/v1/system/worker/heartbeat?platform=windows", headers=owner_a.headers)
+        client.post("/api/v1/system/worker/heartbeat", json={"platform": "windows"}, headers=owner_a.headers)
 
         status_b = client.get("/api/v1/system/worker/status", headers=owner_b.headers)
         assert status_b.json()["data"]["worker_connected"] is False
@@ -58,18 +59,22 @@ class TestSystemWorkerStatus:
 
 class TestSystemAgentReflectsRealWorkerStatus:
     @pytest.mark.asyncio
-    async def test_open_app_after_worker_heartbeat_reports_external_dependency_required(
+    async def test_open_app_after_worker_heartbeat_queues_a_real_task(
         self, client, make_owner
     ) -> None:
         """Once a Windows worker has heartbeat-registered for this exact
         workspace, SystemAgent.open_app's honest state changes from "no
-        worker at all" (device_worker_offline) to "worker connected, but
-        remote dispatch isn't built yet" (external_dependency_required) --
-        it still never claims a fake success in either state."""
+        worker at all" (device_worker_offline) to a REAL queued task now
+        that the dispatch protocol exists (database/models/worker_task.py,
+        apps/api/routes/system_worker.py's GET /worker/tasks + POST
+        /worker/tasks/{id}/result). It still never claims the app actually
+        opened -- only "queued", never "completed", since only the
+        worker's own result report can say that."""
         owner = make_owner()
 
         heartbeat = client.post(
-            "/api/v1/system/worker/heartbeat?platform=windows",
+            "/api/v1/system/worker/heartbeat",
+            json={"platform": "windows"},
             headers=owner.headers,
         )
         assert heartbeat.status_code == 200
@@ -84,6 +89,6 @@ class TestSystemAgentReflectsRealWorkerStatus:
 
         result = await agent.open_app({"app": "Microsoft Store"}, context)
 
-        assert result["success"] is False
-        assert result["error"] == "external_dependency_required"
-        assert result["metadata"]["runtime_state"] == "external_dependency_required"
+        assert result["success"] is True
+        assert result["data"]["runtime_state"] == "queued"
+        assert result["data"]["task_id"]

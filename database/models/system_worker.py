@@ -25,14 +25,15 @@ SaaS isolation: every row is scoped by workspace_id.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 try:
-    from sqlalchemy import Boolean, Column, DateTime, Index, String
+    from sqlalchemy import Boolean, Column, DateTime, Index, String, Text
 except Exception as exc:  # pragma: no cover
     raise ImportError(
         "SQLAlchemy is required for database/models/system_worker.py. "
@@ -69,6 +70,22 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
+def _json_dumps(value: Any) -> str:
+    try:
+        return json.dumps(value if value is not None else [], ensure_ascii=False)
+    except TypeError:
+        return json.dumps([str(item) for item in (value or [])], ensure_ascii=False)
+
+
+def _json_loads(value: Optional[str], default: Any) -> Any:
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
 PLATFORM_WINDOWS = "windows"
 PLATFORM_MAC = "mac"
 VALID_PLATFORMS = {PLATFORM_WINDOWS, PLATFORM_MAC}
@@ -91,12 +108,29 @@ class SystemWorkerStatus(Base):
     worker_connected = Column(Boolean, nullable=False, default=False)
     worker_last_seen_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Added alongside the real worker task-dispatch protocol
+    # (database/models/worker_task.py) -- purely additive, presence-record
+    # columns for dashboard display; none of these change what
+    # compute_worker_connected() considers "connected."
+    device_name = Column(String(140), nullable=True)
+    supported_actions_json = Column(Text, nullable=True)
+    last_command = Column(Text, nullable=True)
+    last_result = Column(Text, nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
 
     __table_args__ = (
         Index("ix_system_worker_status_workspace", "workspace_id"),
     )
+
+    @property
+    def supported_actions(self) -> List[str]:
+        return _json_loads(self.supported_actions_json, [])
+
+    @supported_actions.setter
+    def supported_actions(self, value: List[str]) -> None:
+        self.supported_actions_json = _json_dumps(value)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -105,6 +139,10 @@ class SystemWorkerStatus(Base):
             "platform": self.platform,
             "worker_connected": bool(self.worker_connected),
             "worker_last_seen_at": self.worker_last_seen_at.isoformat() if self.worker_last_seen_at else None,
+            "device_name": self.device_name,
+            "supported_actions": self.supported_actions,
+            "last_command": self.last_command,
+            "last_result": self.last_result,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

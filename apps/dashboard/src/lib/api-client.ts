@@ -1031,3 +1031,56 @@ export const adminApi = {
       { target_user_id: userId, assigned_agents: assignedAgents, notes },
     ),
 };
+
+// =============================================================================
+// Assistant (Phase 1 -- Conversational Assistant Brain,
+// apps/api/routes/assistant.py)
+// =============================================================================
+
+export type AssistantRequiredField = {
+  name: string;
+  prompt: string;
+  options: string[] | null;
+  required: boolean;
+};
+
+export type AssistantMessageData = {
+  final_answer: string;
+  follow_up_questions: string[];
+  status: "waiting_for_user" | "running" | "completed" | "failed";
+  route: string[];
+  generated_files: Array<{ file_id?: string; filename?: string; download_url?: string }>;
+  error: { code: string; message: string; details?: unknown } | null;
+  conversation_thread_id: string;
+  required_inputs?: AssistantRequiredField[];
+  collected_inputs?: Record<string, unknown>;
+};
+
+export const assistantApi = {
+  sendMessage: (payload: {
+    message: string;
+    conversation_thread_id?: string | null;
+    collected_inputs?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }) => post<AssistantMessageData>("/assistant/message", payload),
+
+  getThread: (conversationThreadId: string) =>
+    get<AssistantMessageData & { last_message?: string; intent_category?: string; template_key?: string | null }>(
+      `/assistant/threads/${encodeURIComponent(conversationThreadId)}`,
+    ),
+};
+
+export type SystemWorkerStatusData = {
+  workspace_id: string;
+  platform: string | null;
+  worker_connected: boolean;
+  worker_last_seen_at: string | null;
+  device_name: string | null;
+  supported_actions: string[];
+  last_command: string | null;
+  last_result: string | null;
+};
+
+export const systemWorkerApi = {
+  status: () => get<SystemWorkerStatusData>("/system/worker/status"),
+};

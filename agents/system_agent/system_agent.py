@@ -1169,6 +1169,102 @@ class SystemAgent(BaseAgent):
             metadata={"runtime_state": code, "app": app, "worker_connected": worker_connected},
         )
 
+    # Maps a human app name to the real worker action_type strings the
+    # server-side allowlist in apps/api/routes/system_worker.py knows about
+    # (WORKER_MVP_ACTIONS). This is deliberately a THIRD, small app-alias
+    # table alongside apps/worker_nodes/windows/windows_worker.py's
+    # SAFE_APP_ALIASES and app_control.py's DEFAULT_APP_ALIASES -- it
+    # operates at a different layer (human name -> worker action_type
+    # string, not app name -> executable), so it isn't really duplicating
+    # either; it's the thing that lets the backend decide what to queue
+    # before any worker-side alias resolution happens.
+    _APP_TO_WORKER_ACTION = {
+        "microsoft store": "open_microsoft_store",
+        "store": "open_microsoft_store",
+        "ms-windows-store": "open_microsoft_store",
+        "chrome": "open_chrome",
+        "google chrome": "open_chrome",
+        "vscode": "open_vscode",
+        "vs code": "open_vscode",
+        "visual studio code": "open_vscode",
+        "notepad": "open_notepad",
+        "explorer": "open_explorer",
+        "file explorer": "open_explorer",
+        "downloads": "open_downloads_folder",
+        "downloads folder": "open_downloads_folder",
+    }
+
+    def _map_app_to_worker_action(self, app: str) -> Optional[str]:
+        return self._APP_TO_WORKER_ACTION.get(app.strip().lower())
+
+    async def _dispatch_worker_action(
+        self,
+        app: str,
+        context: TaskContext,
+        *,
+        verb: str,
+    ) -> Dict[str, Any]:
+        """Real dispatch: queues an actual WorkerTask row a connected
+        worker will poll and execute, instead of the honest-refusal-only
+        behavior _device_control_unavailable_result provides. Never
+        returns "completed" here -- only the worker's own result report
+        (POST /system/worker/tasks/{id}/result) can ever mark a task
+        completed; this method only ever says the command was SENT."""
+        action_type = self._map_app_to_worker_action(app)
+        if action_type is None:
+            return self._error_result(
+                f"'{app}' is not a supported device action yet.",
+                "unsupported_worker_action",
+                context,
+                metadata={"runtime_state": "unsupported_worker_action", "app": app},
+            )
+
+        try:
+            from apps.api.routes.system_worker import classify_worker_action
+            from database.db import db_manager
+            from database.models.worker_task import WorkerTaskService
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Could not reach worker task dispatch machinery: %s", exc)
+            return self._error_result(
+                "I can't reach the device task queue right now.",
+                "worker_dispatch_unavailable",
+                context,
+                metadata={"runtime_state": "external_dependency_required", "app": app},
+            )
+
+        classification = await classify_worker_action(action_type, context=context)
+
+        if classification == "rejected":
+            return self._error_result(
+                f"'{app}' is not a supported device action yet.",
+                "unsupported_worker_action",
+                context,
+                metadata={"runtime_state": "unsupported_worker_action", "app": app},
+            )
+
+        with db_manager.session_scope() as db:
+            task = WorkerTaskService.create(
+                db,
+                user_id=context.user_id,
+                workspace_id=context.workspace_id,
+                action_type=action_type,
+                action_payload={"app": app, "verb": verb},
+                requires_approval=(classification == "requires_approval"),
+            )
+            task_dict = task.to_dict()
+
+        if classification == "requires_approval":
+            return self._safe_result(
+                "This action needs security approval before I can continue.",
+                data={"runtime_state": "approval_required", **task_dict},
+            )
+
+        return self._safe_result(
+            f"I sent the command to {verb} {app} to your Windows device. "
+            "I'll only say it's done once your device confirms it.",
+            data={"runtime_state": "queued", "task_id": task_dict["task_id"], "app": app},
+        )
+
     async def open_app(
         self,
         payload: Dict[str, Any],
@@ -1180,9 +1276,11 @@ class SystemAgent(BaseAgent):
         This NEVER executes locally on the backend server's own host --
         real app-opening only ever happens on a connected Windows/Mac
         device worker (apps/worker_nodes/windows/windows_worker.py), which
-        this backend cannot fake having reached. See
-        _device_control_unavailable_result for the honest states this
-        returns instead.
+        this backend cannot fake having reached. If no worker is connected,
+        see _device_control_unavailable_result for the honest refusal. If a
+        worker IS connected, a real task is queued (_dispatch_worker_action)
+        -- this method still never claims the app actually opened; only the
+        worker's own result report can do that.
         """
 
         app = _coerce_str(payload.get("app") or payload.get("name") or payload.get("path")).strip()
@@ -1191,9 +1289,10 @@ class SystemAgent(BaseAgent):
             return self._error_result("Missing app name/path.", "missing_app", context)
 
         worker_status = self._device_worker_status(context)
-        return self._device_control_unavailable_result(
-            app, context, worker_connected=bool(worker_status.get("worker_connected"))
-        )
+        if not bool(worker_status.get("worker_connected")):
+            return self._device_control_unavailable_result(app, context, worker_connected=False)
+
+        return await self._dispatch_worker_action(app, context, verb="open")
 
     async def close_app(
         self,

@@ -27,7 +27,7 @@ import os
 import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -50,6 +50,14 @@ if not logger.handlers:
     logger.addHandler(stream_handler)
 
 logger.setLevel(os.getenv("WILLIAM_LOG_LEVEL", "INFO").upper())
+
+# How recent a WorkerTask has to be for System Agent to honestly count as
+# "active" rather than merely "enabled" -- matches the worker's own
+# heartbeat-staleness window order of magnitude (see
+# apps/api/routes/system_worker.py::WORKER_STALE_AFTER_SECONDS) without
+# being so short that a task queued seconds before a dashboard refresh
+# flickers back to idle.
+SYSTEM_AGENT_ACTIVE_WINDOW_MINUTES = 15
 
 
 # =============================================================================
@@ -416,6 +424,7 @@ class OptionalAgentHook:
         raise last_error or RuntimeError(f"Could not instantiate {cls}")
 
     async def call(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        print("!!!! DIAGNOSTIC MARKER 2026-07-13 PATCHED OptionalAgentHook.call() IS RUNNING !!!!", flush=True)
         if not self.load() or self.instance is None:
             return {
                 "success": False,
@@ -436,8 +445,10 @@ class OptionalAgentHook:
 
             for method_name in self.method_candidates:
                 method = getattr(self.instance, method_name, None)
+                print(f"!!!! DIAG: trying method_name={method_name!r} callable={callable(method)} !!!!", flush=True)
                 if callable(method):
                     if method_name == "check_permission":
+                        print("!!!! DIAG: entering check_permission branch, will call with 2 args !!!!", flush=True)
                         # agents.security_agent.security_agent.SecurityAgent.
                         # check_permission(task_context, action, ...) needs
                         # a real task_context (with "user_id", not this
@@ -452,8 +463,11 @@ class OptionalAgentHook:
                         task_context = dict(payload)
                         task_context.setdefault("user_id", payload.get("actor_user_id"))
                         action = str(payload.get("type") or payload.get("action") or "unknown_action")
+                        print(f"!!!! DIAG: about to call method(task_context, action) with action={action!r} !!!!", flush=True)
                         result = await maybe_await(method(task_context, action))
+                        print("!!!! DIAG: check_permission call SUCCEEDED !!!!", flush=True)
                     else:
+                        print(f"!!!! DIAG: entering ELSE branch (1-arg call) for method_name={method_name!r} !!!!", flush=True)
                         result = await maybe_await(method(payload))
                     return self._normalize(result)
 
@@ -469,6 +483,9 @@ class OptionalAgentHook:
             }
 
         except Exception as exc:
+            print("!!!! DIAG: EXCEPTION CAUGHT, full traceback follows !!!!", flush=True)
+            traceback.print_exc()
+            print("!!!! DIAG: END TRACEBACK !!!!", flush=True)
             return {
                 "success": False,
                 "message": f"{self.component_name} failed.",
@@ -610,6 +627,11 @@ class AgentStatus(str, Enum):
     UNAVAILABLE = "unavailable"
     DISABLED = "disabled"
     DEGRADED = "degraded"
+    # Loaded and enabled, but with no real recent activity to point to --
+    # distinct from AVAILABLE so "enabled" and "actually active" never get
+    # conflated in the dashboard for agents like System Agent, whose only
+    # real activity signal is a genuine queued/running/completed WorkerTask.
+    IDLE = "idle"
 
 
 class AgentCapability(BaseModel):
@@ -1263,7 +1285,11 @@ def find_import_source(definition: AgentDefinition) -> Tuple[bool, Optional[str]
     return False, None, locals().get("last_error", "No import candidates were available.")
 
 
-async def get_agent_health(agent_name: str) -> AgentHealthRecord:
+async def get_agent_health(
+    agent_name: str,
+    *,
+    workspace_id: Optional[str] = None,
+) -> AgentHealthRecord:
     definition = require_agent_definition(agent_name)
 
     loaded, source, error = find_import_source(definition)
@@ -1276,6 +1302,35 @@ async def get_agent_health(agent_name: str) -> AgentHealthRecord:
 
     if not loaded and definition.core_agent:
         status_value = AgentStatus.DEGRADED.value
+
+    recent_worker_activity: Optional[bool] = None
+    if (
+        status_value == AgentStatus.AVAILABLE.value
+        and definition.agent_name == "system"
+        and workspace_id
+    ):
+        # "Enabled" (a permission) and "active" (real activity) are
+        # different concepts everywhere else in this system too, but
+        # System Agent is the one place a dashboard viewer could otherwise
+        # be misled into thinking commands are actually reaching a device --
+        # only a genuine recent WorkerTask (queued/running/completed by a
+        # real Windows Worker) counts, never just "the module imported".
+        try:
+            from database.db import db_manager
+            from database.models.worker_task import WorkerTaskService
+
+            since = datetime.now(timezone.utc) - timedelta(minutes=SYSTEM_AGENT_ACTIVE_WINDOW_MINUTES)
+            with db_manager.session_scope() as db:
+                recent_count = WorkerTaskService.recent_active_count_for_workspace(
+                    db, workspace_id=workspace_id, since=since
+                )
+            recent_worker_activity = recent_count > 0
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not check recent WorkerTask activity for system_agent: %s", exc)
+            recent_worker_activity = None
+
+        if recent_worker_activity is False:
+            status_value = AgentStatus.IDLE.value
 
     record = AgentHealthRecord(
         agent_name=definition.agent_name,
@@ -1552,7 +1607,7 @@ class Agents:
             definition = require_agent_definition(clean)
             config = AGENT_STORE.get_or_create_config(context.workspace_id, clean)
             access = evaluate_agent_access(context, clean)
-            health = await get_agent_health(clean)
+            health = await get_agent_health(clean, workspace_id=context.workspace_id)
 
             return api_success(
                 message="Agent details loaded.",
@@ -1615,7 +1670,7 @@ class Agents:
         records: List[AgentHealthRecord] = []
 
         for agent_name in AGENT_CATALOG.keys():
-            records.append(await get_agent_health(agent_name))
+            records.append(await get_agent_health(agent_name, workspace_id=context.workspace_id))
 
         available_count = sum(1 for item in records if item.available)
         degraded_count = sum(1 for item in records if item.status == AgentStatus.DEGRADED.value)
@@ -1644,7 +1699,7 @@ class Agents:
         context: AuthContext = Depends(require_auth_role(Role.ANALYST.value)),
     ) -> Dict[str, Any]:
         try:
-            record = await get_agent_health(agent_name)
+            record = await get_agent_health(agent_name, workspace_id=context.workspace_id)
 
             return api_success(
                 message="Agent health loaded.",

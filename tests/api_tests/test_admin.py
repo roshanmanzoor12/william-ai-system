@@ -51,6 +51,50 @@ class TestAdminAccessControl:
         response = client.get("/api/v1/admin/overview")
         assert response.status_code in (401, 403)
 
+    def test_platform_admin_can_load_overview(self, client, make_owner) -> None:
+        admin = make_owner()
+        make_platform_admin(admin.user_id)
+
+        response = client.get("/api/v1/admin/overview", headers=admin.headers)
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["users_count"] >= 1
+        assert data["workspaces_count"] >= 1
+        assert "active_plans" in data
+        assert "agent_usage_summary" in data
+
+    def test_non_admin_cannot_load_overview(self, client, make_owner) -> None:
+        owner = make_owner()  # real owner, not a platform admin
+
+        response = client.get("/api/v1/admin/overview", headers=owner.headers)
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "PLATFORM_ADMIN_REQUIRED"
+
+    def test_platform_admin_grant_is_reflected_in_a_fresh_login(
+        self, client, make_owner
+    ) -> None:
+        """Regression test for the reported bug: scripts/grant_platform_admin.py
+        writes User.is_platform_admin directly to the database; a fresh
+        POST /auth/login for that same user must see it immediately, with
+        no re-registration or caching involved. (The real-world cause of
+        this appearing to fail was a relative SQLite dev-database path
+        resolving differently for two separately-launched processes --
+        see database/db.py's _anchor_relative_sqlite_url and
+        tests/database_tests/test_db_path_resolution.py. Within a single
+        test process sharing one in-memory database, this test instead
+        guards the auth-layer half of the fix: login must never cache or
+        skip a fresh read of is_platform_admin.)"""
+        owner = make_owner(email="freshlogin@example.test", password="Sup3rSecure!Pass1")
+        make_platform_admin(owner.user_id)
+
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "freshlogin@example.test", "password": "Sup3rSecure!Pass1"},
+        )
+        assert login.status_code == 200
+        login_data = login.json()["data"]
+        assert login_data["user"]["is_platform_admin"] is True
+
 
 class TestAdminWorkspacePlan:
     def test_platform_admin_can_change_workspace_plan(self, client, make_owner) -> None:
