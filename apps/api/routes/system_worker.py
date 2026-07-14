@@ -149,12 +149,25 @@ def get_system_worker_status(workspace_id: str) -> Dict[str, Any]:
     """Real DB read, safe to call from agents/system_agent/system_agent.py
     (or anywhere else) without going through HTTP -- honest
     external_dependency_required-shaped default when no worker has ever
-    checked in for this workspace."""
+    checked in for this workspace.
+
+    SystemWorkerStatus.workspace_id carries a real unique index
+    (ix_system_worker_status_workspace_id), so more than one row per
+    workspace should never exist -- but this is the one place both the
+    HTTP /worker/status route and SystemAgent's in-process check both go
+    through, so ordering by updated_at DESC (newest wins) here is a cheap,
+    harmless guarantee against ever reading a stale duplicate if that
+    constraint is ever weakened later."""
     from database.db import db_manager
     from database.models.system_worker import SystemWorkerStatus
 
     with db_manager.session_scope() as db:
-        row = db.query(SystemWorkerStatus).filter(SystemWorkerStatus.workspace_id == workspace_id).first()
+        row = (
+            db.query(SystemWorkerStatus)
+            .filter(SystemWorkerStatus.workspace_id == workspace_id)
+            .order_by(SystemWorkerStatus.updated_at.desc())
+            .first()
+        )
         if row is None:
             return {
                 "workspace_id": workspace_id,

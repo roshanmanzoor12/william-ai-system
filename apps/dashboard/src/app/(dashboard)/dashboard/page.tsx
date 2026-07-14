@@ -13,6 +13,7 @@ import { ErrorState } from "@/components/state/ErrorState";
 import { LoadingState } from "@/components/state/LoadingState";
 import { WilliamVoicePanel } from "@/components/voice/WilliamVoicePanel";
 import { WindowsWorkerStatusCard } from "@/components/system/WindowsWorkerStatusCard";
+import type { AssistantMessageData } from "@/lib/api-client";
 import {
   type SessionData,
   readSession,
@@ -241,20 +242,6 @@ const EMPTY_SUMMARY: DashboardSummary = {
   },
 };
 
-const SENSITIVE_ACTION_WORDS = [
-  "delete",
-  "billing",
-  "payment",
-  "invite",
-  "export",
-  "open app",
-  "close app",
-  "system",
-  "device",
-  "file remove",
-  "security",
-];
-
 function createSafeError<T = never>(
   code: string,
   message: string,
@@ -385,28 +372,6 @@ function formatDate(value?: string | null): string {
   }
 }
 
-function detectSensitiveAction(command: string): boolean {
-  const normalized = command.toLowerCase();
-  return SENSITIVE_ACTION_WORDS.some((word) => normalized.includes(word));
-}
-
-function extractAction(command: string): string {
-  const normalized = command.trim().toLowerCase();
-
-  if (normalized.includes("memory")) return "memory.process";
-  if (normalized.includes("security")) return "security.review";
-  if (normalized.includes("code") || normalized.includes("file"))
-    return "code.execute";
-  if (normalized.includes("browser") || normalized.includes("website"))
-    return "browser.operate";
-  if (normalized.includes("billing") || normalized.includes("subscription"))
-    return "billing.review";
-  if (normalized.includes("report") || normalized.includes("analytics"))
-    return "analytics.generate";
-
-  return "master.execute";
-}
-
 function statusStyle(status: TaskItem["status"]): string {
   if (status === "completed") return "text-emerald-700 bg-emerald-50";
   if (status === "pending") return "text-orange-700 bg-orange-50";
@@ -497,6 +462,7 @@ export default function Page() {
     "idle" | "submitting" | "success" | "error"
   >("idle");
   const [commandMessage, setCommandMessage] = useState("");
+  const [commandResult, setCommandResult] = useState<AssistantMessageData | null>(null);
 
   const canRunAgents = useMemo(() => {
     if (!session) return false;
@@ -504,11 +470,6 @@ export default function Page() {
       hasPermission(session, "agents:run") &&
       hasPermission(session, "tasks:write")
     );
-  }, [session]);
-
-  const canApproveSecurity = useMemo(() => {
-    if (!session) return false;
-    return hasPermission(session, "security:approve");
   }, [session]);
 
   const usagePercent = useMemo(() => {
@@ -672,71 +633,43 @@ export default function Page() {
       return;
     }
 
-    const sensitive = detectSensitiveAction(trimmedCommand);
-
-    if (sensitive && !canApproveSecurity) {
-      setCommandState("error");
-      setCommandMessage(
-        "This looks sensitive. Your role cannot approve Security Agent actions.",
-      );
-      return;
-    }
-
     setCommandState("submitting");
     setCommandMessage("");
+    setCommandResult(null);
 
-    // POST /master/command never existed anywhere in the backend (every
-    // submission 404'd). The real pipeline entrypoint is POST /tasks/run
-    // (apps/api/routes/tasks.py::create_and_run_task), which accepts
-    // {action, message, input_data, metadata} and routes through the real
-    // MasterAgent -> Planner -> Router -> SecurityAgent -> agent ->
-    // VerificationAgent -> MemoryAgent pipeline. "general_request" is the
-    // real, working action value (the Planner infers intent from `message`
-    // itself); extractAction()'s categories were never a recognized action
-    // vocabulary on the backend, so they're kept only as local UI metadata.
-    const response = await apiRequest<{ task: RawTaskRecord }>(
-      "/tasks/run",
+    // This card used to POST /tasks/run (the raw MasterAgent -> Planner ->
+    // Router pipeline), which has no concept of clarifying questions, real
+    // device-worker dispatch, or a human-readable final_answer -- a normal
+    // command like "William open Notepad" would come back as a generic
+    // task with status "failed"/"ONE_OR_MORE_STEPS_FAILED" instead of ever
+    // reaching SystemAgent. Every normal command now goes through the same
+    // POST /assistant/message pipeline the /assistant chat page uses
+    // (apps/api/routes/assistant.py), which classifies intent, asks
+    // clarifying questions when needed, and returns final_answer as the
+    // one thing to show -- raw JSON stays behind the details toggle below.
+    // "Run Through Master Flow" as a separate raw-pipeline diagnostic was
+    // intentionally dropped rather than kept as a second, confusing path.
+    const response = await apiRequest<AssistantMessageData>(
+      "/assistant/message",
       session,
       {
         method: "POST",
-        headers: {
-          "X-Action": extractAction(trimmedCommand),
-          "X-Sensitive-Action": sensitive ? "true" : "false",
-        },
-        body: JSON.stringify({
-          action: "general_request",
-          message: trimmedCommand,
-          input_data: {},
-          metadata: {
-            source: "dashboard.command_console",
-            client_hint_action: extractAction(trimmedCommand),
-            sensitive_hint: sensitive,
-          },
-        }),
+        body: JSON.stringify({ message: trimmedCommand }),
       },
     );
 
     if (!response.success || !response.data) {
       setCommandState("error");
       setCommandMessage(
-        response.error?.message || "William could not execute this command.",
+        response.error?.message || "William could not respond just now.",
       );
       return;
     }
 
-    const task = response.data.task;
-    const taskSucceeded = task.status === "completed";
-
-    const errorDetail = formatTaskError(task.error);
-
-    setCommandState(taskSucceeded ? "success" : "error");
-    setCommandMessage(
-      taskSucceeded
-        ? `Task ${task.task_id} completed successfully.`
-        : `Task ${task.task_id} finished with status "${task.status}"${
-            errorDetail ? `: ${errorDetail}` : ""
-          }.`,
-    );
+    const data = response.data;
+    setCommandResult(data);
+    setCommandState(data.status === "failed" ? "error" : "success");
+    setCommandMessage(data.final_answer);
     setCommand("");
     void loadDashboard(session);
   }
@@ -916,10 +849,10 @@ export default function Page() {
               <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
                 <div className="mb-5 flex items-center justify-between">
                   <p className="text-base font-black text-neutral-950">
-                    Command Console
+                    Ask William
                   </p>
                   <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-black text-neutral-600">
-                    Master Agent
+                    Assistant
                   </span>
                 </div>
 
@@ -931,8 +864,9 @@ export default function Page() {
                       setCommand(event.target.value);
                       setCommandState("idle");
                       setCommandMessage("");
+                      setCommandResult(null);
                     }}
-                    placeholder="Tell William what to do. Example: Review recent tasks and prepare verification report."
+                    placeholder='Tell William what to do. Example: "William open Notepad" or "William create a VEO prompt for ClickRonix".'
                     className="min-h-32 w-full resize-none rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm font-semibold outline-none transition placeholder:text-neutral-400 focus:border-[#ff5a3d] focus:bg-white focus:ring-4 focus:ring-[#ff5a3d]/10 disabled:cursor-not-allowed disabled:opacity-60"
                   />
 
@@ -948,6 +882,31 @@ export default function Page() {
                       ].join(" ")}
                     >
                       {commandMessage}
+                      {commandResult?.follow_up_questions &&
+                      commandResult.follow_up_questions.length > 0 ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {commandResult.follow_up_questions.map((question) => (
+                            <button
+                              key={question}
+                              type="button"
+                              onClick={() => setCommand(question)}
+                              className="rounded-full border border-[#ff5a3d]/25 bg-white px-3 py-1.5 text-[11px] font-bold text-[#ff5a3d] transition hover:bg-[#ff5a3d]/10"
+                            >
+                              {question}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                      {commandResult ? (
+                        <details className="mt-3">
+                          <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.14em] text-neutral-400 hover:text-neutral-600">
+                            Export JSON
+                          </summary>
+                          <pre className="mt-2 max-h-64 overflow-auto rounded-xl bg-neutral-950 p-3 text-[11px] font-normal text-neutral-100">
+                            {JSON.stringify(commandResult, null, 2)}
+                          </pre>
+                        </details>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -959,10 +918,10 @@ export default function Page() {
                     {commandState === "submitting" ? (
                       <>
                         <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                        Routing Command...
+                        Asking William...
                       </>
                     ) : (
-                      <>Run Through Master Flow →</>
+                      <>Send to William →</>
                     )}
                   </button>
                 </form>

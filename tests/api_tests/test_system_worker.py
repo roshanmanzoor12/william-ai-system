@@ -11,6 +11,7 @@ external_dependency_required -- never a fake success either way.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -55,6 +56,38 @@ class TestSystemWorkerStatus:
 
         status_b = client.get("/api/v1/system/worker/status", headers=owner_b.headers)
         assert status_b.json()["data"]["worker_connected"] is False
+
+    def test_expired_heartbeat_reports_worker_offline(self, client, make_owner) -> None:
+        """A worker that heartbeated once but has gone quiet past
+        WORKER_STALE_AFTER_SECONDS must honestly read as disconnected --
+        this is the "worker terminal said connected but /status said
+        offline" symptom, except the correct, intended version of it: a
+        real worker that has actually stopped heartbeating SHOULD flip
+        back to offline on its own, rather than staying "connected"
+        forever from one stale timestamp."""
+        owner = make_owner()
+
+        client.post(
+            "/api/v1/system/worker/heartbeat",
+            json={"platform": "windows"},
+            headers=owner.headers,
+        )
+
+        from database.db import db_manager
+        from database.models.system_worker import SystemWorkerStatus
+
+        stale_time = datetime.now(timezone.utc) - timedelta(seconds=999)
+        with db_manager.session_scope() as db:
+            row = (
+                db.query(SystemWorkerStatus)
+                .filter(SystemWorkerStatus.workspace_id == owner.workspace_id)
+                .first()
+            )
+            assert row is not None
+            row.worker_last_seen_at = stale_time.replace(tzinfo=None)
+
+        status = client.get("/api/v1/system/worker/status", headers=owner.headers)
+        assert status.json()["data"]["worker_connected"] is False
 
 
 class TestSystemAgentReflectsRealWorkerStatus:
