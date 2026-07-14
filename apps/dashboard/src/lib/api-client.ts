@@ -590,17 +590,30 @@ export type VoiceDependencyStatusValue =
   | "configured"
   | "external_dependency_required";
 
+// Each dependency entry carries install_guidance alongside status --
+// apps/api/routes/voice.py::compute_dependency_status() sources this from
+// agents/voice_agent/provider_capabilities.py's real (importlib.util.
+// find_spec-based) local-package probe. install_guidance is null when a
+// package is already importable locally (status still needs the matching
+// WILLIAM_*_PROVIDER env var set to read "configured" -- a package being on
+// disk never counts as "ready" by itself), or a concrete "pip install X"
+// string when nothing usable is installed yet.
+export type VoiceDependencyEntry = {
+  status: VoiceDependencyStatusValue;
+  install_guidance: string | null;
+};
+
 export type VoiceDependencyStatus = {
-  wake_word_engine: VoiceDependencyStatusValue;
+  wake_word_engine: VoiceDependencyEntry;
   // Distinct from wake_word_engine: text-based wake-word detection
   // (wake_word_engine) always works with no provider; wake_word_provider
   // is a real *audio* wake-word engine, needed only for always-listening
   // microphone mode.
-  wake_word_provider: VoiceDependencyStatusValue;
-  audio_input_worker: VoiceDependencyStatusValue;
-  stt_provider: VoiceDependencyStatusValue;
-  tts_provider: VoiceDependencyStatusValue;
-  speaker_recognition_provider: VoiceDependencyStatusValue;
+  wake_word_provider: VoiceDependencyEntry;
+  audio_input_worker: VoiceDependencyEntry;
+  stt_provider: VoiceDependencyEntry;
+  tts_provider: VoiceDependencyEntry;
+  speaker_recognition_provider: VoiceDependencyEntry;
 };
 
 export type VoiceRuntimeState =
@@ -633,8 +646,19 @@ export type VoiceSettings = {
   updated_at: string;
 };
 
+// Distinct from VoiceRuntimeState (which reflects voice *mode* -- disabled/
+// push_to_talk/listening/etc.): this reflects whether a Voice Worker device
+// has ever been set up and, if so, whether it's connected right now.
+// "needs_setup" only appears when no VoiceSettings row exists at all for
+// the workspace (i.e. voice has never been touched); a workspace that has
+// used /voice/status or /voice/config but never installed a Voice Worker
+// device reads connected/offline based on JWT-based heartbeats alone, same
+// as before device tokens existed.
+export type VoiceWorkerConnectionState = "needs_setup" | "disabled_device" | "connected" | "offline";
+
 export type VoiceStatusData = {
   settings: VoiceSettings;
+  connection_state: VoiceWorkerConnectionState;
   wake_word_default: string;
   // Flattened, dashboard-shaped view of the same settings row (see
   // apps/api/routes/voice.py::get_voice_status) -- prefer these over
@@ -896,6 +920,45 @@ export const voiceApi = {
     post<VoiceEnrollCompleteData>("/voice/enroll/complete", payload),
 
   workerHeartbeat: () => post<VoiceHeartbeatData>("/voice/worker/heartbeat", {}),
+};
+
+// =============================================================================
+// Voice device setup (apps/api/routes/voice_device_setup.py) -- the voice
+// equivalent of deviceSetupApi/systemWorkerApi above, for the installed
+// Voice Worker device-token flow (scripts/windows/install_voice_worker.ps1).
+// Minting a setup token or registering a device does NOT by itself change
+// voice mode -- see voiceApi.updateConfig above for that separate choice.
+// =============================================================================
+
+export type VoiceWorkerStatusData = {
+  connection_state: VoiceWorkerConnectionState;
+  worker_connected: boolean;
+  device_id: string | null;
+  device_name: string | null;
+  device_platform: string | null;
+  device_token_status: "active" | "revoked" | null;
+  supported_features: string[];
+  worker_last_seen_at: string | null;
+  setup_completed_at: string | null;
+};
+
+export const voiceWorkerApi = {
+  status: () => get<VoiceWorkerStatusData>("/voice/worker/status"),
+};
+
+export type VoiceDeviceSetupTokenData = {
+  setup_token: string;
+  expires_at: string;
+  expires_in_seconds: number;
+  api_base_url: string;
+  setup_command: string;
+  install_script_url: string;
+};
+
+export const voiceDeviceSetupApi = {
+  createSetupToken: (deviceName?: string) =>
+    post<VoiceDeviceSetupTokenData>("/voice/device/setup-token", deviceName ? { device_name: deviceName } : {}),
+  disable: () => post<Record<string, never>>("/voice/device/disable"),
 };
 
 // =============================================================================

@@ -25,6 +25,7 @@ import {
 } from "@/lib/api-client";
 import { LoadingState } from "@/components/state/LoadingState";
 import { ErrorState } from "@/components/state/ErrorState";
+import { VoiceWorkerStatusCard } from "@/components/voice/VoiceWorkerStatusCard";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -395,6 +396,8 @@ export function VoiceControlSettings() {
             </div>
           ) : null}
 
+          <VoiceWorkerStatusCard />
+
           <div>
             <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
               Mode controls
@@ -494,23 +497,33 @@ export function VoiceControlSettings() {
                 Object.keys(DEPENDENCY_LABELS) as Array<
                   keyof VoiceDependencyStatus
                 >
-              ).map((key) => (
-                <div
-                  key={key}
-                  className="flex items-center justify-between gap-3 rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3"
-                >
-                  <span className="text-xs font-semibold text-neutral-600">
-                    {DEPENDENCY_LABELS[key]}
-                  </span>
-                  <span
-                    className={`rounded-full border px-2.5 py-1 text-[10px] font-black ${dependencyStyle(
-                      settings.dependency_status[key],
-                    )}`}
+              ).map((key) => {
+                const entry = settings.dependency_status[key];
+                return (
+                  <div
+                    key={key}
+                    className="flex flex-col gap-2 rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3"
                   >
-                    {dependencyLabel(settings.dependency_status[key])}
-                  </span>
-                </div>
-              ))}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs font-semibold text-neutral-600">
+                        {DEPENDENCY_LABELS[key]}
+                      </span>
+                      <span
+                        className={`rounded-full border px-2.5 py-1 text-[10px] font-black ${dependencyStyle(
+                          entry.status,
+                        )}`}
+                      >
+                        {dependencyLabel(entry.status)}
+                      </span>
+                    </div>
+                    {entry.install_guidance ? (
+                      <p className="text-[11px] leading-4 text-neutral-400">
+                        {entry.install_guidance}
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           </div>
 

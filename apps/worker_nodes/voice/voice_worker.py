@@ -28,7 +28,10 @@ Purpose:
         through the real pipeline: local wake-word detection -> (if the
         currently configured voice mode locally requires wake-word gating,
         and the wake word was detected) POST /voice/wake-event -> POST
-        /voice/command -> print the full response.
+        /voice/push-to-talk/text (the same shared dispatcher POST
+        /assistant/message uses -- real SystemAgent/Windows Worker
+        dispatch for "William open Notepad"-style commands) -> print the
+        full response.
       - An interactive stdin fallback loop (typed text stands in for
         speech) when no --simulate-text is given and stdin is a TTY, and a
         safe non-interactive idle loop (periodic status re-check) when it
@@ -60,21 +63,35 @@ Run:
     python -m apps.worker_nodes.voice.voice_worker --simulate-text "William create a VEO prompt for ClickRonix"
 
 Config (CLI flag, then env var, then default):
-    --token / WILLIAM_VOICE_WORKER_TOKEN            real JWT access token
+    --token / WILLIAM_VOICE_WORKER_TOKEN            real JWT access token (dev/manual mode)
+    --device-token / WILLIAM_VOICE_WORKER_DEVICE_TOKEN   installed-worker device token from
+                                                          POST /voice/device/register (preferred
+                                                          over --token when both are set)
+    --config <path>                                  JSON config file written by
+                                                          scripts/windows/install_voice_worker.ps1
+                                                          (api_base_url/device_token) -- CLI
+                                                          flags/env vars always override it
     --api-base-url / WILLIAM_API_BASE_URL            default http://localhost:8000/api/v1
     --poll-interval / WILLIAM_VOICE_WORKER_POLL_INTERVAL   idle-loop status re-check seconds (default 20)
     --wake-word / WILLIAM_VOICE_WORKER_WAKE_WORD      local wake-word override (default: server-configured, else "william")
     --max-backoff / WILLIAM_VOICE_WORKER_MAX_BACKOFF   reconnect backoff cap in seconds (default 30)
     --simulate-text "<text>"                          one-shot text-simulation mode (no live loop)
+    --ignore-mode-for-dev                             bypass the local "voice mode disabled" gate for
+                                                          --simulate-text dev/test runs only -- never use
+                                                          this for production listening
 
-If no token is configured, the worker still starts (it will not crash) --
-the status call will honestly fail with an auth error and the worker
-falls back to dependency-check / idle mode.
+If no token/device-token is configured, the worker still starts (it will
+not crash) -- the status call will honestly fail with an auth error and
+the worker falls back to dependency-check / idle mode. If a real 401 comes
+back (expired JWT or revoked device token), the worker prints a clear,
+credential-specific message and stops cleanly rather than retrying forever
+or crashing with a traceback.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -159,11 +176,33 @@ class VoiceWorkerState(str, Enum):
 class VoiceWorkerConfig:
     api_base_url: str = DEFAULT_API_BASE_URL
     token: str = ""
+    # An installed worker (scripts/windows/install_voice_worker.ps1 style
+    # setup) authenticates with this instead of `token` (a full user JWT).
+    # Both end up in the same Authorization: Bearer header --
+    # apps/api/routes/voice_device_setup.py::get_voice_worker_auth_context
+    # tells them apart server-side by hash lookup, not the worker. Preferred
+    # over `token` when both are set (see _build_worker_client), matching
+    # "installed worker mode" being the intended steady state once setup is
+    # done -- the same precedence windows_worker.py's device_token/
+    # worker_token pair already uses.
+    device_token: str = ""
+    # Set via --config; present only so _auth_failure_message-adjacent
+    # tooling/tests can inspect where a loaded config file came from. The
+    # actual file values are merged into a VoiceWorkerConfig by
+    # build_config()/main(), with explicit CLI flags always winning.
+    config_path: Optional[str] = None
     poll_interval_seconds: int = 20
     wake_word: Optional[str] = None
     max_backoff_seconds: int = 30
     request_timeout_seconds: int = 20
     simulate_text: Optional[str] = None
+    # Bypasses ONLY this worker's own local "mode == disabled -> don't send"
+    # gate inside _handle_input_text, for --simulate-text dev/test runs
+    # against a workspace that hasn't been switched out of the disabled
+    # default yet. Never applied to the interactive/idle loop. Do not use
+    # this for production listening -- it does not change the workspace's
+    # real voice mode setting, and does not bypass any server-side check.
+    ignore_mode_for_dev: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -197,12 +236,30 @@ class VoiceWorker:
 
         client_config = WorkerClientConfig(
             backend_url=self.config.api_base_url,
-            api_token=self.config.token,
+            api_token=self.config.device_token or self.config.token,
             worker_type="voice_worker",
             worker_version="1.0.0",
             request_timeout_seconds=self.config.request_timeout_seconds,
         )
         return WorkerClient(config=client_config)
+
+    def _auth_failure_message(self) -> str:
+        """Distinguishes a dev-mode JWT simply expiring (config.token set,
+        config.device_token not) from a real installed device token being
+        revoked (config.device_token set) -- both surface as an
+        http_401 WorkerResponse, but the honest, actionable message for the
+        operator differs: a JWT can be refreshed by logging in again; a
+        device token is durable and only ever stops working because it was
+        actually revoked from the dashboard. If both are set, device_token
+        wins (matches _build_worker_client's own precedence -- the 401 came
+        from whichever credential was actually sent on the wire)."""
+        if self.config.device_token:
+            return "Device token revoked. Re-enable worker from dashboard."
+        return "JWT expired. Use installed device-token worker or login again."
+
+    @staticmethod
+    def _is_auth_failure(result: Dict[str, Any]) -> bool:
+        return str(result.get("transport_status")) == "http_401"
 
     def _build_wake_detector(self) -> Optional["WakeWordDetector"]:
         if WakeWordDetector is None or WakeWordConfig is None:
@@ -385,13 +442,20 @@ class VoiceWorker:
         return self._call_with_backoff(lambda: self._call_api("POST", "/voice/wake-event", payload), max_attempts=3)
 
     def send_command(self, transcript: str, detected_language: str, wake_word: Optional[str]) -> Dict[str, Any]:
+        """POSTs to /voice/push-to-talk/text, not /voice/command --
+        push-to-talk-text is the route that shares apps/api/routes/
+        assistant.py's real SystemAgent/Windows Worker dispatcher (see
+        apps/api/routes/voice.py::push_to_talk_text's docstring); /voice/
+        command's own standby-mode wake-word-reactivation and speaker-
+        profile logic (which `wake_word` fed into) doesn't apply to
+        push-to-talk-text, so it's accepted here but no longer sent."""
+        del wake_word  # kept in the signature for backward-compat call sites
         payload = {
-            "transcript": transcript,
+            "text": transcript,
             "detected_language": detected_language,
             "session_id": self.session_id,
-            "wake_word": wake_word,
         }
-        return self._call_with_backoff(lambda: self._call_api("POST", "/voice/command", payload), max_attempts=3)
+        return self._call_with_backoff(lambda: self._call_api("POST", "/voice/push-to-talk/text", payload), max_attempts=3)
 
     # -----------------------------------------------------------------
     # Dependency status reporting
@@ -436,14 +500,23 @@ class VoiceWorker:
             "tts_provider",
             "speaker_recognition_provider",
         ):
-            value = dependency_status.get(key, "unknown")
+            entry = dependency_status.get(key, "unknown")
+            # entry is {"status": ..., "install_guidance": ...} in the
+            # current backend shape; "unknown"/a bare string is still
+            # handled so an older/unreachable backend doesn't crash this
+            # worker -- it just reports honestly as MISSING.
+            value = entry.get("status", "unknown") if isinstance(entry, dict) else entry
+            guidance = entry.get("install_guidance") if isinstance(entry, dict) else None
             marker = "OK" if value == "configured" or value == "available" else "MISSING"
-            self._log(f"    - {key}: {value}  [{marker}]")
+            self._log(f"    - {key}: {value}  [{marker}]" + (f" -- {guidance}" if guidance else ""))
+
+        def _dep_status(entry: Any) -> str:
+            return entry.get("status", "unknown") if isinstance(entry, dict) else entry
 
         missing = [
             key
             for key, value in dependency_status.items()
-            if value not in ("configured", "available")
+            if _dep_status(value) not in ("configured", "available")
         ]
         if missing:
             self._log(
@@ -493,7 +566,7 @@ class VoiceWorker:
         """
         Runs one piece of "as-if-transcribed" text through the full local
         gating + API pipeline. Returns True if a command was actually
-        sent to /voice/command.
+        sent to /voice/push-to-talk/text.
         """
         if not text or not text.strip():
             self._log("Empty input; nothing to process.")
@@ -522,13 +595,21 @@ class VoiceWorker:
             self._log(f"No wake word detected in input text (mode={mode}).")
 
         if mode == VOICE_MODE_DISABLED:
-            self._log("Voice mode is disabled for this workspace; command not sent.")
-            return False
+            if self.config.ignore_mode_for_dev:
+                self._log(
+                    "Voice mode is disabled for this workspace, but --ignore-mode-for-dev is set: "
+                    "sending anyway (dev/test only). Do not use this flag for production listening -- "
+                    "it only bypasses this worker's own local gate; it does not change the workspace's "
+                    "real voice mode setting."
+                )
+            else:
+                self._log("Voice mode is disabled for this workspace; command not sent.")
+                return False
 
         if mode in WAKE_WORD_GATED_MODES and not detected:
             self._log(
                 f"Wake word not detected. Command not sent (mode='{mode}' requires local "
-                "wake-word activation before the worker will contact /voice/command)."
+                "wake-word activation before the worker will contact /voice/push-to-talk/text)."
             )
             return False
 
@@ -577,12 +658,12 @@ class VoiceWorker:
 
         if not command_result["ok"]:
             self._set_state(VoiceWorkerState.ERROR, "voice command request failed")
-            self._print_api_failure("POST /voice/command", command_result)
+            self._print_api_failure("POST /voice/push-to-talk/text", command_result)
             return False
 
         command_envelope = command_result["envelope"]
         command_data = command_envelope.get("data") or {}
-        speech_status = command_data.get("speech_output_status", "external_dependency_required")
+        speech_status = command_data.get("speech_output_status", "tts_missing")
 
         self._set_state(
             VoiceWorkerState.SPEAKING,
@@ -612,14 +693,20 @@ class VoiceWorker:
         print("\n" + "=" * 60)
         print("Voice command response")
         print("-" * 60)
-        print(f"success              : {command_data.get('success')}")
-        print(f"response_text        : {command_data.get('response_text')}")
-        print(f"reply_language       : {command_data.get('reply_language')}")
-        print(f"speech_output_status : {command_data.get('speech_output_status')}")
-        print(f"request_id           : {command_data.get('request_id')}")
-        master_result = command_data.get("master_result")
-        if master_result is not None:
-            print(f"master_result        : {master_result}")
+        if "final_answer" in command_data:
+            # Real command, routed through the shared assistant dispatcher
+            # (apps/api/routes/assistant.py::process_assistant_message).
+            print(f"final_answer         : {command_data.get('final_answer')}")
+            print(f"status               : {command_data.get('status')}")
+            print(f"route                : {command_data.get('route')}")
+            print(f"worker_task_id       : {command_data.get('worker_task_id')}")
+            print(f"speech_output_status : {command_data.get('speech_output_status')}")
+        else:
+            # Control-phrase ("William standby"/"William shutdown voice")
+            # or speaker-permission-denial response -- unchanged shape.
+            print(f"success              : {command_data.get('success')}")
+            print(f"response_text        : {command_data.get('response_text')}")
+            print(f"speech_output_status : {command_data.get('speech_output_status')}")
         print("=" * 60 + "\n")
 
     # -----------------------------------------------------------------
@@ -629,13 +716,24 @@ class VoiceWorker:
     def run(self) -> int:
         self._print_banner()
 
-        if not self.config.token:
+        if not self.config.token and not self.config.device_token:
             self._log(
-                "No auth token configured (--token / WILLIAM_VOICE_WORKER_TOKEN not set). "
-                "Starting in dependency-check mode; API calls will likely fail authentication."
+                "No auth token configured (--token / WILLIAM_VOICE_WORKER_TOKEN, or --device-token / "
+                "--config for an installed worker, not set). Starting in dependency-check mode; API "
+                "calls will likely fail authentication."
             )
 
         status_result = self.fetch_status(max_attempts=3 if self.config.simulate_text else None)
+
+        if self._is_auth_failure(status_result):
+            # A dead credential can never succeed via retry -- stop cleanly
+            # with an honest, actionable message instead of looping forever
+            # or dumping a traceback (mirrors windows_worker.py::run_forever's
+            # own DeviceAuthError handling).
+            self._set_state(VoiceWorkerState.ERROR, "authentication failed (401)")
+            print(self._auth_failure_message())
+            return 1
+
         self._report_dependency_status(status_result)
 
         if self.config.simulate_text is not None:
@@ -674,9 +772,17 @@ class VoiceWorker:
         while True:
             time.sleep(self.config.poll_interval_seconds)
             status_result = self.fetch_status(max_attempts=1)
+            if self._is_auth_failure(status_result):
+                self._set_state(VoiceWorkerState.ERROR, "authentication failed (401)")
+                print(self._auth_failure_message())
+                return
             self._report_dependency_status(status_result, brief=True)
             if status_result.get("ok"):
-                self.send_heartbeat()
+                heartbeat_result = self.send_heartbeat()
+                if self._is_auth_failure(heartbeat_result):
+                    self._set_state(VoiceWorkerState.ERROR, "authentication failed (401)")
+                    print(self._auth_failure_message())
+                    return
 
     def _run_interactive_loop(self) -> None:
         self._set_state(VoiceWorkerState.IDLE, "interactive fallback mode ready")
@@ -696,6 +802,10 @@ class VoiceWorker:
                 break
 
             status_result = self.fetch_status(max_attempts=3)
+            if self._is_auth_failure(status_result):
+                self._set_state(VoiceWorkerState.ERROR, "authentication failed (401)")
+                print(self._auth_failure_message())
+                return
             if status_result.get("ok"):
                 self.send_heartbeat()
             self._handle_input_text(line, status_result)
@@ -706,7 +816,7 @@ class VoiceWorker:
         self._log(f"API base URL   : {self.config.api_base_url}")
         self._log(f"Session id     : {self.session_id}")
         self._log(f"Wake word seed : {self._effective_wake_word_seed()!r}")
-        self._log(f"Token configured: {bool(self.config.token)}")
+        self._log(f"Auth mode      : {'device_token' if self.config.device_token else ('jwt' if self.config.token else 'none')}")
 
 
 # ---------------------------------------------------------------------
@@ -729,6 +839,17 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         description="William/Jarvis voice worker: talks to the real /api/v1/voice/* API.",
     )
     parser.add_argument("--token", default=None, help="JWT access token (or set WILLIAM_VOICE_WORKER_TOKEN).")
+    parser.add_argument(
+        "--device-token",
+        default=None,
+        help="Installed-worker device token from POST /voice/device/register (overrides WILLIAM_VOICE_WORKER_DEVICE_TOKEN).",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help='Path to a JSON config file (scripts/windows/install_voice_worker.ps1 writes one to '
+        '%%USERPROFILE%%\\.william\\voice_worker.json) with api_base_url/device_id/device_token/device_name.',
+    )
     parser.add_argument("--api-base-url", default=None, help="Backend API base URL (or set WILLIAM_API_BASE_URL).")
     parser.add_argument("--poll-interval", type=int, default=None, help="Idle-loop status re-check interval, seconds.")
     parser.add_argument("--wake-word", default=None, help="Override local wake word (default: server-configured, else 'william').")
@@ -738,18 +859,47 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         default=None,
         help="Run this text through wake-word detection and the voice API once, then exit.",
     )
+    parser.add_argument(
+        "--ignore-mode-for-dev",
+        action="store_true",
+        help="Bypass this worker's local 'voice mode is disabled' gate for --simulate-text dev/test runs. "
+        "Does not change the workspace's real voice mode setting. Do not use this for production listening.",
+    )
     return parser.parse_args(argv)
 
 
 def build_config(args: argparse.Namespace) -> VoiceWorkerConfig:
-    return VoiceWorkerConfig(
+    config = VoiceWorkerConfig(
         api_base_url=args.api_base_url or os.getenv("WILLIAM_API_BASE_URL", DEFAULT_API_BASE_URL),
         token=args.token or os.getenv("WILLIAM_VOICE_WORKER_TOKEN", ""),
+        device_token=args.device_token or os.getenv("WILLIAM_VOICE_WORKER_DEVICE_TOKEN", ""),
         poll_interval_seconds=args.poll_interval or _env_int("WILLIAM_VOICE_WORKER_POLL_INTERVAL", 20),
         wake_word=args.wake_word or os.getenv("WILLIAM_VOICE_WORKER_WAKE_WORD") or None,
         max_backoff_seconds=args.max_backoff or _env_int("WILLIAM_VOICE_WORKER_MAX_BACKOFF", 30),
         simulate_text=args.simulate_text,
+        ignore_mode_for_dev=bool(args.ignore_mode_for_dev),
     )
+
+    # Config-file values apply first (lowest priority) -- explicit CLI
+    # flags/env vars above always override them, matching windows_worker.py
+    # ::main's own --token/--api-base-url/--device-name precedence over a
+    # loaded --config file.
+    if args.config:
+        config.config_path = args.config
+        try:
+            with open(args.config, "r", encoding="utf-8") as config_file:
+                file_config = json.load(config_file)
+            if not isinstance(file_config, dict):
+                raise ValueError("Config file must contain a JSON object.")
+            if not args.api_base_url and file_config.get("api_base_url"):
+                config.api_base_url = str(file_config["api_base_url"]).rstrip("/")
+            if not args.device_token and file_config.get("device_token"):
+                config.device_token = str(file_config["device_token"])
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Could not read config file {args.config}: {exc}")
+            raise SystemExit(1)
+
+    return config
 
 
 def main(argv: Optional[list] = None) -> int:

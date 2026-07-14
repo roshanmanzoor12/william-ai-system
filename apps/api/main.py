@@ -1291,6 +1291,7 @@ OPTIONAL_ROUTERS: List[Tuple[str, str, str]] = [
     ("apps.api.routes.subscriptions", "router", "/subscriptions"),
     ("apps.api.routes.files", "router", "/files"),
     ("apps.api.routes.voice", "router", "/voice"),
+    ("apps.api.routes.voice_device_setup", "router", "/voice"),
     ("apps.api.routes.agent_permissions", "router", "/agent-permissions"),
     ("apps.api.routes.admin", "router", "/admin"),
     ("apps.api.routes.system_worker", "router", "/system"),

@@ -219,6 +219,17 @@ except Exception as auth_import_exc:  # pragma: no cover - import-safe fallback
         return dependency
 
 
+try:
+    from apps.api.routes.voice_device_setup import get_voice_worker_auth_context  # type: ignore
+except Exception as voice_device_setup_import_exc:  # pragma: no cover - import-safe fallback
+    logger.warning(
+        "voice_device_setup import fallback enabled in voice.py (device-token auth unavailable, "
+        "falling back to JWT-only get_current_auth_context): %s",
+        voice_device_setup_import_exc,
+    )
+    get_voice_worker_auth_context = get_current_auth_context  # type: ignore
+
+
 # =============================================================================
 # Security Agent hook (mirrors the run_task-first dispatch order already
 # fixed in apps/api/routes/tasks.py / auth.py for this exact class of bug)
@@ -302,7 +313,7 @@ async def request_voice_mode_approval(*, workspace_id: str, user_id: str, role: 
 # Dependency status
 # =============================================================================
 
-def compute_dependency_status() -> Dict[str, str]:
+def compute_dependency_status() -> Dict[str, Dict[str, Any]]:
     """
     Honest, environment-driven dependency check. Text-based wake-word
     detection (agents/voice_agent/wake_word.py) works today with no external
@@ -310,22 +321,40 @@ def compute_dependency_status() -> Dict[str, str]:
     genuinely needs a configured provider, and none is configured in this
     deployment by default, so those honestly report
     external_dependency_required rather than a fake "available".
+
+    Each entry is {"status": ..., "install_guidance": str | None} -- the
+    install_guidance comes from agents/voice_agent/provider_capabilities.py's
+    real (importlib.util.find_spec-based) local-package probe, never a
+    fabricated "it's ready" claim. A package being importable on disk does
+    NOT change status to "configured" -- that still requires the operator to
+    actually set the matching WILLIAM_*_PROVIDER env var.
     """
+    from agents.voice_agent.provider_capabilities import (
+        stt_install_guidance,
+        tts_install_guidance,
+        wake_word_install_guidance,
+    )
+
     def _status(env_var: str) -> str:
         return "configured" if os.getenv(env_var) else "external_dependency_required"
 
+    def _entry(status_value: str, guidance: Optional[str]) -> Dict[str, Any]:
+        return {"status": status_value, "install_guidance": guidance}
+
     return {
-        "wake_word_engine": "available",
+        "wake_word_engine": _entry("available", None),
         # Distinct from wake_word_engine above: text-based wake-word
         # detection (agents/voice_agent/wake_word.py) always works with no
         # provider (used by --simulate-text); a real *audio* wake-word
         # engine for always-listening microphone mode is a separate,
         # genuinely-optional dependency.
-        "wake_word_provider": _status("WILLIAM_WAKE_WORD_PROVIDER"),
-        "audio_input_worker": _status("WILLIAM_AUDIO_INPUT_PROVIDER"),
-        "stt_provider": _status("WILLIAM_STT_PROVIDER"),
-        "tts_provider": _status("WILLIAM_TTS_PROVIDER"),
-        "speaker_recognition_provider": _status("WILLIAM_SPEAKER_RECOGNITION_PROVIDER"),
+        "wake_word_provider": _entry(
+            _status("WILLIAM_WAKE_WORD_PROVIDER"), wake_word_install_guidance()["install_guidance"]
+        ),
+        "audio_input_worker": _entry(_status("WILLIAM_AUDIO_INPUT_PROVIDER"), None),
+        "stt_provider": _entry(_status("WILLIAM_STT_PROVIDER"), stt_install_guidance()["install_guidance"]),
+        "tts_provider": _entry(_status("WILLIAM_TTS_PROVIDER"), tts_install_guidance()["install_guidance"]),
+        "speaker_recognition_provider": _entry(_status("WILLIAM_SPEAKER_RECOGNITION_PROVIDER"), None),
     }
 
 
@@ -429,8 +458,18 @@ router = APIRouter(tags=["Voice"])
 
 
 @router.get("/status")
-async def get_voice_status(context: "AuthContext" = Depends(get_current_auth_context)) -> Dict[str, Any]:
+async def get_voice_status(context: "AuthContext" = Depends(get_voice_worker_auth_context)) -> Dict[str, Any]:
+    # An installed Voice Worker's very first call every run is GET
+    # /voice/status (mode/dependency_status/wake_word -- everything it
+    # needs to decide locally whether to gate a command) -- a device-token-
+    # only worker (no user JWT at all) must be able to reach this route,
+    # not just heartbeat/worker-status/push-to-talk-text, or it can never
+    # get past startup. Discovered via the manual live device-token
+    # verification run, not written into the original plan -- mode/
+    # dependency status for one's own workspace is operational data a
+    # device is allowed to read, not an admin/billing/tasks/files concern.
     from database.db import db_manager
+    from database.models.voice import compute_voice_connection_state
     from apps.api.services import voice_service as vs
 
     with db_manager.session_scope() as db:
@@ -438,12 +477,15 @@ async def get_voice_status(context: "AuthContext" = Depends(get_current_auth_con
         dependency_status = compute_dependency_status()
         settings = vs.record_dependency_status(db, context.workspace_id, dependency_status)
 
-        missing_dependencies = [key for key, value in dependency_status.items() if value not in ("configured", "available")]
+        missing_dependencies = [
+            key for key, value in dependency_status.items() if value["status"] not in ("configured", "available")
+        ]
         worker_connected = vs.compute_worker_connected(settings)
         # The raw stored flag is overwritten with the staleness-aware value
         # in the response only -- the DB row itself is untouched here, so a
         # genuinely-recent heartbeat elsewhere in the same request isn't lost.
         settings = {**settings, "voice_worker_connected": worker_connected}
+        connection_state = compute_voice_connection_state(settings, worker_connected)
         runtime_state = vs.compute_runtime_state(
             mode=settings["mode"], missing_dependencies=missing_dependencies, worker_connected=worker_connected,
         )
@@ -454,6 +496,7 @@ async def get_voice_status(context: "AuthContext" = Depends(get_current_auth_con
         "Voice status loaded.",
         data={
             "settings": settings,
+            "connection_state": connection_state,
             "wake_word_default": "william",
             # Flattened, dashboard-shaped view of the same settings row --
             # kept alongside `settings` (not replacing it) so existing
@@ -489,12 +532,17 @@ async def get_voice_status(context: "AuthContext" = Depends(get_current_auth_con
 
 
 @router.post("/worker/heartbeat")
-async def voice_worker_heartbeat(context: "AuthContext" = Depends(get_current_auth_context)) -> Dict[str, Any]:
+async def voice_worker_heartbeat(
+    context: "AuthContext" = Depends(get_voice_worker_auth_context),
+) -> Dict[str, Any]:
     """
     Called periodically by apps/worker_nodes/voice/voice_worker.py's idle
     loop so the dashboard can show a real worker_connected/worker_offline
     state instead of only updating on a wake event (a worker that's alive
-    but hasn't heard a wake word yet should still show as connected).
+    but hasn't heard a wake word yet should still show as connected). Uses
+    the dual-mode dependency (installed device token OR dev-mode JWT), not
+    plain get_current_auth_context -- an installed Voice Worker only ever
+    carries a device token, never a user JWT.
     """
     from database.db import db_manager
     from apps.api.services import voice_service as vs
@@ -505,6 +553,41 @@ async def voice_worker_heartbeat(context: "AuthContext" = Depends(get_current_au
     return api_success(
         "Heartbeat received.",
         data={"worker_connected": True, "worker_last_seen_at": settings["voice_worker_last_seen_at"]},
+        request_id=context.request_id,
+    )
+
+
+@router.get("/worker/status")
+async def get_voice_worker_status(
+    context: "AuthContext" = Depends(get_voice_worker_auth_context),
+) -> Dict[str, Any]:
+    """Voice-device-specific status, distinct from the broader GET
+    /voice/status (mode/dependencies/last-command) -- this is the one the
+    dashboard's Voice Worker card and install/setup flow polls to answer
+    "is a device even registered, and if so is it connected right now."""
+    from database.db import db_manager
+    from database.models.voice import VoiceSettings, compute_voice_connection_state
+    from apps.api.services import voice_service as vs
+
+    with db_manager.session_scope() as db:
+        row = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == context.workspace_id).first()
+        row_dict = row.to_dict() if row is not None else None
+        worker_connected = vs.compute_worker_connected(row_dict) if row_dict is not None else False
+        connection_state = compute_voice_connection_state(row_dict, worker_connected)
+
+    return api_success(
+        "Voice worker status loaded.",
+        data={
+            "connection_state": connection_state,
+            "worker_connected": worker_connected,
+            "device_id": row_dict.get("device_id") if row_dict else None,
+            "device_name": row_dict.get("device_name") if row_dict else None,
+            "device_platform": row_dict.get("device_platform") if row_dict else None,
+            "device_token_status": row_dict.get("device_token_status") if row_dict else None,
+            "supported_features": row_dict.get("supported_features") if row_dict else [],
+            "worker_last_seen_at": row_dict.get("voice_worker_last_seen_at") if row_dict else None,
+            "setup_completed_at": row_dict.get("setup_completed_at") if row_dict else None,
+        },
         request_id=context.request_id,
     )
 
@@ -639,7 +722,15 @@ async def delete_voice_profile(
 @router.post("/wake-event")
 async def register_wake_event(
     payload: WakeEventRequest,
-    context: "AuthContext" = Depends(get_current_auth_context),
+    # voice_worker.py's own local text-based wake-word detection (see
+    # VoiceWorker._handle_input_text) calls this route whenever it detects
+    # the wake word in input text, unconditionally of voice mode -- an
+    # installed, device-token-only worker must be able to reach it just
+    # like GET /voice/status, or "William open Notepad" would 401 here
+    # before push-to-talk-text is ever called. Discovered via the manual
+    # live device-token verification run, same class of gap as GET
+    # /voice/status's fix above.
+    context: "AuthContext" = Depends(get_voice_worker_auth_context),
 ) -> Dict[str, Any]:
     from database.db import db_manager
     from database.models.voice import VoiceSettings, VOICE_MODE_DISABLED
@@ -781,7 +872,7 @@ async def submit_voice_command(
             session_id=session_id,
             request_id=context.request_id,
             wake_word=payload.wake_word,
-            tts_available=compute_dependency_status()["tts_provider"] == "configured",
+            tts_available=compute_dependency_status()["tts_provider"]["status"] == "configured",
         )
 
     return api_success(envelope["message"] or "Voice command processed.", data=envelope, request_id=context.request_id)
@@ -790,7 +881,7 @@ async def submit_voice_command(
 @router.post("/push-to-talk/text")
 async def push_to_talk_text(
     payload: PushToTalkTextRequest,
-    context: "AuthContext" = Depends(get_current_auth_context),
+    context: "AuthContext" = Depends(get_voice_worker_auth_context),
 ) -> Dict[str, Any]:
     """Safe fallback mode: authenticated dashboard user (or voice_worker.py's
     --simulate-text) sends typed/PTT text directly, using their own real
@@ -823,7 +914,7 @@ async def push_to_talk_text(
         )
 
     session_id = payload.session_id or new_id("voicesession")
-    tts_available = compute_dependency_status()["tts_provider"] == "configured"
+    tts_available = compute_dependency_status()["tts_provider"]["status"] == "configured"
 
     with db_manager.session_scope() as db:
         profile = vs.authenticated_user_virtual_profile(context.workspace_id, context.user_id, context.role)

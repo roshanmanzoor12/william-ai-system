@@ -2380,7 +2380,9 @@ export default function Page() {
                               type="button"
                               disabled={cannotToggle}
                               onClick={() =>
-                                void handleToggleAgent(agent, !agent.enabled)
+                                agent.key === "voice"
+                                  ? router.push("/settings#voice-control")
+                                  : void handleToggleAgent(agent, !agent.enabled)
                               }
                               className={[
                                 "flex-1 rounded-2xl px-4 py-3 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50",
@@ -2389,11 +2391,13 @@ export default function Page() {
                                   : "bg-[#ff5a3d] text-white shadow-lg shadow-[#ff5a3d]/20 hover:bg-neutral-950",
                               ].join(" ")}
                             >
-                              {isBusy
-                                ? "Saving..."
-                                : agent.enabled
-                                  ? "Disable"
-                                  : "Enable"}
+                              {agent.key === "voice"
+                                ? "Manage Voice Settings"
+                                : isBusy
+                                  ? "Saving..."
+                                  : agent.enabled
+                                    ? "Disable"
+                                    : "Enable"}
                             </button>
 
                             <button

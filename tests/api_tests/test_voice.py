@@ -34,12 +34,19 @@ class TestVoiceStatus:
         for key in ("wake_word_engine", "audio_input_worker", "stt_provider", "tts_provider", "speaker_recognition_provider"):
             assert key in deps
         # No real provider is configured in the test environment -- these
-        # must never silently claim to be available.
-        assert deps["stt_provider"] == "external_dependency_required"
-        assert deps["tts_provider"] == "external_dependency_required"
-        assert deps["speaker_recognition_provider"] == "external_dependency_required"
+        # must never silently claim to be available. Each entry is
+        # {"status": ..., "install_guidance": ...} (apps/api/routes/
+        # voice.py::compute_dependency_status), not a bare string.
+        assert deps["stt_provider"]["status"] == "external_dependency_required"
+        assert deps["tts_provider"]["status"] == "external_dependency_required"
+        assert deps["speaker_recognition_provider"]["status"] == "external_dependency_required"
+        # A missing provider always carries install_guidance -- either a
+        # concrete "pip install X" or, if the package is already importable
+        # locally, which WILLIAM_*_PROVIDER env var to set.
+        assert isinstance(deps["stt_provider"]["install_guidance"], str)
         # Text-based wake word detection is real, local, and needs no provider.
-        assert deps["wake_word_engine"] == "available"
+        assert deps["wake_word_engine"]["status"] == "available"
+        assert deps["wake_word_engine"]["install_guidance"] is None
 
     def test_status_flattened_shape_matches_dashboard_contract(self, client, make_owner) -> None:
         owner = make_owner()
@@ -726,3 +733,228 @@ class TestVoiceSharesAssistantDispatcher:
 
         status_b = client.get("/api/v1/system/worker/status", headers=owner_b.headers).json()["data"]
         assert status_b["connection_state"] == "needs_setup"
+
+
+def _create_voice_setup_token(client, owner) -> dict:
+    response = client.post(
+        "/api/v1/voice/device/setup-token",
+        json={"device_name": "Voice Worker Test Laptop"},
+        headers=owner.headers,
+    )
+    assert response.status_code == 200
+    return response.json()["data"]
+
+
+def _register_voice_device(client, setup_token: str, *, supported_features=None) -> dict:
+    response = client.post(
+        "/api/v1/voice/device/register",
+        json={
+            "setup_token": setup_token,
+            "device_name": "Voice Worker Test Laptop",
+            "device_platform": "windows",
+            "supported_features": supported_features or ["push_to_talk_text"],
+        },
+    )
+    assert response.status_code == 200
+    return response.json()["data"]
+
+
+class TestVoiceDeviceSetup:
+    """Phase 2/9 coverage: the voice-worker device-connector flow (POST
+    /voice/device/setup-token -> POST /voice/device/register -> device-token
+    auth on the worker-facing routes -> POST /voice/device/disable), the
+    exact voice mirror of tests/api_tests/test_device_setup.py's Windows
+    Worker coverage."""
+
+    def test_setup_token_requires_auth(self, client) -> None:
+        response = client.post("/api/v1/voice/device/setup-token", json={})
+        assert response.status_code in (401, 403)
+
+    def test_setup_token_created_with_setup_command(self, client, make_owner) -> None:
+        owner = make_owner()
+        data = _create_voice_setup_token(client, owner)
+        assert data["setup_token"]
+        assert "install_voice_worker.ps1" in data["setup_command"]
+        assert data["setup_token"] in data["setup_command"]
+        assert data["expires_in_seconds"] > 0
+
+    def test_register_creates_device_token(self, client, make_owner) -> None:
+        owner = make_owner()
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        assert register_data["device_token"]
+        assert register_data["device_id"]
+        assert register_data["workspace_id"] == owner.workspace_id
+        assert "push_to_talk_text" in register_data["supported_features"]
+
+    def test_setup_token_is_single_use(self, client, make_owner) -> None:
+        owner = make_owner()
+        setup_data = _create_voice_setup_token(client, owner)
+        _register_voice_device(client, setup_data["setup_token"])
+
+        response = client.post(
+            "/api/v1/voice/device/register",
+            json={"setup_token": setup_data["setup_token"], "device_name": "Second Device"},
+        )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "SETUP_TOKEN_INVALID"
+
+    def test_windows_setup_token_rejected_by_voice_register(self, client, make_owner) -> None:
+        """A device_type="windows" setup token (POST /system/device/setup-
+        token) must never be redeemable by the voice register route -- the
+        two device types share DeviceSetupToken's table but must not be
+        interchangeable."""
+        owner = make_owner()
+        windows_setup = client.post(
+            "/api/v1/system/device/setup-token", json={"device_name": "Windows Laptop"}, headers=owner.headers,
+        )
+        assert windows_setup.status_code == 200
+        windows_token = windows_setup.json()["data"]["setup_token"]
+
+        response = client.post(
+            "/api/v1/voice/device/register",
+            json={"setup_token": windows_token, "device_name": "Should Not Work"},
+        )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "SETUP_TOKEN_INVALID"
+
+    def test_device_token_heartbeat_updates_status(self, client, make_owner) -> None:
+        owner = make_owner()
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        device_headers = {"Authorization": f"Bearer {register_data['device_token']}"}
+
+        response = client.post("/api/v1/voice/worker/heartbeat", json={}, headers=device_headers)
+        assert response.status_code == 200
+        assert response.json()["data"]["worker_connected"] is True
+
+    def test_worker_status_needs_setup_when_never_registered(self, client, make_owner) -> None:
+        owner = make_owner()
+        response = client.get("/api/v1/voice/worker/status", headers=owner.headers)
+        assert response.status_code == 200
+        assert response.json()["data"]["connection_state"] == "needs_setup"
+
+    def test_worker_status_connected_after_register(self, client, make_owner) -> None:
+        owner = make_owner()
+        setup_data = _create_voice_setup_token(client, owner)
+        _register_voice_device(client, setup_data["setup_token"])
+
+        response = client.get("/api/v1/voice/worker/status", headers=owner.headers)
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["connection_state"] == "connected"
+        assert data["device_token_status"] == "active"
+
+    def test_disable_revokes_token_and_status_reflects_it(self, client, make_owner) -> None:
+        owner = make_owner()
+        setup_data = _create_voice_setup_token(client, owner)
+        _register_voice_device(client, setup_data["setup_token"])
+
+        response = client.post("/api/v1/voice/device/disable", headers=owner.headers)
+        assert response.status_code == 200
+
+        status_response = client.get("/api/v1/voice/worker/status", headers=owner.headers)
+        data = status_response.json()["data"]
+        assert data["connection_state"] == "disabled_device"
+        assert data["device_token_status"] == "revoked"
+
+    def test_revoked_token_cannot_submit_push_to_talk_text(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        device_headers = {"Authorization": f"Bearer {register_data['device_token']}"}
+
+        client.post("/api/v1/voice/device/disable", headers=owner.headers)
+
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William open Notepad"},
+            headers=device_headers,
+        )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "DEVICE_TOKEN_REVOKED"
+
+    def test_installed_device_token_can_submit_push_to_talk_text(self, client, make_owner) -> None:
+        """An installed Voice Worker (device-token auth, no user JWT at
+        all) can reach push-to-talk-text exactly like a JWT-authenticated
+        dashboard user can -- this is what makes the installed worker
+        actually usable, not just heartbeat-only."""
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        device_headers = {"Authorization": f"Bearer {register_data['device_token']}"}
+
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William what is moderation?"},
+            headers=device_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert isinstance(data["final_answer"], str)
+        assert data["final_answer"] != ""
+
+    def test_device_token_cannot_reach_admin_config_route(self, client, make_owner) -> None:
+        """A voice device token is only ever accepted by the worker-facing
+        routes (heartbeat/worker-status/push-to-talk-text) -- every other
+        voice route still requires a real user JWT via the unmodified
+        get_current_auth_context."""
+        owner = make_owner()
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        device_headers = {"Authorization": f"Bearer {register_data['device_token']}"}
+
+        response = client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=device_headers)
+        assert response.status_code in (401, 403)
+
+    def test_device_token_can_fetch_voice_status(self, client, make_owner) -> None:
+        """Regression coverage for a bug caught only by the manual live
+        verification run, not by any originally-planned test: an installed
+        Voice Worker's first call every run is GET /voice/status
+        (mode/dependency_status/wake_word) -- a device-token-only worker
+        (no user JWT at all) must be able to reach it, or it can never get
+        past startup."""
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        device_headers = {"Authorization": f"Bearer {register_data['device_token']}"}
+
+        response = client.get("/api/v1/voice/status", headers=device_headers)
+        assert response.status_code == 200
+        assert response.json()["data"]["settings"]["mode"] == "push_to_talk"
+
+    def test_device_token_can_register_wake_event(self, client, make_owner) -> None:
+        """Regression coverage for a second bug caught by the manual live
+        verification run: voice_worker.py's own local wake-word detection
+        calls POST /voice/wake-event whenever "William" appears in the
+        input text, unconditionally of mode -- a device-token-only worker
+        must be able to reach this route too, or "William open Notepad"
+        would 401 here before push-to-talk-text is ever attempted."""
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        device_headers = {"Authorization": f"Bearer {register_data['device_token']}"}
+
+        response = client.post(
+            "/api/v1/voice/wake-event",
+            json={"activation_type": "wake_word", "confidence": 0.99},
+            headers=device_headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["should_listen"] is True
+
+    def test_voice_device_setup_is_workspace_isolated(self, client, make_owner) -> None:
+        owner_a = make_owner()
+        owner_b = make_owner()
+        setup_a = _create_voice_setup_token(client, owner_a)
+        _register_voice_device(client, setup_a["setup_token"])
+
+        status_b = client.get("/api/v1/voice/worker/status", headers=owner_b.headers).json()["data"]
+        assert status_b["connection_state"] == "needs_setup"
+
+        status_a = client.get("/api/v1/voice/worker/status", headers=owner_a.headers).json()["data"]
+        assert status_a["connection_state"] == "connected"

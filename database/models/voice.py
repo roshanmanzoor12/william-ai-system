@@ -254,6 +254,21 @@ class VoiceSettings(Base):
     voice_worker_connected = Column(Boolean, nullable=False, default=False)
     voice_worker_last_seen_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Added alongside the voice device setup-token / device-token auth flow
+    # (database/models/device_setup_token.py, apps/api/routes/
+    # voice_device_setup.py) -- an installed voice worker authenticates
+    # with an opaque device_token instead of a full user JWT, exactly
+    # mirroring database/models/system_worker.py::SystemWorkerStatus's own
+    # device-token columns. Only the SHA-256 hash is ever stored.
+    device_id = Column(String(80), nullable=True)
+    device_name = Column(String(140), nullable=True)
+    device_platform = Column(String(20), nullable=True)
+    device_owner_user_id = Column(String(140), nullable=True)
+    device_token_hash = Column(String(128), nullable=True, index=True)
+    device_token_status = Column(String(20), nullable=True)
+    supported_features_json = Column(Text, nullable=True)
+    setup_completed_at = Column(DateTime(timezone=True), nullable=True)
+
     last_wake_event_at = Column(DateTime(timezone=True), nullable=True)
     last_recognized_speaker_profile_id = Column(String(80), nullable=True)
     last_speaker_display_name = Column(String(160), nullable=True)
@@ -283,6 +298,14 @@ class VoiceSettings(Base):
     def dependency_status(self, value: Dict[str, str]) -> None:
         self.dependency_status_json = _json_dumps(value)
 
+    @property
+    def supported_features(self) -> List[str]:
+        return _json_loads(self.supported_features_json, [])
+
+    @supported_features.setter
+    def supported_features(self, value: List[str]) -> None:
+        self.supported_features_json = _json_dumps(value)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -296,6 +319,12 @@ class VoiceSettings(Base):
             "dependency_status": self.dependency_status,
             "voice_worker_connected": bool(self.voice_worker_connected),
             "voice_worker_last_seen_at": self.voice_worker_last_seen_at.isoformat() if self.voice_worker_last_seen_at else None,
+            "device_id": self.device_id,
+            "device_name": self.device_name,
+            "device_platform": self.device_platform,
+            "device_token_status": self.device_token_status,
+            "supported_features": self.supported_features,
+            "setup_completed_at": self.setup_completed_at.isoformat() if self.setup_completed_at else None,
             "last_wake_event_at": self.last_wake_event_at.isoformat() if self.last_wake_event_at else None,
             "last_recognized_speaker_profile_id": self.last_recognized_speaker_profile_id,
             "last_speaker_display_name": self.last_speaker_display_name,
@@ -308,6 +337,35 @@ class VoiceSettings(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+VOICE_CONNECTION_STATE_NEEDS_SETUP = "needs_setup"
+VOICE_CONNECTION_STATE_DISABLED_DEVICE = "disabled_device"
+VOICE_CONNECTION_STATE_CONNECTED = "connected"
+VOICE_CONNECTION_STATE_OFFLINE = "offline"
+
+
+def compute_voice_connection_state(row_dict: Optional[Dict[str, Any]], worker_connected: bool) -> str:
+    """The one place both apps/api/routes/voice.py's GET /voice/worker/status
+    and voice_service.py's in-process checks derive a single voice-DEVICE
+    display state from -- mirrors database/models/system_worker.py::
+    compute_connection_state exactly, but named distinctly (disabled_device,
+    not "disabled") to avoid colliding with VOICE_MODE_DISABLED, a
+    completely different concept (voice *mode* vs whether a voice device
+    has ever been registered/was later revoked).
+
+    A row that has never completed the device-register flow (
+    device_token_status still None, e.g. a workspace that has only ever
+    used a dev-mode JWT worker) can only ever read connected/offline, never
+    needs_setup/disabled_device -- this is what keeps existing dev-mode
+    behavior and tests unchanged."""
+    if row_dict is None:
+        return VOICE_CONNECTION_STATE_NEEDS_SETUP
+    if row_dict.get("device_token_status") == "revoked":
+        return VOICE_CONNECTION_STATE_DISABLED_DEVICE
+    if worker_connected:
+        return VOICE_CONNECTION_STATE_CONNECTED
+    return VOICE_CONNECTION_STATE_OFFLINE
 
 
 # =============================================================================
@@ -584,6 +642,11 @@ __all__ = [
     "PROFILE_STATUS_DISABLED",
     "PROFILE_STATUS_REVOKED",
     "VALID_PROFILE_STATUSES",
+    "VOICE_CONNECTION_STATE_NEEDS_SETUP",
+    "VOICE_CONNECTION_STATE_DISABLED_DEVICE",
+    "VOICE_CONNECTION_STATE_CONNECTED",
+    "VOICE_CONNECTION_STATE_OFFLINE",
+    "compute_voice_connection_state",
     "REPLY_LANGUAGE_MODE_SAME_AS_SPEAKER",
     "REPLY_LANGUAGE_MODE_FIXED_LANGUAGE",
     "REPLY_LANGUAGE_MODE_TEXT_ONLY",

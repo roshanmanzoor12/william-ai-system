@@ -544,6 +544,21 @@ class WindowsWorker:
             )
             return None
 
+    def _auth_failure_message(self) -> str:
+        """Distinguishes a dev-mode JWT simply expiring (config.worker_token
+        set, config.device_token not) from a real installed device token
+        being revoked (config.device_token set) -- both raise the same
+        DeviceAuthError on a 401, but the honest, actionable message for the
+        operator is different: a JWT can be refreshed by logging in again;
+        a device token is durable and only ever stops working because it
+        was actually revoked from the dashboard. If both happen to be set,
+        device_token wins (matches _headers()'s own effective_token
+        precedence -- the 401 came from whichever credential was actually
+        sent on the wire)."""
+        if self.config.device_token:
+            return "[worker] Device token revoked. Re-enable worker from dashboard."
+        return "[worker] JWT expired. Use installed device-token worker or login again."
+
     def run_forever(self) -> None:
         """
         Main worker loop.
@@ -565,7 +580,7 @@ class WindowsWorker:
                 self.register_device()
                 break
             except DeviceAuthError:
-                print("[worker] Device token revoked. Please re-enable worker from dashboard.", flush=True)
+                print(self._auth_failure_message(), flush=True)
                 self.status = WorkerStatus.ERROR
                 revoked = True
                 break
@@ -592,7 +607,7 @@ class WindowsWorker:
                         print("[worker] heartbeat sent (paused)", flush=True)
                         next_heartbeat = now + self.config.heartbeat_interval_seconds
                     except DeviceAuthError:
-                        print("[worker] Device token revoked. Please re-enable worker from dashboard.", flush=True)
+                        print(self._auth_failure_message(), flush=True)
                         self.status = WorkerStatus.ERROR
                         revoked = True
                         break
@@ -609,7 +624,7 @@ class WindowsWorker:
                     print(f"[worker] heartbeat sent | status={self.status.value}", flush=True)
                     next_heartbeat = now + self.config.heartbeat_interval_seconds
                 except DeviceAuthError:
-                    print("[worker] Device token revoked. Please re-enable worker from dashboard.", flush=True)
+                    print(self._auth_failure_message(), flush=True)
                     self.status = WorkerStatus.ERROR
                     revoked = True
                     break

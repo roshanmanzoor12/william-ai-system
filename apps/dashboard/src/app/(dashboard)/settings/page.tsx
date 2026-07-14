@@ -744,7 +744,9 @@ export default function SettingsPage() {
             </div>
           </section>
 
-          <VoiceControlSettings />
+          <div id="voice-control">
+            <VoiceControlSettings />
+          </div>
 
           <TrustedVoiceProfiles />
 
