@@ -71,6 +71,14 @@ def generate_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
+class DeviceAuthError(RuntimeError):
+    """Raised specifically for a 401 response -- an invalid, expired, or
+    revoked token. Distinct from a generic RuntimeError (network/backend
+    errors) so run_forever() can tell "stop retrying, the credential is
+    dead" apart from "keep retrying, the backend is just unreachable right
+    now"."""
+
+
 class WorkerStatus(str, Enum):
     """Worker runtime status."""
 
@@ -180,6 +188,21 @@ class WorkerConfig:
     )
     worker_token: str = field(
         default_factory=lambda: os.getenv("WILLIAM_WORKER_TOKEN", "")
+    )
+    # An installed worker (apps/worker_nodes/windows/install_windows_worker.ps1
+    # style setup) authenticates with this instead of worker_token (a full
+    # user JWT). Both end up in the same Authorization: Bearer header --
+    # apps/api/routes/device_setup.py::get_worker_auth_context tells them
+    # apart server-side by hash lookup, not the worker.
+    device_token: str = field(
+        default_factory=lambda: os.getenv("WILLIAM_WORKER_DEVICE_TOKEN", "")
+    )
+    # Set via --config; when present, config-file values are applied as
+    # overrides in main() with lower priority than explicit CLI flags,
+    # matching --token/--api-base-url/--device-name's existing precedence.
+    config_path: Optional[str] = field(default=None)
+    retry_interval_seconds: float = field(
+        default_factory=lambda: float(os.getenv("WILLIAM_WORKER_RETRY_INTERVAL", "15"))
     )
     worker_id: str = field(
         default_factory=lambda: os.getenv("WILLIAM_WORKER_ID", generate_id("win_worker"))
@@ -525,12 +548,35 @@ class WindowsWorker:
         """
         Main worker loop.
 
-        This method blocks until stop() is called or process receives stop signal.
+        This method blocks until stop() is called, the process receives a
+        stop signal, or the device token is revoked (see DeviceAuthError --
+        that case stops the loop deliberately rather than retrying forever,
+        since retrying a dead credential can never succeed on its own; a
+        network/backend-unreachable error is the opposite case and always
+        retries, every retry_interval_seconds, without crashing).
         """
         self.install_signal_handlers()
         self.status = WorkerStatus.STARTING
         print(f"[worker] connecting to {self.config.api_base_url or '(no backend configured)'} as \"{self.config.device_name}\"...", flush=True)
-        self.register_device()
+
+        revoked = False
+        while not self.stop_event.is_set():
+            try:
+                self.register_device()
+                break
+            except DeviceAuthError:
+                print("[worker] Device token revoked. Please re-enable worker from dashboard.", flush=True)
+                self.status = WorkerStatus.ERROR
+                revoked = True
+                break
+            except Exception as exc:
+                print(f"[worker] connection error, retrying in {self.config.retry_interval_seconds:.0f}s: {exc}", flush=True)
+                if self.stop_event.wait(self.config.retry_interval_seconds):
+                    break
+
+        if revoked or self.stop_event.is_set():
+            return
+
         print(f"[worker] connected. device_id={self.device_id}", flush=True)
 
         next_heartbeat = 0.0
@@ -541,17 +587,37 @@ class WindowsWorker:
             if self.pause_event.is_set():
                 self.status = WorkerStatus.PAUSED
                 if now >= next_heartbeat:
-                    self.heartbeat()
-                    print("[worker] heartbeat sent (paused)", flush=True)
-                    next_heartbeat = now + self.config.heartbeat_interval_seconds
+                    try:
+                        self.heartbeat()
+                        print("[worker] heartbeat sent (paused)", flush=True)
+                        next_heartbeat = now + self.config.heartbeat_interval_seconds
+                    except DeviceAuthError:
+                        print("[worker] Device token revoked. Please re-enable worker from dashboard.", flush=True)
+                        self.status = WorkerStatus.ERROR
+                        revoked = True
+                        break
+                    except Exception as exc:
+                        print(f"[worker] connection error, retrying in {self.config.retry_interval_seconds:.0f}s: {exc}", flush=True)
+                        next_heartbeat = now + self.config.retry_interval_seconds
                 time.sleep(1)
                 continue
 
             if now >= next_heartbeat:
                 self.status = WorkerStatus.IDLE if not self.current_task_id else WorkerStatus.BUSY
-                self.heartbeat()
-                print(f"[worker] heartbeat sent | status={self.status.value}", flush=True)
-                next_heartbeat = now + self.config.heartbeat_interval_seconds
+                try:
+                    self.heartbeat()
+                    print(f"[worker] heartbeat sent | status={self.status.value}", flush=True)
+                    next_heartbeat = now + self.config.heartbeat_interval_seconds
+                except DeviceAuthError:
+                    print("[worker] Device token revoked. Please re-enable worker from dashboard.", flush=True)
+                    self.status = WorkerStatus.ERROR
+                    revoked = True
+                    break
+                except Exception as exc:
+                    print(f"[worker] connection error, retrying in {self.config.retry_interval_seconds:.0f}s: {exc}", flush=True)
+                    next_heartbeat = now + min(self.config.retry_interval_seconds, self.config.heartbeat_interval_seconds)
+                    time.sleep(min(self.config.retry_interval_seconds, self.config.poll_interval_seconds))
+                    continue
 
             try:
                 task = self.poll_task()
@@ -573,6 +639,13 @@ class WindowsWorker:
         self.status = WorkerStatus.OFFLINE
         self.record_event(WorkerEventType.WORKER_STOPPED, {"stopped_at": iso_now()})
         print("[worker] shutting down", flush=True)
+
+        if revoked:
+            # The device token is already known-dead -- reporting offline
+            # with it would just be another 401. Skip straight to return
+            # (no matching /worker/offline route exists server-side yet
+            # anyway; see the try/except below for the non-revoked path).
+            return
         try:
             # No matching /worker/offline route exists server-side yet
             # (out of scope for this MVP -- the presence heartbeat's own
@@ -1611,8 +1684,15 @@ class WindowsWorker:
             "X-Worker-Session-ID": self.session_id,
         }
 
-        if self.config.worker_token:
-            headers["Authorization"] = f"Bearer {self.config.worker_token}"
+        # An installed worker's device_token (durable, revocable) takes
+        # priority over a dev-mode user JWT (worker_token) if somehow both
+        # are set -- the backend tells them apart by hash lookup either way
+        # (apps/api/routes/device_setup.py::get_worker_auth_context), but
+        # preferring the device token here matches "installed worker mode"
+        # being the intended steady state once setup is done.
+        effective_token = self.config.device_token or self.config.worker_token
+        if effective_token:
+            headers["Authorization"] = f"Bearer {effective_token}"
 
         return headers
 
@@ -1641,7 +1721,13 @@ class WindowsWorker:
         try:
             with urlopen(request, timeout=self.config.request_timeout_seconds) as response:
                 return self._decode_http_response(response.read())
-        except (HTTPError, URLError, TimeoutError) as exc:
+        except HTTPError as exc:
+            if fail_silently:
+                return {"ok": False, "error": str(exc)}
+            if exc.code == 401:
+                raise DeviceAuthError(f"POST {path} failed: {exc}") from exc
+            raise RuntimeError(f"POST {path} failed: {exc}") from exc
+        except (URLError, TimeoutError) as exc:
             if fail_silently:
                 return {"ok": False, "error": str(exc)}
             raise RuntimeError(f"POST {path} failed: {exc}") from exc
@@ -1674,7 +1760,11 @@ class WindowsWorker:
         try:
             with urlopen(request, timeout=self.config.request_timeout_seconds) as response:
                 return self._decode_http_response(response.read())
-        except (HTTPError, URLError, TimeoutError) as exc:
+        except HTTPError as exc:
+            if exc.code == 401:
+                raise DeviceAuthError(f"GET {path} failed: {exc}") from exc
+            raise RuntimeError(f"GET {path} failed: {exc}") from exc
+        except (URLError, TimeoutError) as exc:
             raise RuntimeError(f"GET {path} failed: {exc}") from exc
 
     @staticmethod
@@ -1887,15 +1977,42 @@ def main() -> int:
     parser.add_argument("--payload-json", type=str, default="{}", help="JSON payload for demo action.")
     parser.add_argument("--dry-run", action="store_true", help="Force dry-run mode.")
     parser.add_argument("--token", type=str, default=None, help="Real JWT access token (overrides WILLIAM_WORKER_TOKEN).")
+    parser.add_argument("--device-token", type=str, default=None, help="Installed-worker device token from POST /system/device/register (overrides WILLIAM_WORKER_DEVICE_TOKEN).")
     parser.add_argument("--api-base-url", type=str, default=None, help="Backend API base URL, e.g. http://localhost:8001/api/v1 (overrides WILLIAM_WORKER_API_BASE_URL).")
     parser.add_argument("--device-name", type=str, default=None, help='Display name for this device, e.g. "Roshan Windows Laptop" (overrides WILLIAM_WORKER_DEVICE_NAME).')
+    parser.add_argument("--config", type=str, default=None, help='Path to a JSON config file (scripts/windows/install_windows_worker.ps1 writes one to %%USERPROFILE%%\\.william\\windows_worker.json) with api_base_url/device_id/device_token/device_name.')
     args = parser.parse_args()
 
     config = WorkerConfig()
+
+    # Config-file values apply first (lowest priority) -- explicit CLI
+    # flags below always override them, matching --token/--api-base-url/
+    # --device-name's existing precedence over env vars.
+    if args.config:
+        config.config_path = args.config
+        try:
+            with open(args.config, "r", encoding="utf-8") as config_file:
+                file_config = json.load(config_file)
+            if not isinstance(file_config, dict):
+                raise ValueError("Config file must contain a JSON object.")
+            if file_config.get("api_base_url"):
+                config.api_base_url = str(file_config["api_base_url"]).rstrip("/")
+            if file_config.get("device_token"):
+                config.device_token = str(file_config["device_token"])
+            if file_config.get("device_name"):
+                config.device_name = str(file_config["device_name"])
+            if file_config.get("device_id"):
+                config.worker_id = str(file_config["device_id"])
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[worker] could not read config file {args.config}: {exc}", flush=True)
+            return 1
+
     if args.dry_run:
         config.dry_run = True
     if args.token:
         config.worker_token = args.token
+    if args.device_token:
+        config.device_token = args.device_token
     if args.api_base_url:
         config.api_base_url = args.api_base_url.rstrip("/")
     if args.device_name:
@@ -1931,12 +2048,17 @@ def main() -> int:
             )
             return 1
 
-    # A real token + api-base-url with no other explicit one-shot flag
-    # means "run live" -- matches the documented command:
+    # A real token (JWT dev mode OR an installed worker's device token) +
+    # api-base-url with no other explicit one-shot flag means "run live" --
+    # matches the documented dev command:
     #   python -m apps.worker_nodes.windows.windows_worker --token <JWT>
     #     --api-base-url http://localhost:8001/api/v1 --device-name "..."
-    # (no --run needed when both are supplied this way).
-    should_run = args.run or (bool(config.worker_token) and bool(config.api_base_url))
+    # as well as the installed-worker command:
+    #   python -m apps.worker_nodes.windows.windows_worker --config <path>
+    # (no --run needed in either case).
+    should_run = args.run or (
+        (bool(config.worker_token) or bool(config.device_token)) and bool(config.api_base_url)
+    )
 
     if should_run:
         worker.run_forever()

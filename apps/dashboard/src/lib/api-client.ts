@@ -1070,6 +1070,8 @@ export const assistantApi = {
     ),
 };
 
+export type WorkerConnectionState = "needs_setup" | "disabled" | "connected" | "offline";
+
 export type SystemWorkerStatusData = {
   workspace_id: string;
   platform: string | null;
@@ -1079,8 +1081,27 @@ export type SystemWorkerStatusData = {
   supported_actions: string[];
   last_command: string | null;
   last_result: string | null;
+  device_id: string | null;
+  device_token_status: "active" | "revoked" | null;
+  setup_completed_at: string | null;
+  connection_state: WorkerConnectionState;
 };
 
 export const systemWorkerApi = {
   status: () => get<SystemWorkerStatusData>("/system/worker/status"),
+};
+
+export type DeviceSetupTokenData = {
+  setup_token: string;
+  expires_at: string;
+  expires_in_seconds: number;
+  api_base_url: string;
+  setup_command: string;
+  install_script_url: string;
+};
+
+export const deviceSetupApi = {
+  createSetupToken: (deviceName?: string) =>
+    post<DeviceSetupTokenData>("/system/device/setup-token", deviceName ? { device_name: deviceName } : {}),
+  disable: () => post<Record<string, never>>("/system/device/disable"),
 };

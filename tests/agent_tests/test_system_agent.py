@@ -2,14 +2,19 @@
 tests/agent_tests/test_system_agent.py
 
 Tests for SystemAgent.open_app/close_app's honest device-worker gating
-(agents/system_agent/system_agent.py). Before this session's fix, these
-methods either executed a real subprocess command on the BACKEND SERVER's
-own host, or returned a vague "dry-run" message -- neither told the caller
-the backend cannot open apps on THEIR machine without a connected Windows
-device worker. Now they always return device_worker_offline (no worker has
-ever checked in for this workspace) or external_dependency_required (a
-worker is connected, but the real remote task-dispatch protocol isn't built
-yet), and never execute anything locally.
+(agents/system_agent/system_agent.py). These methods never execute a real
+subprocess on the BACKEND SERVER's own host and never claim success
+without a connected Windows device worker.
+
+Since the device setup-token/device-token flow (apps/api/routes/
+device_setup.py) landed, "no worker" is no longer one flat state: a
+workspace that has NEVER completed the Enable Windows Worker flow reads
+"not_enabled" (this file's scenario -- a brand-new, never-seen-before
+workspace_id), distinct from "disabled" (explicitly revoked from Settings)
+and "device_worker_offline" (was set up and working, just hasn't
+heartbeated recently). See database/models/system_worker.py::
+compute_connection_state for the single source of truth these 3 states
+come from.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ def make_context(workspace_id: str | None = None) -> TaskContext:
 
 class TestSystemAgentDeviceGating:
     @pytest.mark.asyncio
-    async def test_open_microsoft_store_without_worker_returns_device_worker_offline(
+    async def test_open_microsoft_store_without_worker_returns_not_enabled(
         self,
     ) -> None:
         agent = SystemAgent()
@@ -40,14 +45,14 @@ class TestSystemAgentDeviceGating:
         result = await agent.open_app({"app": "Microsoft Store"}, context)
 
         assert result["success"] is False
-        assert result["error"] == "device_worker_offline"
-        assert result["metadata"]["runtime_state"] == "device_worker_offline"
+        assert result["error"] == "not_enabled"
+        assert result["metadata"]["runtime_state"] == "not_enabled"
         assert result["message"] == (
-            "I can open Microsoft Store only when the Windows device worker is connected."
+            "I can open Microsoft Store once Windows Worker is enabled. Set it up from Settings > Devices."
         )
 
     @pytest.mark.asyncio
-    async def test_open_other_app_without_worker_returns_device_worker_offline(
+    async def test_open_other_app_without_worker_returns_not_enabled(
         self,
     ) -> None:
         agent = SystemAgent()
@@ -56,8 +61,8 @@ class TestSystemAgentDeviceGating:
         result = await agent.open_app({"app": "Notepad"}, context)
 
         assert result["success"] is False
-        assert result["error"] == "device_worker_offline"
-        assert result["metadata"]["runtime_state"] == "device_worker_offline"
+        assert result["error"] == "not_enabled"
+        assert result["metadata"]["runtime_state"] == "not_enabled"
         assert "Notepad" in result["message"]
 
     @pytest.mark.asyncio
@@ -85,14 +90,14 @@ class TestSystemAgentDeviceGating:
         assert result["success"] is False
 
     @pytest.mark.asyncio
-    async def test_close_app_without_worker_returns_device_worker_offline(self) -> None:
+    async def test_close_app_without_worker_returns_not_enabled(self) -> None:
         agent = SystemAgent()
         context = make_context()
 
         result = await agent.close_app({"app": "Calculator"}, context)
 
         assert result["success"] is False
-        assert result["metadata"]["runtime_state"] == "device_worker_offline"
+        assert result["metadata"]["runtime_state"] == "not_enabled"
 
     @pytest.mark.asyncio
     async def test_open_app_missing_app_name_is_a_structured_error(self) -> None:

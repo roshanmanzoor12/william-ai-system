@@ -39,80 +39,19 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from apps.api.routes._worker_shared import (  # type: ignore
+    WORKER_MVP_ACTIONS,
+    WORKER_RISKY_ACTIONS,
+    api_success,
+    raise_api_error,
+    utc_now,
+)
+
 LOGGER_NAME = "william.api.routes.system_worker"
 logger = logging.getLogger(LOGGER_NAME)
 logger.setLevel(os.getenv("WILLIAM_LOG_LEVEL", "INFO").upper())
 
 WORKER_STALE_AFTER_SECONDS = 90
-
-# Server-side allowlist -- the single source of truth for what a worker is
-# ever allowed to be asked to do. Anything outside both sets is rejected
-# outright by classify_worker_action(), regardless of what a caller asks
-# for; nothing here ever gets queued just because a payload claims it.
-WORKER_MVP_ACTIONS = {
-    "open_microsoft_store",
-    "open_chrome",
-    "open_vscode",
-    "open_notepad",
-    "open_explorer",
-    "open_folder",
-    "open_file",
-    "download_generated_file_to_downloads",
-    "open_downloads_folder",
-    "show_system_info",
-}
-
-# Matches the user-facing risky-action list (delete/shutdown/install/shell/
-# messages/calls/financial/passwords) -- none of these are reachable via the
-# Phase 1 assistant's windows_device_action flow today (only the MVP set
-# above is), but the classification/approval machinery exists now so a
-# future phase can add a risky action without inventing this gate from
-# scratch.
-WORKER_RISKY_ACTIONS = {
-    "delete_file",
-    "shutdown",
-    "restart",
-    "install_software",
-    "run_shell_command",
-    "send_message",
-    "place_call",
-    "financial_action",
-    "enter_password",
-    "browser_login_form",
-}
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def api_success(message: str, data: Optional[Dict[str, Any]] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
-    return {
-        "success": True,
-        "message": message,
-        "data": data or {},
-        "error": None,
-        "metadata": {"request_id": request_id, "timestamp": utc_now().isoformat(), "module": "system_worker"},
-    }
-
-
-def raise_api_error(
-    status_code: int,
-    message: str,
-    code: str,
-    request_id: Optional[str] = None,
-    details: Optional[Any] = None,
-) -> None:
-    raise HTTPException(
-        status_code=status_code,
-        detail={
-            "success": False,
-            "message": message,
-            "data": {},
-            "error": {"code": code, "details": details},
-            "metadata": {"request_id": request_id, "timestamp": utc_now().isoformat(), "module": "system_worker"},
-        },
-    )
 
 
 from apps.api.routes.auth import AuthContext, get_current_auth_context  # type: ignore
@@ -124,6 +63,17 @@ except Exception as security_import_exc:  # pragma: no cover
 
     async def security_review(payload: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore
         return {"success": False, "message": "Security Agent hook unavailable.", "data": {}, "error": {"code": "SECURITY_HOOK_UNAVAILABLE"}}
+
+try:
+    # Dual-mode auth (real user JWT for dev mode, or an installed worker's
+    # device token) for the worker-facing routes below -- see
+    # apps/api/routes/device_setup.py::get_worker_auth_context's docstring
+    # for why every OTHER route in this codebase deliberately keeps using
+    # plain get_current_auth_context instead.
+    from apps.api.routes.device_setup import get_worker_auth_context  # type: ignore
+except Exception as worker_auth_import_exc:  # pragma: no cover
+    logger.warning("Could not import get_worker_auth_context in system_worker.py: %s", worker_auth_import_exc)
+    get_worker_auth_context = get_current_auth_context  # type: ignore
 
 
 def compute_worker_connected(status_row: Dict[str, Any]) -> bool:
@@ -159,7 +109,7 @@ def get_system_worker_status(workspace_id: str) -> Dict[str, Any]:
     harmless guarantee against ever reading a stale duplicate if that
     constraint is ever weakened later."""
     from database.db import db_manager
-    from database.models.system_worker import SystemWorkerStatus
+    from database.models.system_worker import SystemWorkerStatus, compute_connection_state
 
     with db_manager.session_scope() as db:
         row = (
@@ -178,9 +128,14 @@ def get_system_worker_status(workspace_id: str) -> Dict[str, Any]:
                 "supported_actions": [],
                 "last_command": None,
                 "last_result": None,
+                "device_id": None,
+                "device_token_status": None,
+                "setup_completed_at": None,
+                "connection_state": compute_connection_state(None, False),
             }
         data = row.to_dict()
         data["worker_connected"] = compute_worker_connected(data)
+        data["connection_state"] = compute_connection_state(data, data["worker_connected"])
         return data
 
 
@@ -227,7 +182,7 @@ router = APIRouter(tags=["System Worker"])
 
 
 @router.get("/worker/status")
-async def get_worker_status(context: AuthContext = Depends(get_current_auth_context)) -> Dict[str, Any]:
+async def get_worker_status(context: AuthContext = Depends(get_worker_auth_context)) -> Dict[str, Any]:
     status_data = get_system_worker_status(context.workspace_id)
     return api_success("System worker status loaded.", data=status_data, request_id=context.request_id)
 
@@ -241,7 +196,7 @@ class WorkerHeartbeatPayload(BaseModel):
 @router.post("/worker/heartbeat")
 async def worker_heartbeat(
     payload: WorkerHeartbeatPayload,
-    context: AuthContext = Depends(get_current_auth_context),
+    context: AuthContext = Depends(get_worker_auth_context),
 ) -> Dict[str, Any]:
     """A worker's first heartbeat IS its registration -- this upsert
     creates the row if none exists yet, so there is no separate
@@ -282,7 +237,7 @@ async def worker_heartbeat(
 @router.get("/worker/tasks")
 async def poll_worker_tasks(
     limit: int = 5,
-    context: AuthContext = Depends(get_current_auth_context),
+    context: AuthContext = Depends(get_worker_auth_context),
 ) -> Dict[str, Any]:
     """Worker polls for its own workspace's queued tasks only -- real
     per-workspace isolation via the same JWT-derived AuthContext every
@@ -312,7 +267,7 @@ class WorkerTaskResultPayload(BaseModel):
 async def report_worker_task_result(
     task_id: str,
     payload: WorkerTaskResultPayload,
-    context: AuthContext = Depends(get_current_auth_context),
+    context: AuthContext = Depends(get_worker_auth_context),
 ) -> Dict[str, Any]:
     from database.db import db_manager
     from database.models.system_worker import SystemWorkerStatus

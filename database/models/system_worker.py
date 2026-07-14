@@ -117,6 +117,18 @@ class SystemWorkerStatus(Base):
     last_command = Column(Text, nullable=True)
     last_result = Column(Text, nullable=True)
 
+    # Added alongside the device setup-token / device-token auth flow
+    # (database/models/device_setup_token.py, apps/api/routes/
+    # device_setup.py) -- an installed worker authenticates with an opaque
+    # device_token instead of a full user JWT. Only its SHA-256 hash is
+    # ever stored; the plaintext is returned exactly once, at
+    # POST /system/device/register time.
+    owner_user_id = Column(String(140), nullable=True)
+    device_id = Column(String(80), nullable=True)
+    device_token_hash = Column(String(128), nullable=True, index=True)
+    device_token_status = Column(String(20), nullable=True)
+    setup_completed_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
 
@@ -143,9 +155,49 @@ class SystemWorkerStatus(Base):
             "supported_actions": self.supported_actions,
             "last_command": self.last_command,
             "last_result": self.last_result,
+            "owner_user_id": self.owner_user_id,
+            "device_id": self.device_id,
+            "device_token_status": self.device_token_status,
+            "setup_completed_at": self.setup_completed_at.isoformat() if self.setup_completed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
-__all__ = ["SystemWorkerStatus", "PLATFORM_WINDOWS", "PLATFORM_MAC", "VALID_PLATFORMS"]
+CONNECTION_STATE_NEEDS_SETUP = "needs_setup"
+CONNECTION_STATE_DISABLED = "disabled"
+CONNECTION_STATE_CONNECTED = "connected"
+CONNECTION_STATE_OFFLINE = "offline"
+
+
+def compute_connection_state(row_dict: Optional[Dict[str, Any]], worker_connected: bool) -> str:
+    """The one place both apps/api/routes/system_worker.py's HTTP status
+    endpoint and SystemAgent's in-process device gating derive a single
+    display/decision state from -- never duplicated ad-hoc booleans.
+
+    A row that only ever heartbeated via a plain user JWT (dev/manual
+    mode, device_token_status still None) can only ever read connected/
+    offline, never needs_setup/disabled -- this is what keeps existing
+    dev-mode behavior and tests unchanged. needs_setup means no device has
+    EVER registered for this workspace at all; disabled means one did,
+    then was explicitly revoked from the dashboard."""
+    if row_dict is None:
+        return CONNECTION_STATE_NEEDS_SETUP
+    if row_dict.get("device_token_status") == "revoked":
+        return CONNECTION_STATE_DISABLED
+    if worker_connected:
+        return CONNECTION_STATE_CONNECTED
+    return CONNECTION_STATE_OFFLINE
+
+
+__all__ = [
+    "SystemWorkerStatus",
+    "PLATFORM_WINDOWS",
+    "PLATFORM_MAC",
+    "VALID_PLATFORMS",
+    "compute_connection_state",
+    "CONNECTION_STATE_NEEDS_SETUP",
+    "CONNECTION_STATE_DISABLED",
+    "CONNECTION_STATE_CONNECTED",
+    "CONNECTION_STATE_OFFLINE",
+]

@@ -1122,14 +1122,14 @@ class SystemAgent(BaseAgent):
             return get_system_worker_status(context.workspace_id)
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("Could not read device worker status: %s", exc)
-            return {"worker_connected": False, "worker_last_seen_at": None}
+            return {"worker_connected": False, "worker_last_seen_at": None, "connection_state": "needs_setup"}
 
     def _device_control_unavailable_result(
         self,
         app: str,
         context: TaskContext,
         *,
-        worker_connected: bool,
+        connection_state: str,
     ) -> Dict[str, Any]:
         """
         Real device control (opening/closing an app on the user's own
@@ -1137,36 +1137,41 @@ class SystemAgent(BaseAgent):
         remote task-dispatch protocol -- neither executing the command on
         this backend server's own host, nor claiming success without
         either, is acceptable (this backend may not even be running on the
-        user's machine). The dispatch (poll/report) protocol isn't built
-        yet even when a worker is connected -- see apps/worker_nodes/
-        windows/windows_worker.py and apps/worker_nodes/common/
-        worker_client.py (register/heartbeat/poll_tasks/report methods
-        already exist client-side; the matching /api/worker/tasks/* server
-        routes do not exist yet). Documented next step: build those routes
-        plus a task queue the connected worker polls, then swap this
-        honest refusal for a real dispatch call.
+        user's machine).
+
+        connection_state (database/models/system_worker.py::
+        compute_connection_state) distinguishes 3 honestly different
+        reasons a device isn't reachable right now:
+        - "needs_setup": no Windows Worker has EVER been registered for
+          this workspace (no Enable Windows Worker flow completed yet).
+        - "disabled": one WAS registered, then explicitly revoked from
+          Settings (POST /system/device/disable).
+        - "offline": one is registered and was working, but hasn't
+          heartbeated recently -- this is the ONLY case whose wording is
+          unchanged from before device setup existed, since "offline"
+          already meant exactly this.
         """
         is_store = app.strip().lower() in {"microsoft store", "store", "ms-windows-store"}
 
-        if not worker_connected:
+        if connection_state == "needs_setup":
+            message = f"I can open {app} once Windows Worker is enabled. Set it up from Settings > Devices."
+            code = "not_enabled"
+        elif connection_state == "disabled":
+            message = f"I can open {app} once Windows Worker is re-enabled. It's currently disabled in Settings > Devices."
+            code = "disabled"
+        else:
             message = (
                 "I can open Microsoft Store only when the Windows device worker is connected."
                 if is_store
                 else f"I can perform this system action only when the Windows device worker is connected (requested app: {app})."
             )
             code = "device_worker_offline"
-        else:
-            message = (
-                "The Windows device worker is connected, but remote command dispatch isn't built yet -- "
-                "I can't send it a task to open an app on your machine."
-            )
-            code = "external_dependency_required"
 
         return self._error_result(
             message,
             code,
             context,
-            metadata={"runtime_state": code, "app": app, "worker_connected": worker_connected},
+            metadata={"runtime_state": code, "app": app, "connection_state": connection_state},
         )
 
     # Maps a human app name to the real worker action_type strings the
@@ -1289,8 +1294,9 @@ class SystemAgent(BaseAgent):
             return self._error_result("Missing app name/path.", "missing_app", context)
 
         worker_status = self._device_worker_status(context)
-        if not bool(worker_status.get("worker_connected")):
-            return self._device_control_unavailable_result(app, context, worker_connected=False)
+        connection_state = worker_status.get("connection_state") or "needs_setup"
+        if connection_state != "connected":
+            return self._device_control_unavailable_result(app, context, connection_state=connection_state)
 
         return await self._dispatch_worker_action(app, context, verb="open")
 
@@ -1311,9 +1317,8 @@ class SystemAgent(BaseAgent):
             return self._error_result("Missing app/process name.", "missing_app", context)
 
         worker_status = self._device_worker_status(context)
-        return self._device_control_unavailable_result(
-            app, context, worker_connected=bool(worker_status.get("worker_connected"))
-        )
+        connection_state = worker_status.get("connection_state") or "needs_setup"
+        return self._device_control_unavailable_result(app, context, connection_state=connection_state)
 
     async def list_files(
         self,

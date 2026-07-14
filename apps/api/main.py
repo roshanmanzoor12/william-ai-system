@@ -1295,6 +1295,7 @@ OPTIONAL_ROUTERS: List[Tuple[str, str, str]] = [
     ("apps.api.routes.admin", "router", "/admin"),
     ("apps.api.routes.system_worker", "router", "/system"),
     ("apps.api.routes.capabilities", "router", "/system"),
+    ("apps.api.routes.device_setup", "router", "/system"),
     ("apps.api.routes.assistant", "router", "/assistant"),
     # No apps.api.routes.devices entry: no device-pairing concept exists
     # anywhere else in this codebase (no model, no agent, no worker

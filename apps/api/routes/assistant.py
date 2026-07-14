@@ -348,8 +348,12 @@ async def _execute_windows_device_action(
     runtime_state = (result.get("metadata") or {}).get("runtime_state") or (result.get("data") or {}).get("runtime_state")
     display_name = "Microsoft Store" if app.strip().lower() in {"microsoft store", "store", "ms-windows-store"} else app
 
-    if runtime_state == "device_worker_offline":
-        final_answer = f"Boss, I can open {display_name}, but your Windows device worker is offline. Start it first."
+    if runtime_state == "not_enabled":
+        final_answer = "Boss, Windows Worker is not enabled yet. Open Settings > Devices and click Enable Windows Worker."
+    elif runtime_state == "disabled":
+        final_answer = "Boss, Windows Worker is disabled. Enable it from Settings before I can open apps."
+    elif runtime_state == "device_worker_offline":
+        final_answer = "Boss, Windows Worker is enabled but offline. Start the worker or reinstall it from Settings."
     elif runtime_state == "queued":
         final_answer = f"Done boss, I sent the command to your Windows device. {display_name} is opening."
     elif runtime_state == "approval_required":
