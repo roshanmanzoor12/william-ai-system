@@ -366,6 +366,16 @@ async def _execute_windows_device_action(
     final = build_final_response(result, route_hint=["system"], apply_tone=(final_answer is None))
     if final_answer:
         final["final_answer"] = final_answer
+    # SystemAgent's queued-task id (agents/system_agent/system_agent.py::
+    # _dispatch_worker_action sets data.task_id) would otherwise be
+    # discarded here -- build_final_response only ever returns
+    # {final_answer, follow_up_questions, status, route, generated_files,
+    # error}. Voice (apps/api/routes/voice.py::push_to_talk_text, which
+    # calls this same dispatcher) needs it to report worker_task_id back
+    # to the caller.
+    worker_task_id = (result.get("data") or {}).get("task_id")
+    if worker_task_id:
+        final["worker_task_id"] = worker_task_id
     return final
 
 
@@ -430,11 +440,20 @@ async def _dispatch(
 # Routes
 # =============================================================================
 
-@router.post("/message")
-async def send_message(
+async def process_assistant_message(
     payload: AssistantMessageRequest,
-    context: "AuthContext" = Depends(get_current_auth_context),
+    context: "AuthContext",
 ) -> Dict[str, Any]:
+    """The one shared dispatcher behind both POST /assistant/message and
+    POST /voice/push-to-talk/text (apps/api/routes/voice.py) -- classifies
+    the message, asks clarifying questions when required fields are
+    missing, executes through the same agent pipeline (including
+    SystemAgent/Windows Worker dispatch for windows_device_action intents)
+    either way, and always returns the same final_answer-first envelope.
+    Extracted verbatim from this module's original send_message() route
+    body so voice text commands stop bypassing SystemAgent through the raw
+    MasterAgent pipeline -- the exact bug the dashboard Command Console had
+    before it was fixed the same way."""
     active_session: ConversationSession
     classification_route: List[str]
 
@@ -550,6 +569,14 @@ async def send_message(
             ConversationSessionService.mark_completed(db, active_session, final.get("final_answer", ""))
 
     return _final_envelope(active_session, final, context)
+
+
+@router.post("/message")
+async def send_message(
+    payload: AssistantMessageRequest,
+    context: "AuthContext" = Depends(get_current_auth_context),
+) -> Dict[str, Any]:
+    return await process_assistant_message(payload, context)
 
 
 @router.get("/threads/{conversation_thread_id}")

@@ -18,8 +18,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Mic, MicOff, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import {
   voiceApi,
-  type VoiceCommandResponseData,
   type VoiceMode,
+  type PushToTalkTextResponseData,
+  type PushToTalkTextSpeechOutputStatus,
   type VoiceSpeechOutputStatus,
 } from "@/lib/api-client";
 
@@ -74,8 +75,12 @@ export function WilliamVoicePanel() {
   const [detectedLanguage, setDetectedLanguage] = useState("");
   const [replyLanguage, setReplyLanguage] = useState("");
   const [responseText, setResponseText] = useState("");
-  const [speechOutputStatus, setSpeechOutputStatus] =
-    useState<VoiceSpeechOutputStatus | null>(null);
+  const [workerTaskId, setWorkerTaskId] = useState<string | null>(null);
+  const [lastResponseData, setLastResponseData] =
+    useState<PushToTalkTextResponseData | null>(null);
+  const [speechOutputStatus, setSpeechOutputStatus] = useState<
+    PushToTalkTextSpeechOutputStatus | VoiceSpeechOutputStatus | null
+  >(null);
   const [speakResponse, setSpeakResponse] = useState(false);
   const [sendError, setSendError] = useState("");
   const [isListening, setIsListening] = useState(false);
@@ -155,7 +160,7 @@ export function WilliamVoicePanel() {
     if (!sessionId) setSessionId(activeSessionId);
 
     const response = await voiceApi.sendPushToTalkText({
-      transcript: trimmed,
+      text: trimmed,
       detected_language: detectedLanguageInput.trim() || undefined,
       session_id: activeSessionId,
     });
@@ -166,12 +171,23 @@ export function WilliamVoicePanel() {
       return;
     }
 
-    const data: VoiceCommandResponseData = response.data;
+    const data = response.data;
 
     setLastTranscript(trimmed);
     setDetectedLanguage(detectedLanguageInput.trim() || "en");
-    setReplyLanguage(data.reply_language || "");
-    setResponseText(data.response_text || "");
+    setLastResponseData(data);
+    setWorkerTaskId(data.worker_task_id ?? null);
+
+    if (data.final_answer !== undefined) {
+      // Real command, routed through the shared assistant dispatcher.
+      setReplyLanguage("");
+      setResponseText(data.final_answer);
+    } else {
+      // Control-phrase response or speaker-permission denial -- unchanged
+      // older shape.
+      setReplyLanguage(data.reply_language || "");
+      setResponseText(data.response_text || "");
+    }
     setSpeechOutputStatus(data.speech_output_status);
     setTranscript("");
     setPanelState("idle");
@@ -184,11 +200,17 @@ export function WilliamVoicePanel() {
     setDetectedLanguage("");
     setReplyLanguage("");
     setResponseText("");
+    setWorkerTaskId(null);
+    setLastResponseData(null);
     setSpeechOutputStatus(null);
     setSendError("");
   }
 
-  const canSpeakResponse = speechOutputStatus === "available";
+  const canSpeakResponse =
+    speechOutputStatus === "available" || speechOutputStatus === "spoken";
+  const ttsMissing =
+    speechOutputStatus === "external_dependency_required" ||
+    speechOutputStatus === "tts_missing";
 
   return (
     <div className="rounded-[1.6rem] bg-white p-5 shadow-sm">
@@ -357,10 +379,10 @@ export function WilliamVoicePanel() {
             </div>
             <div className="rounded-2xl bg-neutral-50 p-3">
               <p className="text-[10px] font-black uppercase tracking-[0.14em] text-neutral-400">
-                Reply language
+                {replyLanguage ? "Reply language" : "Worker task"}
               </p>
-              <p className="mt-1 text-sm font-bold text-neutral-800">
-                {replyLanguage || "—"}
+              <p className="mt-1 truncate text-sm font-bold text-neutral-800">
+                {replyLanguage || workerTaskId || "—"}
               </p>
             </div>
           </div>
@@ -374,12 +396,12 @@ export function WilliamVoicePanel() {
                 <span
                   className={[
                     "rounded-full px-2.5 py-1 text-[10px] font-black",
-                    speechOutputStatus === "available"
+                    canSpeakResponse
                       ? "bg-emerald-50 text-emerald-700"
                       : "bg-orange-50 text-orange-700",
                   ].join(" ")}
                 >
-                  {speechOutputStatus === "available"
+                  {canSpeakResponse
                     ? "Speech output available"
                     : "Speech output needs setup"}
                 </span>
@@ -388,6 +410,21 @@ export function WilliamVoicePanel() {
             <p className="text-sm font-medium leading-6 text-neutral-800">
               {responseText || "No response yet. Send a command to William."}
             </p>
+            {ttsMissing && responseText ? (
+              <p className="mt-2 text-xs font-bold text-orange-700">
+                Speech output needs setup, but text command worked.
+              </p>
+            ) : null}
+            {lastResponseData ? (
+              <details className="mt-3">
+                <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.14em] text-neutral-400 hover:text-neutral-600">
+                  Export JSON
+                </summary>
+                <pre className="mt-2 max-h-64 overflow-auto rounded-xl bg-neutral-950 p-3 text-[11px] text-neutral-100">
+                  {JSON.stringify(lastResponseData, null, 2)}
+                </pre>
+              </details>
+            ) : null}
           </div>
         </>
       )}

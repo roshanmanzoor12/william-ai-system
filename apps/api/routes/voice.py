@@ -316,7 +316,13 @@ def compute_dependency_status() -> Dict[str, str]:
 
     return {
         "wake_word_engine": "available",
-        "audio_input_worker": _status("WILLIAM_AUDIO_INPUT_WORKER_URL"),
+        # Distinct from wake_word_engine above: text-based wake-word
+        # detection (agents/voice_agent/wake_word.py) always works with no
+        # provider (used by --simulate-text); a real *audio* wake-word
+        # engine for always-listening microphone mode is a separate,
+        # genuinely-optional dependency.
+        "wake_word_provider": _status("WILLIAM_WAKE_WORD_PROVIDER"),
+        "audio_input_worker": _status("WILLIAM_AUDIO_INPUT_PROVIDER"),
         "stt_provider": _status("WILLIAM_STT_PROVIDER"),
         "tts_provider": _status("WILLIAM_TTS_PROVIDER"),
         "speaker_recognition_provider": _status("WILLIAM_SPEAKER_RECOGNITION_PROVIDER"),
@@ -393,7 +399,14 @@ class VoiceCommandRequest(BaseModel):
 
 
 class PushToTalkTextRequest(BaseModel):
-    transcript: str = Field(..., min_length=1, max_length=4000)
+    # `text` is the primary field going forward (matches dashboard
+    # chat/voice-simulation callers); `transcript` stays real and required-
+    # ish for backward compatibility with the existing dashboard voice
+    # panel, which already sends {transcript, ...}. At least one must be
+    # non-empty -- enforced in the route body, not here, so a request with
+    # only `text` set doesn't fail Pydantic validation.
+    text: Optional[str] = Field(default=None, max_length=4000)
+    transcript: Optional[str] = Field(default=None, max_length=4000)
     detected_language: str = Field(default="en")
     session_id: Optional[str] = None
 
@@ -454,6 +467,13 @@ async def get_voice_status(context: "AuthContext" = Depends(get_current_auth_con
             "worker_last_seen_at": settings["voice_worker_last_seen_at"],
             "dependencies": dependency_status,
             "missing_dependencies": missing_dependencies,
+            # POST /voice/push-to-talk/text (and voice_worker.py's
+            # --simulate-text) never require STT/TTS/wake-word/audio-input
+            # providers -- typed/simulated text always works, regardless of
+            # what's missing above. Stated outright rather than left for
+            # the dashboard to infer from the absence of a "typed text
+            # needs X" dependency key.
+            "text_command_available": True,
             "active_sessions": active_sessions,
             "last_wake_event": settings["last_wake_event_at"],
             "last_command": settings["last_command_transcript"],
@@ -772,30 +792,93 @@ async def push_to_talk_text(
     payload: PushToTalkTextRequest,
     context: "AuthContext" = Depends(get_current_auth_context),
 ) -> Dict[str, Any]:
-    """Safe fallback mode: authenticated dashboard user sends typed/PTT text
-    directly, using their own real identity/role -- no separate voice
-    profile enrollment required."""
+    """Safe fallback mode: authenticated dashboard user (or voice_worker.py's
+    --simulate-text) sends typed/PTT text directly, using their own real
+    identity/role -- no separate voice profile enrollment required.
+
+    A real command (not a control phrase, permission allowed) is executed
+    through apps/api/routes/assistant.py::process_assistant_message -- the
+    exact same dispatcher POST /assistant/message uses, including real
+    SystemAgent/Windows Worker dispatch for "William open Notepad"-style
+    commands. Before this, this route handed the transcript straight to
+    the raw MasterAgentBridge (apps/api/services/voice_service.py::
+    route_voice_command_to_master_agent), which has no intent-classifier
+    windows_device_action special-casing and could never reach SystemAgent
+    -- the same bypass bug the dashboard Command Console had before its own
+    fix. Control-phrase handling ("William standby"/"William shutdown
+    voice") and the speaker-permission pre-check still run first and keep
+    their existing response shape -- a control phrase must never be sent
+    to SystemAgent as if it were an app-open command."""
     from database.db import db_manager
     from apps.api.services import voice_service as vs
+    from apps.api.routes.assistant import process_assistant_message, AssistantMessageRequest
+
+    effective_text = (payload.text or payload.transcript or "").strip()
+    if not effective_text:
+        raise_api_error(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "text or transcript is required.",
+            "TEXT_REQUIRED",
+            context.request_id,
+        )
 
     session_id = payload.session_id or new_id("voicesession")
+    tts_available = compute_dependency_status()["tts_provider"] == "configured"
 
     with db_manager.session_scope() as db:
         profile = vs.authenticated_user_virtual_profile(context.workspace_id, context.user_id, context.role)
-        envelope = await vs.route_voice_command_to_master_agent(
-            db=db,
+
+        control_response = vs.try_handle_voice_control_phrase(
+            db,
             workspace_id=context.workspace_id,
             user_id=context.user_id,
             profile=profile,
-            transcript=payload.transcript,
-            detected_language=payload.detected_language,
+            transcript=effective_text,
             session_id=session_id,
             request_id=context.request_id,
-            wake_word=None,
-            tts_available=compute_dependency_status()["tts_provider"] == "configured",
+            tts_available=tts_available,
         )
+        if control_response is not None:
+            return api_success(
+                control_response.get("message") or "Voice control processed.",
+                data=control_response,
+                request_id=context.request_id,
+            )
 
-    return api_success(envelope["message"] or "Push-to-talk command processed.", data=envelope, request_id=context.request_id)
+        allowed, reason, inferred_agent = vs.check_profile_permission(profile, effective_text)
+        if not allowed:
+            vs.record_voice_event(
+                db, workspace_id=context.workspace_id, session_id=session_id, profile_id=profile.get("id"),
+                user_id=context.user_id, event_type="speaker_denied",
+                payload={"reason": reason, "inferred_agent": inferred_agent},
+            )
+            vs.write_voice_audit(
+                db, user_id=context.user_id, workspace_id=context.workspace_id, action="voice.command.blocked",
+                status="denied", metadata={"reason": reason, "inferred_agent": inferred_agent, "profile_id": profile.get("id")},
+            )
+            return api_success(
+                reason,
+                data={
+                    "success": False,
+                    "response_text": reason,
+                    "speech_output_status": "spoken" if tts_available else "tts_missing",
+                },
+                request_id=context.request_id,
+            )
+
+    # Real command -- the bookkeeping session above has already committed
+    # and closed (same nested-session-deadlock reason apps/api/routes/
+    # assistant.py::send_message's own docstring explains: SystemAgent may
+    # open its own short-lived session_scope() to queue a real WorkerTask).
+    result = await process_assistant_message(
+        AssistantMessageRequest(message=effective_text), context
+    )
+    data = dict(result.get("data") or {})
+    # Tied only to real TTS provider availability, not command success --
+    # a failure message ("Boss, I need an LLM provider...") is just as
+    # speakable as a success one once a real TTS provider exists.
+    data["speech_output_status"] = "spoken" if tts_available else "tts_missing"
+    return {**result, "data": data}
 
 
 @router.post("/enroll/start")

@@ -438,33 +438,49 @@ class TestVoiceCommand:
         assert isinstance(data["response_text"], str)
 
     def test_english_text_mode_command_works(self, client, make_owner) -> None:
+        """Real commands (not control phrases) through push-to-talk-text
+        now go through apps/api/routes/assistant.py::process_assistant_message
+        -- the same dispatcher /assistant/message uses -- so the response
+        shape is final_answer-first, not the old response_text/
+        reply_language shape. This VEO command triggers the template's
+        clarifying-question flow (style/duration/etc not supplied), which
+        is itself proof the real dispatcher (not the old raw MasterAgent
+        bypass) is now handling it."""
         owner = make_owner()
         client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
 
         response = client.post(
             "/api/v1/voice/push-to-talk/text",
-            json={"transcript": "Create a VEO prompt for ClickRonix", "detected_language": "en"},
+            json={"text": "Create a VEO prompt for ClickRonix", "detected_language": "en"},
             headers=owner.headers,
         )
         assert response.status_code == 200
         data = response_json(response)["data"]
-        assert data["reply_language"] == "en"
+        assert isinstance(data["final_answer"], str)
+        assert data["final_answer"] != ""
+        assert data["speech_output_status"] in ("spoken", "tts_missing")
 
     def test_roman_urdu_text_mode_command_works(self, client, make_owner) -> None:
+        """Push-to-talk-text no longer adapts reply language (the shared
+        assistant dispatcher has no language-adaptation layer, matching
+        dashboard chat) -- this test now only locks in that a Roman Urdu
+        command still gets a real, structured final_answer, not a crash or
+        an empty response."""
         owner = make_owner()
         client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
 
         response = client.post(
             "/api/v1/voice/push-to-talk/text",
             json={
-                "transcript": "mera ClickRonix dashboard premium black orange style mein banao",
+                "text": "mera ClickRonix dashboard premium black orange style mein banao",
                 "detected_language": "roman_urdu",
             },
             headers=owner.headers,
         )
         assert response.status_code == 200
         data = response_json(response)["data"]
-        assert data["reply_language"] == "roman_urdu"
+        assert isinstance(data["final_answer"], str)
+        assert data["final_answer"] != ""
 
     def test_vague_command_gets_a_structured_response_not_a_crash(self, client, make_owner) -> None:
         """
@@ -481,13 +497,13 @@ class TestVoiceCommand:
 
         response = client.post(
             "/api/v1/voice/push-to-talk/text",
-            json={"transcript": "William, create the project", "detected_language": "en"},
+            json={"text": "William, create the project", "detected_language": "en"},
             headers=owner.headers,
         )
         assert response.status_code == 200
         data = response_json(response)["data"]
-        assert isinstance(data["response_text"], str)
-        assert data["response_text"] != ""
+        assert isinstance(data["final_answer"], str)
+        assert data["final_answer"] != ""
 
 
 class TestVoiceWakeEvent:
@@ -545,3 +561,168 @@ class TestVoiceEnrollment:
         assert response.status_code == 200
         data = response_json(response)["data"]
         assert data["profile"]["voiceprint_status"] == "external_dependency_required"
+
+
+def _create_setup_token(client, owner) -> dict:
+    response = client.post(
+        "/api/v1/system/device/setup-token",
+        json={"device_name": "Voice Test Laptop"},
+        headers=owner.headers,
+    )
+    assert response.status_code == 200
+    return response.json()["data"]
+
+
+def _register_device(client, setup_token: str) -> dict:
+    response = client.post(
+        "/api/v1/system/device/register",
+        json={"setup_token": setup_token, "device_name": "Voice Test Laptop", "supported_actions": ["open_notepad"]},
+    )
+    assert response.status_code == 200
+    return response.json()["data"]
+
+
+class TestVoiceSharesAssistantDispatcher:
+    """Phase 7 coverage: POST /voice/push-to-talk/text must use the exact
+    same dispatcher as POST /assistant/message (apps/api/routes/
+    assistant.py::process_assistant_message), not the old raw MasterAgent
+    bypass that could never reach SystemAgent/Windows Worker."""
+
+    def test_push_to_talk_text_matches_assistant_message_final_answer(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+
+        voice_response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William open Notepad"},
+            headers=owner.headers,
+        )
+        assistant_response = client.post(
+            "/api/v1/assistant/message",
+            json={"message": "William open Notepad"},
+            headers=owner.headers,
+        )
+        assert voice_response.status_code == 200
+        assert assistant_response.status_code == 200
+        assert (
+            response_json(voice_response)["data"]["final_answer"]
+            == response_json(assistant_response)["data"]["final_answer"]
+        )
+
+    def test_push_to_talk_text_says_not_enabled_when_no_worker_ever_registered(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William open Notepad"},
+            headers=owner.headers,
+        )
+        data = response_json(response)["data"]
+        assert data["final_answer"] == (
+            "Boss, Windows Worker is not enabled yet. Open Settings > Devices and click Enable Windows Worker."
+        )
+        assert data["speech_output_status"] == "tts_missing"
+
+    def test_push_to_talk_text_says_offline_when_worker_enabled_but_stale(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        setup_data = _create_setup_token(client, owner)
+        _register_device(client, setup_data["setup_token"])
+
+        from datetime import datetime, timedelta, timezone
+        from database.db import db_manager
+        from database.models.system_worker import SystemWorkerStatus
+
+        with db_manager.session_scope() as db:
+            row = db.query(SystemWorkerStatus).filter(
+                SystemWorkerStatus.workspace_id == owner.workspace_id
+            ).first()
+            assert row is not None
+            row.worker_last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=999)
+
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William open Notepad"},
+            headers=owner.headers,
+        )
+        data = response_json(response)["data"]
+        assert data["final_answer"] == (
+            "Boss, Windows Worker is enabled but offline. Start the worker or reinstall it from Settings."
+        )
+
+    def test_push_to_talk_text_queues_worker_task_when_connected(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        setup_data = _create_setup_token(client, owner)
+        _register_device(client, setup_data["setup_token"])
+
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William open Notepad"},
+            headers=owner.headers,
+        )
+        data = response_json(response)["data"]
+        assert "notepad" in data["final_answer"].lower()
+        assert data["worker_task_id"]
+        assert data["speech_output_status"] == "tts_missing"
+
+    def test_push_to_talk_text_speech_status_is_spoken_when_tts_configured(self, client, make_owner, monkeypatch) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        monkeypatch.setenv("WILLIAM_TTS_PROVIDER", "test_provider")
+
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William what is moderation?"},
+            headers=owner.headers,
+        )
+        data = response_json(response)["data"]
+        assert data["speech_output_status"] == "spoken"
+
+    @pytest.mark.asyncio
+    async def test_risky_action_via_voice_still_requires_approval(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        setup_data = _create_setup_token(client, owner)
+        _register_device(client, setup_data["setup_token"])
+
+        from apps.api.routes.system_worker import classify_worker_action
+        from apps.api.routes.auth import AuthContext
+        import uuid
+
+        context = AuthContext(
+            request_id=f"req_{uuid.uuid4().hex[:12]}",
+            user_id=owner.user_id,
+            workspace_id=owner.workspace_id,
+            session_id="voice_test_session",
+            role="owner",
+            plan="free",
+            email=owner.email,
+        )
+        classification = await classify_worker_action("delete_file", context=context)
+        assert classification == "requires_approval"
+
+    def test_push_to_talk_text_workspace_isolation(self, client, make_owner) -> None:
+        """A WorkerTask queued via voice for one workspace must never be
+        visible to another workspace's worker poll."""
+        owner_a = make_owner()
+        owner_b = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner_a.headers)
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner_b.headers)
+
+        setup_a = _create_setup_token(client, owner_a)
+        register_a = _register_device(client, setup_a["setup_token"])
+
+        client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William open Notepad"},
+            headers=owner_a.headers,
+        )
+
+        device_headers_a = {"Authorization": f"Bearer {register_a['device_token']}"}
+        tasks_a = client.get("/api/v1/system/worker/tasks", headers=device_headers_a).json()["data"]["tasks"]
+        assert len(tasks_a) == 1
+
+        status_b = client.get("/api/v1/system/worker/status", headers=owner_b.headers).json()["data"]
+        assert status_b["connection_state"] == "needs_setup"

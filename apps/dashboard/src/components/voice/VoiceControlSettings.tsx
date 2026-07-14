@@ -98,12 +98,19 @@ function runtimeStateStyle(state: string): string {
 }
 
 const DEPENDENCY_LABELS: Record<keyof VoiceDependencyStatus, string> = {
-  wake_word_engine: "Wake word engine",
+  wake_word_engine: "Wake word engine (text)",
+  wake_word_provider: "Wake word engine (real audio)",
   audio_input_worker: "Audio input worker",
   stt_provider: "Speech-to-text provider",
   tts_provider: "Text-to-speech provider",
   speaker_recognition_provider: "Speaker recognition provider",
 };
+
+const WAKE_WORD_GATED_MODES = new Set([
+  "wake_word_admin",
+  "wake_word_trusted_users",
+  "continuous_conversation",
+]);
 
 function dependencyStyle(status: VoiceDependencyStatusValue): string {
   if (status === "available" || status === "configured") {
@@ -359,6 +366,26 @@ export function VoiceControlSettings() {
               dashboard never simulates a working microphone/speaker/speaker-ID
               pipeline -- connect real providers to move past{" "}
               {runtimeStateLabel("dependency_required")}.
+            </div>
+          ) : null}
+
+          {status &&
+          status.missing_dependencies.length > 0 &&
+          WAKE_WORD_GATED_MODES.has(settings.mode) ? (
+            <div className="rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3 text-xs font-bold text-orange-200">
+              Wake-word mode is enabled, but real microphone listening needs{" "}
+              {status.missing_dependencies
+                .map((key) => DEPENDENCY_LABELS[key as keyof VoiceDependencyStatus] || key)
+                .join(", ")}
+              .
+            </div>
+          ) : null}
+
+          {status?.text_command_available ? (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-700">
+              Text push-to-talk works right now, even with the missing
+              providers above -- only always-listening wake-word mode needs
+              them.
             </div>
           ) : null}
 

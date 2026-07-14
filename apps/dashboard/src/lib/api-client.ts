@@ -592,6 +592,11 @@ export type VoiceDependencyStatusValue =
 
 export type VoiceDependencyStatus = {
   wake_word_engine: VoiceDependencyStatusValue;
+  // Distinct from wake_word_engine: text-based wake-word detection
+  // (wake_word_engine) always works with no provider; wake_word_provider
+  // is a real *audio* wake-word engine, needed only for always-listening
+  // microphone mode.
+  wake_word_provider: VoiceDependencyStatusValue;
   audio_input_worker: VoiceDependencyStatusValue;
   stt_provider: VoiceDependencyStatusValue;
   tts_provider: VoiceDependencyStatusValue;
@@ -643,6 +648,11 @@ export type VoiceStatusData = {
   worker_last_seen_at: string | null;
   dependencies: VoiceDependencyStatus;
   missing_dependencies: string[];
+  // Typed/simulated text commands (push-to-talk, voice_worker.py
+  // --simulate-text) never need STT/TTS/wake-word/audio-input providers --
+  // always true, stated outright rather than inferred from the absence of
+  // a dependency key.
+  text_command_available: boolean;
   active_sessions: number;
   last_wake_event: string | null;
   last_command: string | null;
@@ -769,7 +779,10 @@ export type VoiceCommandRequestPayload = {
 };
 
 export type VoicePushToTalkPayload = {
-  transcript: string;
+  // `text` is preferred going forward; `transcript` is kept for backward
+  // compatibility (existing callers). At least one must be set.
+  text?: string;
+  transcript?: string;
   detected_language?: string;
   session_id?: string;
 };
@@ -786,6 +799,34 @@ export type VoiceCommandResponseData = {
   speech_output_status: VoiceSpeechOutputStatus;
   master_result: unknown;
   request_id: string;
+};
+
+// POST /voice/push-to-talk/text (apps/api/routes/voice.py::
+// push_to_talk_text) now shares apps/api/routes/assistant.py's dispatcher
+// for real commands, so its response is final_answer-first like
+// /assistant/message -- but control phrases ("William standby"/"William
+// shutdown voice") and speaker-permission denials still return the older
+// response_text-shaped envelope untouched. Both shapes are represented
+// here as optional fields; callers should branch on `"final_answer" in
+// data`.
+export type PushToTalkTextSpeechOutputStatus = "spoken" | "tts_missing";
+
+export type PushToTalkTextResponseData = {
+  // Present for a real, routed command.
+  final_answer?: string;
+  follow_up_questions?: string[];
+  status?: string;
+  route?: string[];
+  generated_files?: Array<{ file_id?: string; filename?: string; download_url?: string }>;
+  error?: { code: string; message: string; details?: unknown } | null;
+  conversation_thread_id?: string;
+  worker_task_id?: string | null;
+  // Present for a control-phrase response or a speaker-permission denial.
+  success?: boolean;
+  response_text?: string;
+  reply_language?: string;
+  // Always present either way.
+  speech_output_status: PushToTalkTextSpeechOutputStatus | VoiceSpeechOutputStatus;
 };
 
 export type VoiceEnrollStartPayload = {
@@ -846,7 +887,7 @@ export const voiceApi = {
     post<VoiceCommandResponseData>("/voice/command", payload),
 
   sendPushToTalkText: (payload: VoicePushToTalkPayload) =>
-    post<VoiceCommandResponseData>("/voice/push-to-talk/text", payload),
+    post<PushToTalkTextResponseData>("/voice/push-to-talk/text", payload),
 
   enrollStart: (payload: VoiceEnrollStartPayload) =>
     post<VoiceEnrollStartData>("/voice/enroll/start", payload),
