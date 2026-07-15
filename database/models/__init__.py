@@ -52,6 +52,7 @@ MODEL_MODULES: Tuple[str, ...] = (
     "database.models.conversation_session",
     "database.models.worker_task",
     "database.models.device_setup_token",
+    "database.models.system_worker_event",
 )
 
 

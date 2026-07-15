@@ -310,3 +310,85 @@ async def report_worker_task_result(
         result_data = task.to_dict()
 
     return api_success("Task result recorded.", data=result_data, request_id=context.request_id)
+
+
+class WorkerEventPayload(BaseModel):
+    """Tolerant of two shapes on purpose:
+
+    1. The real wire shape apps/worker_nodes/windows/windows_worker.py::
+       record_event() has always sent, unmodified (event_id/worker_id/
+       session_id/event_type/status/payload/created_at) -- this route was
+       simply missing before, so the worker's existing payload must
+       validate as-is rather than requiring a worker-side change too.
+    2. The richer, more explicit shape this route's own callers (tests,
+       a future dashboard write path) can send directly
+       (message/level/device_id/worker_task_id/action_type/metadata).
+
+    Real values always win over inferred ones -- see worker_events'
+    handler body for exactly how each field is resolved.
+    """
+
+    event_type: str = Field(..., min_length=1, max_length=80)
+    message: Optional[str] = None
+    level: Optional[str] = None
+    device_id: Optional[str] = None
+    worker_task_id: Optional[str] = None
+    action_type: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+
+    # Real windows_worker.py::record_event() wire-shape fields (see class
+    # docstring) -- accepted but not required, so an old/unmodified worker
+    # keeps working unchanged.
+    event_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    session_id: Optional[str] = None
+    status: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/worker/events")
+async def record_worker_event(
+    payload: WorkerEventPayload,
+    context: AuthContext = Depends(get_worker_auth_context),
+) -> Dict[str, Any]:
+    """Real, persisted worker telemetry -- see database/models/
+    system_worker_event.py's module docstring for why this route was
+    404ing on every real Windows Worker heartbeat/task-lifecycle event
+    before now. Same dual-mode auth (installed device token OR dev-mode
+    JWT) as heartbeat/tasks/tasks-result above, and the same
+    context.workspace_id/context.user_id scoping -- a worker can only ever
+    write events into its own workspace, never another tenant's, by
+    construction (there is no workspace_id/user_id field on the request
+    body to spoof)."""
+    from database.db import db_manager
+    from database.models.system_worker_event import SystemWorkerEventService
+
+    # message/device_id/metadata each prefer the richer explicit field if
+    # the caller sent one, falling back to the real wire-shape fields the
+    # worker actually sends today.
+    message = payload.message
+    if not message:
+        message = payload.payload.get("message") if isinstance(payload.payload, dict) else None
+    if not message:
+        message = payload.status
+
+    device_id = payload.device_id or payload.worker_id
+    metadata = payload.metadata or payload.payload or {}
+
+    with db_manager.session_scope() as db:
+        event = SystemWorkerEventService.create(
+            db,
+            user_id=context.user_id,
+            workspace_id=context.workspace_id,
+            event_type=payload.event_type,
+            message=message,
+            level=payload.level,
+            device_id=device_id,
+            worker_task_id=payload.worker_task_id,
+            action_type=payload.action_type,
+            metadata=metadata,
+        )
+        event_data = event.to_dict()
+
+    return api_success("Worker event recorded.", data=event_data, request_id=context.request_id)
