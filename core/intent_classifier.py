@@ -191,11 +191,200 @@ VEO_PROMPT_TEMPLATE = TaskTemplate(
     ],
 )
 
-# Registry of templated tasks. Adding a new template later (e.g. a Phase 3+
-# NDA/PDF template) means registering one more TaskTemplate here, not adding
-# new branching logic to the classifier or the assistant route.
+# =============================================================================
+# PDF/DOCX document template
+# =============================================================================
+
+_FILE_GEN_SIGNAL_PATTERN = re.compile(
+    r"\bpdf\b|\bdocx\b|\bnda\b|\bagreement\b|\bproposal\b|\bcontract\b", re.IGNORECASE
+)
+_FILE_GEN_VERB_PATTERN = re.compile(
+    r"\bmake\b|\bcreate\b|\bgenerate\b|\bdraft\b|\bwrite\b|\bexport\b|\bdownload\b", re.IGNORECASE
+)
+
+
+def _match_file_generation(message: str) -> bool:
+    return bool(_FILE_GEN_SIGNAL_PATTERN.search(message)) and bool(_FILE_GEN_VERB_PATTERN.search(message))
+
+
+PDF_DOCUMENT_TEMPLATE = TaskTemplate(
+    key="pdf_document",
+    category=INTENT_FILE_GENERATION_TASK,
+    match=_match_file_generation,
+    required_fields=[
+        RequiredField(
+            name="doc_type",
+            prompt="What kind of document — NDA, proposal, agreement, or something else?",
+            options=["NDA", "proposal", "agreement", "other"],
+        ),
+        RequiredField(
+            name="parties",
+            prompt="Who are the parties involved (e.g. Digital Promotix and the client's name)?",
+            options=None,
+        ),
+        RequiredField(
+            name="jurisdiction",
+            prompt="Which jurisdiction/governing law should apply?",
+            options=None,
+        ),
+        RequiredField(
+            name="duration",
+            prompt="What term/duration should it cover (e.g. 1 year, 2 years, indefinite)?",
+            options=None,
+        ),
+        RequiredField(
+            name="confidentiality_scope",
+            prompt="What should be covered as confidential (say 'standard' for a standard scope)?",
+            options=None,
+        ),
+        RequiredField(
+            name="format",
+            prompt="Should I generate a PDF or a DOCX?",
+            options=["PDF", "DOCX"],
+        ),
+    ],
+)
+
+# A user replying "standard one" / "just standard" / "use defaults" to a
+# pdf_document clarification should get a safe, professional template
+# immediately instead of being asked all 6 fields one at a time --
+# apps/api/routes/assistant.py checks is_standard_shortcut_answer() and
+# merges these in (only for fields not already collected) before
+# generation. The generated document ALWAYS carries
+# agents/super_agents/creator_agent/document_generator.py's disclaimer
+# regardless of whether these defaults or real user-supplied details were
+# used.
+_DOC_TYPE_HINT_PATTERNS = [
+    ("NDA", re.compile(r"\bnda\b|\bnon-disclosure\b|\bnon disclosure\b", re.IGNORECASE)),
+    ("proposal", re.compile(r"\bproposal\b", re.IGNORECASE)),
+    ("agreement", re.compile(r"\bagreement\b|\bcontract\b", re.IGNORECASE)),
+]
+_FORMAT_HINT_PATTERNS = [
+    ("DOCX", re.compile(r"\bdocx\b|\bword doc(ument)?\b", re.IGNORECASE)),
+    ("PDF", re.compile(r"\bpdf\b", re.IGNORECASE)),
+]
+
+
+def extract_file_generation_hints(message: str) -> Dict[str, str]:
+    """Deterministic, no LLM -- if the user already said "make a PDF NDA",
+    don't ask "PDF or DOCX?"/"NDA, proposal, or agreement?" again. Only
+    fills doc_type/format; the other pdf_document fields (parties,
+    jurisdiction, duration, confidentiality_scope) have no reliable
+    keyword signal to extract from free text, so those are always asked."""
+    hints: Dict[str, str] = {}
+    for value, pattern in _DOC_TYPE_HINT_PATTERNS:
+        if pattern.search(message or ""):
+            hints["doc_type"] = value
+            break
+    for value, pattern in _FORMAT_HINT_PATTERNS:
+        if pattern.search(message or ""):
+            hints["format"] = value
+            break
+    return hints
+
+
+FILE_GENERATION_STANDARD_DEFAULTS: Dict[str, str] = {
+    "doc_type": "NDA",
+    "parties": "the requesting party and the counterparty (names to be confirmed before signing)",
+    "jurisdiction": "the jurisdiction where Digital Promotix is registered (to be confirmed before signing)",
+    "duration": "2 years from the effective date",
+    "confidentiality_scope": (
+        "standard mutual confidentiality covering business, technical, and financial "
+        "information disclosed between the parties"
+    ),
+    "format": "PDF",
+}
+
+
+# =============================================================================
+# Project builder template
+# =============================================================================
+
+_PROJECT_BUILD_PATTERN = re.compile(
+    r"\bbuild (a |an |this )?(website|app|project|saas)\b"
+    r"|\bwebsite builder\b|\bapp builder\b"
+    r"|\bscaffold (a |this )?project\b|\bcreate (a |this )?project\b"
+    r"|\bsaas banao\b",
+    re.IGNORECASE,
+)
+
+
+def _match_project_build(message: str) -> bool:
+    return bool(_PROJECT_BUILD_PATTERN.search(message))
+
+
+PROJECT_BUILD_TEMPLATE = TaskTemplate(
+    key="project_build",
+    category=INTENT_PROJECT_BUILD_TASK,
+    match=_match_project_build,
+    required_fields=[
+        RequiredField(name="target_user", prompt="Who is this for — the target user/customer?", options=None),
+        RequiredField(name="features", prompt="What are the key features you want?", options=None),
+        RequiredField(
+            name="stack",
+            prompt="What tech stack — Python FastAPI + Next.js, Python FastAPI + React, Node Express + React, or something else?",
+            options=["python fastapi + nextjs", "python fastapi + react", "node express + react", "other"],
+        ),
+        RequiredField(
+            name="auth_subscription",
+            prompt="Do you need user auth and subscriptions/billing?",
+            options=["yes with subscriptions", "yes auth only", "no"],
+        ),
+        RequiredField(name="admin_panel", prompt="Do you need an admin panel?", options=["yes", "no"]),
+        RequiredField(
+            name="template_upload",
+            prompt="Should users be able to upload templates/assets?",
+            options=["yes", "no"],
+        ),
+        RequiredField(name="seo", prompt="Do you need basic SEO (meta tags, sitemap)?", options=["yes", "no"]),
+        RequiredField(
+            name="download_zip",
+            prompt="Should the finished project be downloadable as a ZIP?",
+            options=["yes", "no"],
+        ),
+        RequiredField(name="target_folder", prompt="What folder name should I create this project in?", options=None),
+        RequiredField(
+            name="new_or_overwrite",
+            prompt="Is this a brand-new folder, or should I overwrite an existing one if it already exists?",
+            options=["new", "overwrite"],
+        ),
+    ],
+)
+
+# Same "standard"/"use defaults" shortcut as FILE_GENERATION_STANDARD_DEFAULTS,
+# for a minimal-but-real starter scaffold when the user doesn't want to
+# answer all 10 questions individually. target_folder still needs a real
+# name -- it is deliberately NOT included here, so the user is always asked
+# for at least that one field even on the fast path (never silently pick a
+# folder to write into).
+PROJECT_BUILD_STANDARD_DEFAULTS: Dict[str, str] = {
+    "target_user": "general users",
+    "features": "core CRUD functionality with a simple dashboard",
+    "stack": "python fastapi + nextjs",
+    "auth_subscription": "yes auth only",
+    "admin_panel": "no",
+    "template_upload": "no",
+    "seo": "no",
+    "download_zip": "no",
+    "new_or_overwrite": "new",
+}
+
+_STANDARD_ANSWER_PATTERN = re.compile(r"\bstandard\b|\bdefault(s)?\b", re.IGNORECASE)
+
+
+def is_standard_shortcut_answer(message: str) -> bool:
+    """Deterministic, no LLM -- true for replies like "standard one",
+    "just use defaults", "standard please"."""
+    return bool(_STANDARD_ANSWER_PATTERN.search(message or ""))
+
+
+# Registry of templated tasks. Adding a new template later means
+# registering one more TaskTemplate here, not adding new branching logic
+# to the classifier or the assistant route.
 TASK_TEMPLATES: Dict[str, TaskTemplate] = {
     VEO_PROMPT_TEMPLATE.key: VEO_PROMPT_TEMPLATE,
+    PDF_DOCUMENT_TEMPLATE.key: PDF_DOCUMENT_TEMPLATE,
+    PROJECT_BUILD_TEMPLATE.key: PROJECT_BUILD_TEMPLATE,
 }
 
 
@@ -393,6 +582,12 @@ __all__ = [
     "IntentClassification",
     "TASK_TEMPLATES",
     "VEO_PROMPT_TEMPLATE",
+    "PDF_DOCUMENT_TEMPLATE",
+    "PROJECT_BUILD_TEMPLATE",
+    "FILE_GENERATION_STANDARD_DEFAULTS",
+    "PROJECT_BUILD_STANDARD_DEFAULTS",
+    "is_standard_shortcut_answer",
+    "extract_file_generation_hints",
     "classify",
     "missing_fields",
     "merge_free_text_answer",

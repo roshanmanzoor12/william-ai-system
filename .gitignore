@@ -22,6 +22,8 @@ storage/logs/
 storage/uploads/
 storage/exports/
 storage/backups/
+uploads/
+generated_files/
 
 # Secrets
 *.pem

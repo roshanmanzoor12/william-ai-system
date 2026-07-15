@@ -255,6 +255,7 @@ class CreatorTaskType(str, Enum):
     SHORT_FORM_PLAN = "short_form_plan"
     REPURPOSE_CONTENT = "repurpose_content"
     BRAND_CONTENT_PACK = "brand_content_pack"
+    DOCUMENT = "generate_document"
     ROUTE = "route"
 
 
@@ -610,6 +611,7 @@ class CreatorAgent(BaseAgent):
                 CreatorTaskType.SHORT_FORM_PLAN.value: self.create_short_form_plan,
                 CreatorTaskType.REPURPOSE_CONTENT.value: self.repurpose_content,
                 CreatorTaskType.BRAND_CONTENT_PACK.value: self.create_brand_content_pack,
+                CreatorTaskType.DOCUMENT.value: self.generate_document,
                 CreatorTaskType.ROUTE.value: self.route_task,
             }
 
@@ -1369,6 +1371,92 @@ class CreatorAgent(BaseAgent):
             message="Brand content pack prepared successfully.",
             data={"brand_content_pack": pack},
             metadata=self._base_metadata(context, started_at, task_type=CreatorTaskType.BRAND_CONTENT_PACK.value),
+        )
+
+    def generate_document(
+        self,
+        task: Mapping[str, Any],
+        context: Optional[CreatorContext] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate a real PDF or DOCX document (NDA, proposal, agreement, or a
+        generic document) and persist it as a workspace/user-scoped
+        GeneratedFile row -- see agents/super_agents/creator_agent/
+        document_generator.py. Never fabricates a download link: a failure
+        (e.g. reportlab/python-docx not installed) is reported honestly and
+        nothing is written to the database.
+        """
+        context = context or self._context_from_task_or_raise(task)
+        started_at = _utc_now_iso()
+
+        from agents.super_agents.creator_agent import document_generator
+
+        brand = self._brand_style_from_task(task).brand_name or "Digital Promotix"
+        fields = {
+            "doc_type": _safe_str(task.get("doc_type"), "other"),
+            "parties": _safe_str(task.get("parties")),
+            "jurisdiction": _safe_str(task.get("jurisdiction")),
+            "duration": _safe_str(task.get("duration")),
+            "confidentiality_scope": _safe_str(task.get("confidentiality_scope")),
+            "brand": brand,
+        }
+        file_format = _safe_str(task.get("format"), "pdf").lower()
+        if file_format not in ("pdf", "docx"):
+            file_format = "pdf"
+
+        generated = document_generator.generate_document_file(
+            user_id=context.user_id,
+            workspace_id=context.workspace_id,
+            fields=fields,
+            file_format=file_format,
+        )
+
+        if not generated.get("ok"):
+            return self._error_result(
+                message=f"Could not generate the document: {generated.get('error')}",
+                error="document_generation_failed",
+                data={"reason": generated.get("error")},
+                metadata=self._base_metadata(context, started_at, task_type=CreatorTaskType.DOCUMENT.value),
+            )
+
+        try:
+            from database.db import db_manager
+            from database.models.generated_file import GeneratedFileService
+
+            with db_manager.session_scope() as db:
+                record = GeneratedFileService.create(
+                    db,
+                    user_id=context.user_id,
+                    workspace_id=context.workspace_id,
+                    filename=generated["filename"],
+                    storage_key=generated["storage_key"],
+                    file_type=generated["file_type"],
+                    size_bytes=generated["size_bytes"],
+                    generated_by_agent=AGENT_SLUG,
+                    source_prompt=_safe_str(task.get("source_prompt") or task.get("topic")) or None,
+                    conversation_thread_id=_safe_str(task.get("conversation_thread_id")) or None,
+                )
+                file_id = record.file_id
+        except Exception as exc:  # pragma: no cover - real DB failure
+            self.logger.exception("Failed to persist GeneratedFile row.")
+            return self._error_result(
+                message="Document was generated but could not be saved to your file list.",
+                error="generated_file_persist_failed",
+                data={"reason": str(exc)},
+                metadata=self._base_metadata(context, started_at, task_type=CreatorTaskType.DOCUMENT.value),
+            )
+
+        return self._safe_result(
+            success=True,
+            message=f"{generated['title']} is ready.",
+            data={
+                "file_id": file_id,
+                "filename": generated["filename"],
+                "file_type": generated["file_type"],
+                "title": generated["title"],
+                "download_url": f"/files/generated/{file_id}/download",
+            },
+            metadata=self._base_metadata(context, started_at, task_type=CreatorTaskType.DOCUMENT.value),
         )
 
     # -------------------------------------------------------------------------

@@ -107,15 +107,21 @@ CAPABILITY_ROADMAP: List[CapabilityEntry] = [
     CapabilityEntry(
         8, "Generate full project folder structure",
         "Scaffold a new project's folders/files from a description.",
-        ["code"], "llm_provider", "medium", "roadmap",
-        "Not yet implemented.",
-        "Given collected requirements, Code Agent generates a real, connected folder/file structure.",
+        ["code"], "none", "medium", "available",
+        "core/intent_classifier.py's project_build_task template collects target user/features/stack/"
+        "auth/admin/SEO/target folder/new-vs-overwrite, then apps/api/routes/assistant.py drafts a real, "
+        "minimal, working file blueprint (README + FastAPI backend + static frontend) and CodeAgent."
+        "create_project writes it to disk -- never overwrites without new_or_overwrite='overwrite'.",
+        "LLM-drafted (not just deterministic-template) blueprints once WILLIAM_LLM_PROVIDER is configured, "
+        "for richer feature-specific scaffolds.",
     ),
     CapabilityEntry(
         9, "Create connected frontend/backend files",
         "Generate working, wired frontend+backend code for a feature.",
         ["code"], "llm_provider", "high", "roadmap",
-        "Not yet implemented.",
+        "Capability 8's scaffold gives a genuinely importable/runnable minimal backend+frontend pair, "
+        "but not full, feature-specific, tested frontend/backend wiring for an arbitrary request -- that "
+        "needs a real LLM provider to draft non-boilerplate code, which isn't wired into project building yet.",
         "Generates real API routes, frontend pages, and the glue between them, tested before being reported done.",
     ),
     CapabilityEntry(
@@ -135,15 +141,20 @@ CAPABILITY_ROADMAP: List[CapabilityEntry] = [
     CapabilityEntry(
         12, "Create PDF document from prompt",
         "Generate a PDF from a natural-language request.",
-        ["creator"], "file_generation_provider", "low", "dependency_required",
-        "No real PDF-generation pipeline is wired yet -- honestly reports files/download links can't be faked.",
-        "Real PDF generation with a genuine, workspace-scoped download link.",
+        ["creator"], "none", "low", "available",
+        "core/intent_classifier.py's pdf_document template asks doc type/parties/jurisdiction/duration/"
+        "confidentiality scope (or 'standard' for a safe default), then agents/super_agents/creator_agent/"
+        "document_generator.py renders a real reportlab PDF with a disclaimer, saved as a GeneratedFile row "
+        "and served from a genuine, workspace-scoped GET /files/generated/{id}/download link.",
+        "LLM-drafted document body text once WILLIAM_LLM_PROVIDER is configured, instead of the fixed "
+        "template wording.",
     ),
     CapabilityEntry(
         13, "Create DOCX proposal/agreement",
         "Generate a DOCX business document from a prompt.",
-        ["creator", "business"], "file_generation_provider", "low", "roadmap",
-        "Not yet implemented.",
+        ["creator", "business"], "none", "low", "available",
+        "Same pdf_document template/pipeline as capability 12, with format='DOCX' rendered via "
+        "python-docx instead of reportlab -- same GeneratedFile row and download route.",
         "Template-driven DOCX generation with real download links.",
     ),
     CapabilityEntry(
@@ -206,7 +217,10 @@ CAPABILITY_ROADMAP: List[CapabilityEntry] = [
         22, "Use LLM provider for knowledge answers",
         "Answer general knowledge questions like a normal assistant.",
         ["master"], "llm_provider", "low", "dependency_required",
-        "No LLM provider is configured yet -- honestly reports \"AI knowledge provider is not configured yet.\"",
+        "core/llm_provider.py's real OpenAI-compatible client is wired into knowledge_question dispatch "
+        "(apps/api/routes/assistant.py) -- honestly reports \"AI knowledge provider is not configured yet.\" "
+        "until WILLIAM_LLM_PROVIDER/BASE_URL/MODEL are set for this deployment, and never answers a "
+        "live/current-data question (weather, news, stock prices) even once configured.",
         "Real LLM-backed answers once an OpenAI-compatible or local provider is configured.",
     ),
     CapabilityEntry(

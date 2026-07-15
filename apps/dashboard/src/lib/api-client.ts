@@ -654,7 +654,11 @@ export type VoiceSettings = {
 // used /voice/status or /voice/config but never installed a Voice Worker
 // device reads connected/offline based on JWT-based heartbeats alone, same
 // as before device tokens existed.
-export type VoiceWorkerConnectionState = "needs_setup" | "disabled_device" | "connected" | "offline";
+export type VoiceWorkerConnectionState =
+  | "needs_setup"
+  | "disabled_device"
+  | "connected"
+  | "offline";
 
 // Real provider status (apps/worker_nodes/voice/providers/provider_status.py)
 // -- shared shape returned by both GET /voice/status and GET
@@ -864,7 +868,11 @@ export type PushToTalkTextResponseData = {
   follow_up_questions?: string[];
   status?: string;
   route?: string[];
-  generated_files?: Array<{ file_id?: string; filename?: string; download_url?: string }>;
+  generated_files?: Array<{
+    file_id?: string;
+    filename?: string;
+    download_url?: string;
+  }>;
   error?: { code: string; message: string; details?: unknown } | null;
   conversation_thread_id?: string;
   worker_task_id?: string | null;
@@ -873,7 +881,9 @@ export type PushToTalkTextResponseData = {
   response_text?: string;
   reply_language?: string;
   // Always present either way.
-  speech_output_status: PushToTalkTextSpeechOutputStatus | VoiceSpeechOutputStatus;
+  speech_output_status:
+    | PushToTalkTextSpeechOutputStatus
+    | VoiceSpeechOutputStatus;
 };
 
 export type VoiceEnrollStartPayload = {
@@ -942,7 +952,8 @@ export const voiceApi = {
   enrollComplete: (payload: VoiceEnrollCompletePayload) =>
     post<VoiceEnrollCompleteData>("/voice/enroll/complete", payload),
 
-  workerHeartbeat: () => post<VoiceHeartbeatData>("/voice/worker/heartbeat", {}),
+  workerHeartbeat: () =>
+    post<VoiceHeartbeatData>("/voice/worker/heartbeat", {}),
 };
 
 // =============================================================================
@@ -983,7 +994,10 @@ export type VoiceDeviceSetupTokenData = {
 
 export const voiceDeviceSetupApi = {
   createSetupToken: (deviceName?: string) =>
-    post<VoiceDeviceSetupTokenData>("/voice/device/setup-token", deviceName ? { device_name: deviceName } : {}),
+    post<VoiceDeviceSetupTokenData>(
+      "/voice/device/setup-token",
+      deviceName ? { device_name: deviceName } : {},
+    ),
   disable: () => post<Record<string, never>>("/voice/device/disable"),
 };
 
@@ -1068,8 +1082,16 @@ export type AdminOverviewData = {
   recent_admin_actions: AdminAuditEntry[];
 };
 
-export type AdminUsersListData = { users: AdminUser[]; count: number; limit: number; offset: number };
-export type AdminWorkspacesListData = { workspaces: AdminWorkspace[]; count: number };
+export type AdminUsersListData = {
+  users: AdminUser[];
+  count: number;
+  limit: number;
+  offset: number;
+};
+export type AdminWorkspacesListData = {
+  workspaces: AdminWorkspace[];
+  count: number;
+};
 export type AdminInvitesListData = { invites: AdminInvite[]; count: number };
 export type AdminAuditListData = { entries: AdminAuditEntry[]; count: number };
 
@@ -1088,7 +1110,11 @@ export type AdminUpdateUserPayload = {
   reset_role?: boolean;
 };
 
-export type AdminCreateWorkspacePayload = { name: string; owner_user_id: string; plan?: string };
+export type AdminCreateWorkspacePayload = {
+  name: string;
+  owner_user_id: string;
+  plan?: string;
+};
 export type AdminCreateInvitePayload = {
   email: string;
   workspace_id: string;
@@ -1104,7 +1130,10 @@ export const adminApi = {
     get<AdminUsersListData>("/admin/users", { params }),
 
   createUser: (payload: AdminCreateUserPayload) =>
-    post<{ user: AdminUser; membership: AdminUserMembership | null }>("/admin/users", payload),
+    post<{ user: AdminUser; membership: AdminUserMembership | null }>(
+      "/admin/users",
+      payload,
+    ),
 
   updateUser: (userId: string, payload: AdminUpdateUserPayload) =>
     patch<{ user: AdminUser; membership: AdminUserMembership | null }>(
@@ -1115,26 +1144,40 @@ export const adminApi = {
   listWorkspaces: () => get<AdminWorkspacesListData>("/admin/workspaces"),
 
   getWorkspaceMembers: (workspaceId: string) =>
-    get<{ workspace: AdminWorkspace; members: Array<AdminUserMembership & { email: string | null; full_name: string | null }> }>(
-      `/admin/workspaces/${encodeURIComponent(workspaceId)}/members`,
-    ),
+    get<{
+      workspace: AdminWorkspace;
+      members: Array<
+        AdminUserMembership & { email: string | null; full_name: string | null }
+      >;
+    }>(`/admin/workspaces/${encodeURIComponent(workspaceId)}/members`),
 
   createWorkspace: (payload: AdminCreateWorkspacePayload) =>
     post<{ workspace: AdminWorkspace }>("/admin/workspaces", payload),
 
   updateWorkspacePlan: (workspaceId: string, plan: string) =>
-    patch<{ workspace: AdminWorkspace }>(`/admin/workspaces/${encodeURIComponent(workspaceId)}/plan`, { plan }),
+    patch<{ workspace: AdminWorkspace }>(
+      `/admin/workspaces/${encodeURIComponent(workspaceId)}/plan`,
+      { plan },
+    ),
 
   updateWorkspaceOwner: (workspaceId: string, newOwnerUserId: string) =>
-    patch<{ workspace: AdminWorkspace }>(`/admin/workspaces/${encodeURIComponent(workspaceId)}/owner`, {
-      new_owner_user_id: newOwnerUserId,
-    }),
+    patch<{ workspace: AdminWorkspace }>(
+      `/admin/workspaces/${encodeURIComponent(workspaceId)}/owner`,
+      {
+        new_owner_user_id: newOwnerUserId,
+      },
+    ),
 
   createInvite: (payload: AdminCreateInvitePayload) =>
-    post<{ invite: AdminInvite; invite_link: string; email_status: string }>("/admin/invites", payload),
+    post<{ invite: AdminInvite; invite_link: string; email_status: string }>(
+      "/admin/invites",
+      payload,
+    ),
 
   listInvites: (workspaceId?: string) =>
-    get<AdminInvitesListData>("/admin/invites", { params: workspaceId ? { workspace_id: workspaceId } : undefined }),
+    get<AdminInvitesListData>("/admin/invites", {
+      params: workspaceId ? { workspace_id: workspaceId } : undefined,
+    }),
 
   acceptInvite: (token: string) =>
     post<{ invite: AdminInvite; membership: AdminUserMembership }>(
@@ -1150,12 +1193,34 @@ export const adminApi = {
   // not a separate endpoint, so admin agent-access management stays backed
   // by the exact same permission logic every workspace's own page uses.
   agentAccess: (workspaceId: string) =>
-    get<{ users: Array<{ user_id: string; name: string; email: string; role: string; plan: string; assigned_agents: string[] }>; agents: Array<{ key: string; name: string; category: string; enabled: boolean; minimum_plan: string; allowed_roles: string[]; risk_level: string; requires_security_approval: boolean }>; role_matrix: Record<string, string[]> }>(
-      "/agent-permissions",
-      { params: { workspace_id: workspaceId } },
-    ),
+    get<{
+      users: Array<{
+        user_id: string;
+        name: string;
+        email: string;
+        role: string;
+        plan: string;
+        assigned_agents: string[];
+      }>;
+      agents: Array<{
+        key: string;
+        name: string;
+        category: string;
+        enabled: boolean;
+        minimum_plan: string;
+        allowed_roles: string[];
+        risk_level: string;
+        requires_security_approval: boolean;
+      }>;
+      role_matrix: Record<string, string[]>;
+    }>("/agent-permissions", { params: { workspace_id: workspaceId } }),
 
-  updateAgentAccess: (userId: string, workspaceId: string, assignedAgents: string[], notes?: string) =>
+  updateAgentAccess: (
+    userId: string,
+    workspaceId: string,
+    assignedAgents: string[],
+    notes?: string,
+  ) =>
     put<{ user_id: string; workspace_id: string; assigned_agents: string[] }>(
       `/agent-permissions/${encodeURIComponent(userId)}?workspace_id=${encodeURIComponent(workspaceId)}`,
       { target_user_id: userId, assigned_agents: assignedAgents, notes },
@@ -1179,7 +1244,11 @@ export type AssistantMessageData = {
   follow_up_questions: string[];
   status: "waiting_for_user" | "running" | "completed" | "failed";
   route: string[];
-  generated_files: Array<{ file_id?: string; filename?: string; download_url?: string }>;
+  generated_files: Array<{
+    file_id?: string;
+    filename?: string;
+    download_url?: string;
+  }>;
   error: { code: string; message: string; details?: unknown } | null;
   conversation_thread_id: string;
   required_inputs?: AssistantRequiredField[];
@@ -1195,12 +1264,53 @@ export const assistantApi = {
   }) => post<AssistantMessageData>("/assistant/message", payload),
 
   getThread: (conversationThreadId: string) =>
-    get<AssistantMessageData & { last_message?: string; intent_category?: string; template_key?: string | null }>(
-      `/assistant/threads/${encodeURIComponent(conversationThreadId)}`,
-    ),
+    get<
+      AssistantMessageData & {
+        last_message?: string;
+        intent_category?: string;
+        template_key?: string | null;
+      }
+    >(`/assistant/threads/${encodeURIComponent(conversationThreadId)}`),
 };
 
-export type WorkerConnectionState = "needs_setup" | "disabled" | "connected" | "offline";
+// Mirrors VoiceDependencyEntry's shape exactly -- core/llm_provider.py::
+// check_status() returns the same {configured, reason, install_guidance}
+// vocabulary. configured=false never means "broken", it means no
+// WILLIAM_LLM_PROVIDER/BASE_URL/MODEL is set for this deployment yet.
+export type LlmProviderStatus = {
+  configured: boolean;
+  reason: string | null;
+  install_guidance: string | null;
+};
+
+export const llmApi = {
+  getStatus: () =>
+    get<{ llm_provider: LlmProviderStatus }>("/assistant/llm/status"),
+};
+
+export type GeneratedFile = {
+  file_id: string;
+  filename: string;
+  content_type: string;
+  file_type: string;
+  size_bytes: number;
+  generated_by_agent: string;
+  source_prompt: string | null;
+  conversation_thread_id: string | null;
+  created_at: string | null;
+  download_url: string;
+};
+
+export const generatedFilesApi = {
+  list: () =>
+    get<{ files: GeneratedFile[]; count: number }>("/files/generated"),
+};
+
+export type WorkerConnectionState =
+  | "needs_setup"
+  | "disabled"
+  | "connected"
+  | "offline";
 
 export type SystemWorkerStatusData = {
   workspace_id: string;
@@ -1232,6 +1342,9 @@ export type DeviceSetupTokenData = {
 
 export const deviceSetupApi = {
   createSetupToken: (deviceName?: string) =>
-    post<DeviceSetupTokenData>("/system/device/setup-token", deviceName ? { device_name: deviceName } : {}),
+    post<DeviceSetupTokenData>(
+      "/system/device/setup-token",
+      deviceName ? { device_name: deviceName } : {},
+    ),
   disable: () => post<Record<string, never>>("/system/device/disable"),
 };

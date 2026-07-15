@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { VoiceControlSettings } from "@/components/voice/VoiceControlSettings";
 import { WindowsWorkerStatusCard } from "@/components/system/WindowsWorkerStatusCard";
+import { LlmProviderStatusCard } from "@/components/llm/LlmProviderStatusCard";
 import { TrustedVoiceProfiles } from "@/components/voice/TrustedVoiceProfiles";
 
 type RoleLevel = "owner" | "admin" | "manager" | "member" | "viewer";
@@ -794,6 +795,21 @@ export default function SettingsPage() {
             </div>
 
             <WindowsWorkerStatusCard variant="full" />
+          </section>
+
+          <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
+            <div className="mb-6">
+              <p className="text-sm font-bold text-[#ff5a3d]">AI Brain</p>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-neutral-950">
+                LLM Provider
+              </h2>
+              <p className="mt-1 text-sm font-medium text-neutral-500">
+                Powers William&apos;s general knowledge answers on the Assistant page.
+                Never fakes an answer -- honestly reports when nothing is configured.
+              </p>
+            </div>
+
+            <LlmProviderStatusCard variant="full" />
           </section>
 
           <section className="rounded-[32px] border border-neutral-100 bg-neutral-50 p-5 md:p-6">

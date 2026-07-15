@@ -13,8 +13,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Download, FileText } from "lucide-react";
 import { readSession, type SessionData } from "@/lib/auth";
-import { assistantApi, type AssistantMessageData } from "@/lib/api-client";
+import {
+  assistantApi,
+  API_BASE_URL,
+  type AssistantMessageData,
+} from "@/lib/api-client";
 import { EmptyState } from "@/components/state/EmptyState";
 import { ErrorState } from "@/components/state/ErrorState";
 import { LoadingState } from "@/components/state/LoadingState";
@@ -26,6 +31,7 @@ type ChatMessage = {
   followUpQuestions?: string[];
   status?: AssistantMessageData["status"];
   route?: string[];
+  generatedFiles?: AssistantMessageData["generated_files"];
   raw?: AssistantMessageData;
 };
 
@@ -47,7 +53,9 @@ export default function AssistantPage() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [conversationThreadId, setConversationThreadId] = useState<string | null>(null);
+  const [conversationThreadId, setConversationThreadId] = useState<
+    string | null
+  >(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -100,6 +108,7 @@ export default function AssistantPage() {
         followUpQuestions: data.follow_up_questions,
         status: data.status,
         route: data.route,
+        generatedFiles: data.generated_files,
         raw: data,
       },
     ]);
@@ -116,7 +125,11 @@ export default function AssistantPage() {
   if (checkingSession || !session) {
     return (
       <div className="grid min-h-[420px] place-items-center text-neutral-950">
-        <LoadingState variant="light" title="Loading William..." subtitle="Checking your session." />
+        <LoadingState
+          variant="light"
+          title="Loading William..."
+          subtitle="Checking your session."
+        />
       </div>
     );
   }
@@ -129,7 +142,8 @@ export default function AssistantPage() {
             Talk to William
           </h1>
           <p className="mt-1 text-sm font-medium text-neutral-500">
-            Type naturally — William will ask for anything it&apos;s missing before it acts.
+            Type naturally — William will ask for anything it&apos;s missing
+            before it acts.
           </p>
         </div>
         <button
@@ -164,7 +178,9 @@ export default function AssistantPage() {
                       : "border border-neutral-100 bg-neutral-50 text-neutral-800",
                   ].join(" ")}
                 >
-                  <p className="whitespace-pre-wrap font-medium">{message.text}</p>
+                  <p className="whitespace-pre-wrap font-medium">
+                    {message.text}
+                  </p>
 
                   {message.role === "william" ? (
                     <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -186,7 +202,8 @@ export default function AssistantPage() {
                     </div>
                   ) : null}
 
-                  {message.followUpQuestions && message.followUpQuestions.length > 0 ? (
+                  {message.followUpQuestions &&
+                  message.followUpQuestions.length > 0 ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {message.followUpQuestions.map((question) => (
                         <button
@@ -198,6 +215,29 @@ export default function AssistantPage() {
                           {question}
                         </button>
                       ))}
+                    </div>
+                  ) : null}
+
+                  {message.generatedFiles &&
+                  message.generatedFiles.length > 0 ? (
+                    <div className="mt-3 flex flex-col gap-2">
+                      {message.generatedFiles.map((file) =>
+                        file.download_url ? (
+                          <a
+                            key={file.file_id ?? file.download_url}
+                            href={`${API_BASE_URL}${file.download_url}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center gap-2 rounded-2xl border border-[#ff5a3d]/25 bg-[#fff3ed] px-4 py-2.5 text-xs font-black text-[#ff5a3d] transition hover:bg-[#ff5a3d]/10"
+                          >
+                            <FileText size={14} />
+                            <span className="flex-1 truncate">
+                              {file.filename || "Download file"}
+                            </span>
+                            <Download size={14} />
+                          </a>
+                        ) : null,
+                      )}
                     </div>
                   ) : null}
 
@@ -227,7 +267,12 @@ export default function AssistantPage() {
 
         {error ? (
           <div className="px-5 pb-2">
-            <ErrorState variant="light" title="William couldn't respond" message={error} onRetry={() => setError(null)} />
+            <ErrorState
+              variant="light"
+              title="William couldn't respond"
+              message={error}
+              onRetry={() => setError(null)}
+            />
           </div>
         ) : null}
 

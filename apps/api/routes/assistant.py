@@ -27,9 +27,11 @@ rest of apps/api/routes/*.py.
 
 from __future__ import annotations
 
+import ast
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -123,15 +125,26 @@ from database.models.conversation_session import (  # noqa: E402
     SESSION_STATUS_WAITING_FOR_USER,
 )
 from core.intent_classifier import (  # noqa: E402
+    INTENT_KNOWLEDGE_QUESTION,
     INTENT_WINDOWS_DEVICE_ACTION,
+    FILE_GENERATION_STANDARD_DEFAULTS,
+    PROJECT_BUILD_STANDARD_DEFAULTS,
     RequiredField,
     classify,
     extract_app_name,
     extract_brand_name,
+    extract_file_generation_hints,
+    is_standard_shortcut_answer,
     merge_free_text_answer,
     missing_fields,
 )
 from core.final_response_builder import build_final_response  # noqa: E402
+from core import llm_provider  # noqa: E402
+
+STANDARD_DEFAULTS_BY_TEMPLATE: Dict[str, Dict[str, str]] = {
+    "pdf_document": FILE_GENERATION_STANDARD_DEFAULTS,
+    "project_build": PROJECT_BUILD_STANDARD_DEFAULTS,
+}
 
 try:
     from apps.api.routes.tasks import MASTER_AGENT  # type: ignore
@@ -379,6 +392,358 @@ async def _execute_windows_device_action(
     return final
 
 
+async def _execute_knowledge_question(
+    context: "AuthContext",
+    last_message: str,
+) -> Dict[str, Any]:
+    """Real LLM-backed knowledge Q&A (core/llm_provider.py) -- honestly
+    reports "AI knowledge provider is not configured yet." when no
+    WILLIAM_LLM_PROVIDER is set, and NEVER calls the LLM for a live/current
+    data question (weather, news, stock prices, "today") -- those are
+    deterministically short-circuited first, since a model can hallucinate
+    a plausible-sounding "current weather" answer despite instructions not
+    to."""
+    live_kind = llm_provider.is_live_data_query(last_message)
+    if live_kind == "weather":
+        return build_final_response(
+            {
+                "success": False,
+                "message": llm_provider.LIVE_WEATHER_FALLBACK_MESSAGE,
+                "error": {"code": "live_weather_provider_missing"},
+            },
+            route_hint=["master"],
+        )
+    if live_kind == "other":
+        return build_final_response(
+            {
+                "success": False,
+                "message": llm_provider.LIVE_DATA_FALLBACK_MESSAGE,
+                "error": {"code": "live_data_provider_missing"},
+            },
+            route_hint=["master"],
+        )
+
+    result = llm_provider.answer_knowledge_question(last_message)
+    if not result.get("ok"):
+        return build_final_response(
+            {
+                "success": False,
+                "message": llm_provider.KNOWLEDGE_PROVIDER_MISSING_MESSAGE,
+                "error": {"code": "llm_provider_not_configured", "message": result.get("error")},
+            },
+            route_hint=["master"],
+        )
+
+    return build_final_response(
+        {"success": True, "message": result["text"], "data": {}},
+        route_hint=["master"],
+        apply_tone=True,
+    )
+
+
+async def _execute_file_generation_template(
+    session: ConversationSession,
+    collected_inputs: Dict[str, Any],
+    context: "AuthContext",
+    last_message: str,
+) -> Dict[str, Any]:
+    """Real PDF/DOCX generation via CreatorAgent.generate_document (agents/
+    super_agents/creator_agent/document_generator.py) -- called directly,
+    same reasoning as _execute_veo_template (MasterAgent's routed dispatch
+    nests fields under input_data; CreatorAgent reads flat top-level
+    fields). Never fabricates a download link -- generated_files is only
+    ever set from a real file CreatorAgent actually wrote to disk."""
+    if _CREATOR_AGENT is None or call_agent is None:
+        return build_final_response(
+            {
+                "success": False,
+                "message": "Creator Agent is not available yet.",
+                "error": {"code": "CREATOR_AGENT_UNAVAILABLE"},
+            },
+            route_hint=["creator"],
+            apply_tone=True,
+        )
+
+    task = {
+        "type": "generate_document",
+        "doc_type": collected_inputs.get("doc_type", ""),
+        "parties": collected_inputs.get("parties", ""),
+        "jurisdiction": collected_inputs.get("jurisdiction", ""),
+        "duration": collected_inputs.get("duration", ""),
+        "confidentiality_scope": collected_inputs.get("confidentiality_scope", ""),
+        "format": collected_inputs.get("format", "PDF"),
+        "topic": session.extra_metadata.get("subject") or last_message,
+        "source_prompt": last_message,
+        "conversation_thread_id": session.conversation_thread_id,
+        "user_id": context.user_id,
+        "workspace_id": context.workspace_id,
+    }
+
+    result = await call_agent(_CREATOR_AGENT, task, agent_name="creator")
+
+    if not result.get("success"):
+        return build_final_response(result, route_hint=["creator"], apply_tone=True)
+
+    data = result.get("data") or {}
+    final = build_final_response(
+        {
+            "success": True,
+            "message": f"your {data.get('title') or 'document'} is ready.",
+            "data": {},
+        },
+        route_hint=["creator"],
+        apply_tone=True,
+    )
+    final["generated_files"] = [
+        {
+            "file_id": data.get("file_id"),
+            "filename": data.get("filename"),
+            "download_url": data.get("download_url"),
+        }
+    ]
+    return final
+
+
+def _draft_project_blueprint(collected: Dict[str, Any], project_name: str) -> Dict[str, str]:
+    """Deterministic, no LLM call -- a real, minimal, WORKING starter
+    scaffold (FastAPI backend that actually imports and runs, a static
+    frontend page) built from the collected requirements. Not a finished
+    production SaaS -- see README.md's own honest framing below. Kept
+    LLM-free so project building never depends on WILLIAM_LLM_PROVIDER
+    being configured, matching document_generator.py's same design choice."""
+    target_user = str(collected.get("target_user") or "general users").strip()
+    features = str(collected.get("features") or "core functionality").strip()
+    stack = str(collected.get("stack") or "python fastapi + nextjs").strip()
+    auth_subscription = str(collected.get("auth_subscription") or "no").strip()
+    admin_panel = str(collected.get("admin_panel") or "no").strip().lower()
+    template_upload = str(collected.get("template_upload") or "no").strip()
+    seo = str(collected.get("seo") or "no").strip().lower()
+    download_zip = str(collected.get("download_zip") or "no").strip()
+
+    needs_auth = auth_subscription.strip().lower() != "no"
+
+    readme = f"""# {project_name}
+
+Generated by William / Jarvis (Digital Promotix).
+
+## Requirements captured
+- Target user: {target_user}
+- Key features: {features}
+- Tech stack: {stack}
+- Auth/subscription: {auth_subscription}
+- Admin panel: {admin_panel}
+- Template upload: {template_upload}
+- SEO: {seo}
+- Downloadable ZIP: {download_zip}
+
+## Getting started
+
+    cd backend
+    pip install -r requirements.txt
+    uvicorn main:app --reload
+
+This is a real, minimal, working starter scaffold, not a finished
+production SaaS. Extend backend/main.py and frontend/index.html to build
+out the features listed above.
+"""
+
+    auth_route = ""
+    if needs_auth:
+        auth_route = '''
+
+@app.post("/auth/login")
+def login(payload: dict):
+    """Stub login endpoint -- replace with real authentication before shipping."""
+    return {"success": False, "message": "Authentication is not implemented yet."}
+'''
+
+    admin_route = ""
+    if admin_panel == "yes":
+        admin_route = '''
+
+@app.get("/admin/overview")
+def admin_overview():
+    """Stub admin endpoint -- gate this behind real role checks before shipping."""
+    return {"success": True, "message": "Admin panel placeholder."}
+'''
+
+    backend_main = f'''"""
+backend/main.py
+
+Generated by William / Jarvis (Digital Promotix) -- minimal, real FastAPI
+starter for: {project_name}.
+Target user: {target_user}
+Key features: {features}
+"""
+
+from fastapi import FastAPI
+
+app = FastAPI(title="{project_name}")
+
+
+@app.get("/health")
+def health():
+    return {{"success": True, "message": "{project_name} backend is running."}}
+
+
+@app.get("/features")
+def list_features():
+    return {{"success": True, "data": {{"target_user": "{target_user}", "features": "{features}"}}}}
+{auth_route}{admin_route}
+'''
+
+    backend_requirements = "fastapi>=0.115.0,<1.0.0\nuvicorn[standard]>=0.30.0,<1.0.0\n"
+
+    seo_meta = ""
+    if seo == "yes":
+        safe_description = features[:150].replace('"', "'")
+        seo_meta = f'\n    <meta name="description" content="{safe_description}">\n    <meta name="robots" content="index,follow">'
+
+    frontend_index = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{project_name}</title>{seo_meta}
+</head>
+<body>
+    <h1>{project_name}</h1>
+    <p>Built for: {target_user}</p>
+    <p>Key features: {features}</p>
+</body>
+</html>
+"""
+
+    return {
+        "README.md": readme,
+        "backend/main.py": backend_main,
+        "backend/requirements.txt": backend_requirements,
+        "frontend/index.html": frontend_index,
+        ".gitignore": "__pycache__/\n*.pyc\n.env\nnode_modules/\n",
+    }
+
+
+async def _execute_project_build_template(
+    session: ConversationSession,
+    collected_inputs: Dict[str, Any],
+    context: "AuthContext",
+    last_message: str,
+) -> Dict[str, Any]:
+    """Real project scaffolding via CodeAgent.create_project (agents/
+    code_agent/code_agent.py) -- called directly for the same reason
+    _execute_veo_template/_execute_windows_device_action are: the generic
+    MasterAgent pipeline has no route to create_project's payload shape.
+    Files are only written once the user has answered target_folder and
+    new_or_overwrite (enforced by core/intent_classifier.py's
+    PROJECT_BUILD_TEMPLATE required fields, resolved before this function
+    is ever called) -- never overwrites an existing file unless
+    new_or_overwrite == "overwrite"."""
+    try:
+        from agents.code_agent.code_agent import CodeAgent
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not import CodeAgent in assistant.py: %s", exc)
+        return build_final_response(
+            {
+                "success": False,
+                "message": "Code Agent is not available yet.",
+                "error": {"code": "CODE_AGENT_UNAVAILABLE"},
+            },
+            route_hint=["code"],
+            apply_tone=True,
+        )
+
+    project_name = str(collected_inputs.get("target_folder") or "").strip()
+    if not project_name:
+        return build_final_response(
+            {
+                "success": False,
+                "message": "What folder name should I create this project in?",
+                "error": {"code": "missing_target_folder"},
+            },
+            route_hint=["code"],
+            apply_tone=True,
+        )
+
+    overwrite = str(collected_inputs.get("new_or_overwrite", "new")).strip().lower() == "overwrite"
+    files = _draft_project_blueprint(collected_inputs, project_name)
+
+    # Same WILLIAM_PROJECTS_ROOT convention as agents/code_agent/
+    # project_builder.py and agents/code_agent/file_generator.py -- without
+    # this, CodeAgentConfig's own default (workspace_root=".") would write
+    # generated projects straight into the repo's current working
+    # directory instead of the dedicated project workspace root.
+    workspace_root = os.getenv("WILLIAM_PROJECTS_ROOT", "./william_workspaces")
+    code_agent = CodeAgent(config={"workspace_root": workspace_root, "dry_run_default": False})
+    task = {
+        "action": "create_project",
+        "context": {
+            "user_id": context.user_id,
+            "workspace_id": context.workspace_id,
+            "role": getattr(context, "role", "owner"),
+            "request_id": context.request_id,
+            # The user already explicitly confirmed target_folder AND
+            # new_or_overwrite through the clarifying-question flow above
+            # (core/intent_classifier.py's PROJECT_BUILD_TEMPLATE) before
+            # this function is ever reached -- that confirmation IS the
+            # approval gate for this per-request CodeAgent instance
+            # (constructed with no security_client, so CodeAgent's own
+            # _request_security_approval falls back to this permission
+            # list). No broader, standing permission is granted.
+            "permissions": ["code_agent:create_project"],
+        },
+        "dry_run": False,
+        "payload": {
+            "project_name": project_name,
+            "project_type": "python",
+            "files": files,
+            "overwrite": overwrite,
+        },
+    }
+
+    result = await call_agent(code_agent, task, agent_name="code")
+
+    if not result.get("success"):
+        return build_final_response(result, route_hint=["code"], apply_tone=True)
+
+    data = result.get("data") or {}
+    changes = data.get("changes") or []
+    written = [c for c in changes if c.get("action") in ("create", "overwrite")]
+    skipped = [c for c in changes if c.get("action") == "skip"]
+
+    syntax_errors: List[Dict[str, str]] = []
+    for rel_path, content in files.items():
+        if rel_path.endswith(".py"):
+            try:
+                ast.parse(content)
+            except SyntaxError as exc:
+                syntax_errors.append({"file": rel_path, "error": str(exc)})
+
+    checks_summary = (
+        "All generated Python files passed a syntax check."
+        if not syntax_errors
+        else f"{len(syntax_errors)} generated file(s) failed a syntax check."
+    )
+    file_names = ", ".join(Path(c["path"]).name for c in written[:8]) if written else "no files"
+    skip_note = (
+        f" {len(skipped)} existing file(s) were left untouched because overwrite wasn't approved."
+        if skipped
+        else ""
+    )
+
+    final_answer = (
+        f"I created '{project_name}' with {len(written)} file(s): {file_names}. {checks_summary}{skip_note}"
+    )
+    final = build_final_response(
+        {"success": True, "message": final_answer, "data": {}},
+        route_hint=["code"],
+        apply_tone=True,
+    )
+    final["files_changed"] = [c.get("path") for c in written]
+    final["files_skipped"] = [c.get("path") for c in skipped]
+    final["checks"] = {"syntax_errors": syntax_errors}
+    final["project_root"] = data.get("project_root")
+    return final
+
+
 async def _dispatch_generic(
     session: ConversationSession,
     context: "AuthContext",
@@ -428,8 +793,14 @@ async def _dispatch(
     after this returns -- see send_message()."""
     if session.template_key == "veo_prompt":
         final = await _execute_veo_template(session, session.collected_inputs, context, last_message)
+    elif session.template_key == "pdf_document":
+        final = await _execute_file_generation_template(session, session.collected_inputs, context, last_message)
+    elif session.template_key == "project_build":
+        final = await _execute_project_build_template(session, session.collected_inputs, context, last_message)
     elif session.intent_category == INTENT_WINDOWS_DEVICE_ACTION:
         final = await _execute_windows_device_action(context, last_message)
+    elif session.intent_category == INTENT_KNOWLEDGE_QUESTION:
+        final = await _execute_knowledge_question(context, last_message)
     else:
         final = await _dispatch_generic(session, context, last_message, classification_route)
 
@@ -481,7 +852,22 @@ async def process_assistant_message(
             merged = dict(thread.collected_inputs)
             if payload.collected_inputs:
                 merged.update(payload.collected_inputs)
-            merged = merge_free_text_answer(required_field_objs, merged, payload.message)
+
+            # "standard one" / "use defaults" on a pdf_document or
+            # project_build clarification fills every still-missing field
+            # that has a safe default (core/intent_classifier.py's
+            # STANDARD_DEFAULTS_BY_TEMPLATE) WITHOUT going through
+            # merge_free_text_answer -- that generic fallback would
+            # otherwise dump the literal word "standard" into whichever
+            # single free-form field happened to be the only one left
+            # missing (e.g. target_folder), which is never what the user
+            # meant.
+            template_defaults = STANDARD_DEFAULTS_BY_TEMPLATE.get(thread.template_key or "")
+            if template_defaults and is_standard_shortcut_answer(payload.message):
+                for default_key, default_value in template_defaults.items():
+                    merged.setdefault(default_key, default_value)
+            else:
+                merged = merge_free_text_answer(required_field_objs, merged, payload.message)
 
             still_missing = missing_fields(required_field_objs, merged)
 
@@ -490,10 +876,15 @@ async def process_assistant_message(
             )
 
             if still_missing:
+                # Narrow to just what's still needed -- mirrors the
+                # brand-new-thread branch below (_fields_to_dicts(missing),
+                # not the full template). Round 2 of a multi-round
+                # clarification (e.g. project_build's 10 fields) must not
+                # re-ask fields the user already answered in round 1.
                 ConversationSessionService.mark_waiting(
                     db,
                     thread,
-                    thread.required_inputs,
+                    _fields_to_dicts(still_missing),
                     next_step=f"Waiting for: {', '.join(f.name for f in still_missing)}",
                 )
                 return _clarification_envelope(thread, still_missing, context)
@@ -509,6 +900,7 @@ async def process_assistant_message(
                 input_data=payload.collected_inputs,
             )
             session_metadata = dict(payload.metadata or {})
+            initial_collected_inputs = dict(payload.collected_inputs or {})
             if classification.template_key == "veo_prompt":
                 # Extracted once, here, from the ORIGINAL request message
                 # (e.g. "...for ClickRonix") -- a later turn completing the
@@ -516,6 +908,12 @@ async def process_assistant_message(
                 # brand at all, so this must not be re-derived from
                 # last_message at execution time.
                 session_metadata["subject"] = extract_brand_name(payload.message)
+            elif classification.template_key == "pdf_document":
+                # "William make a PDF NDA for Digital Promotix" already says
+                # PDF and NDA -- don't ask "PDF or DOCX?"/"NDA, proposal, or
+                # agreement?" again when the message already answered them.
+                for hint_key, hint_value in extract_file_generation_hints(payload.message).items():
+                    initial_collected_inputs.setdefault(hint_key, hint_value)
 
             active_session = ConversationSessionService.create(
                 db,
@@ -524,7 +922,7 @@ async def process_assistant_message(
                 intent_category=classification.category,
                 template_key=classification.template_key,
                 required_inputs=_fields_to_dicts(classification.required_fields),
-                collected_inputs=payload.collected_inputs or {},
+                collected_inputs=initial_collected_inputs,
                 status="running",
                 last_message=payload.message,
                 metadata=session_metadata,
@@ -600,3 +998,18 @@ async def get_thread(
             )
 
         return api_success("Conversation thread loaded.", data=thread.to_dict(), request_id=context.request_id)
+
+
+@router.get("/llm/status")
+async def get_llm_status(
+    context: "AuthContext" = Depends(get_current_auth_context),
+) -> Dict[str, Any]:
+    """Honest, environment-driven LLM provider status -- see
+    core/llm_provider.py::check_status(). configured=False never means
+    "broken", it means no WILLIAM_LLM_PROVIDER/BASE_URL/MODEL is set for
+    this deployment yet."""
+    return api_success(
+        "LLM provider status loaded.",
+        data={"llm_provider": llm_provider.check_status()},
+        request_id=context.request_id,
+    )

@@ -44,6 +44,7 @@ MODEL_MODULES: Tuple[str, ...] = (
     "database.models.memory",
     "database.models.security",
     "database.models.file",
+    "database.models.generated_file",
     "database.models.workflow",
     "database.models.business",
     "database.models.finance",

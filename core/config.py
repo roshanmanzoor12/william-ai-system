@@ -379,6 +379,7 @@ class StorageConfig:
     logs_dir: str = "logs"
     temp_dir: str = "tmp"
     uploads_dir: str = "uploads"
+    generated_files_dir: str = "generated_files"
     workspace_data_dir: str = "data/workspaces"
     user_data_dir: str = "data/users"
 
@@ -679,6 +680,7 @@ class CoreConfig:
             logs_dir=os.getenv("WILLIAM_LOGS_DIR", "logs"),
             temp_dir=os.getenv("WILLIAM_TEMP_DIR", "tmp"),
             uploads_dir=os.getenv("WILLIAM_UPLOADS_DIR", "uploads"),
+            generated_files_dir=os.getenv("WILLIAM_GENERATED_FILES_DIR", "generated_files"),
             workspace_data_dir=os.getenv("WILLIAM_WORKSPACE_DATA_DIR", "data/workspaces"),
             user_data_dir=os.getenv("WILLIAM_USER_DATA_DIR", "data/users"),
         )
@@ -1272,6 +1274,7 @@ class CoreConfig:
                 self.storage_config.logs_dir,
                 self.storage_config.temp_dir,
                 self.storage_config.uploads_dir,
+                self.storage_config.generated_files_dir,
                 self.storage_config.workspace_data_dir,
                 self.storage_config.user_data_dir,
             ]

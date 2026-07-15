@@ -253,6 +253,25 @@ def _workspace_dir(workspace_id: str) -> Path:
     return directory
 
 
+def _generated_files_root() -> Path:
+    """Mirrors _uploads_root() for real, workspace/user-scoped generated
+    files (PDF/DOCX from Creator Agent's document_generator.py) -- a
+    separate root from uploads, since nothing was uploaded here.
+    agents/super_agents/creator_agent/document_generator.py computes this
+    same path independently (self-contained storage helper, matching this
+    file's own _uploads_root()/_workspace_dir() convention)."""
+    try:
+        from core.config import get_core_config
+
+        base = get_core_config().storage_config.generated_files_dir
+    except Exception:
+        base = os.getenv("WILLIAM_GENERATED_FILES_DIR", "generated_files")
+
+    root = Path(base).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 # =============================================================================
 # Security / Audit hooks
 # =============================================================================
@@ -437,6 +456,60 @@ async def delete_file(
     _log_audit_event(context, "file_delete", file_id, "success")
 
     return api_success("File deleted.", data={"file_id": file_id}, request_id=context.request_id)
+
+
+@router.get("/generated")
+async def list_generated_files(
+    context: "AuthContext" = Depends(get_current_auth_context),
+) -> Dict[str, Any]:
+    """Real files William generated (PDF/DOCX today) for this workspace --
+    see database/models/generated_file.py. Never includes a row unless it
+    was actually written to disk by agents/super_agents/creator_agent/
+    document_generator.py."""
+    from database.db import db_manager
+    from database.models.generated_file import GeneratedFileService
+
+    with db_manager.session_scope() as session:
+        rows = GeneratedFileService.list_for_workspace(session, workspace_id=context.workspace_id)
+        files = [row.to_dict() for row in rows]
+        for entry in files:
+            entry["download_url"] = f"/files/generated/{entry['file_id']}/download"
+
+    return api_success("Generated files loaded.", data={"files": files, "count": len(files)}, request_id=context.request_id)
+
+
+@router.get("/generated/{file_id}/download")
+async def download_generated_file(
+    file_id: str,
+    context: "AuthContext" = Depends(get_current_auth_context),
+):
+    from database.db import db_manager
+    from database.models.generated_file import GeneratedFileService
+
+    with db_manager.session_scope() as session:
+        record = GeneratedFileService.get(session, file_id=file_id, workspace_id=context.workspace_id)
+
+        if not record:
+            raise_api_error(
+                status.HTTP_404_NOT_FOUND,
+                "Generated file not found.",
+                "GENERATED_FILE_NOT_FOUND",
+                request_id=context.request_id,
+            )
+
+        disk_path = _generated_files_root() / record.storage_key
+        filename = record.filename
+        content_type = record.content_type
+
+    if not disk_path.exists():
+        raise_api_error(
+            status.HTTP_404_NOT_FOUND,
+            "Generated file content is missing from storage.",
+            "GENERATED_FILE_CONTENT_MISSING",
+            request_id=context.request_id,
+        )
+
+    return FileResponse(path=str(disk_path), filename=filename, media_type=content_type)
 
 
 @router.get("/health/status")
