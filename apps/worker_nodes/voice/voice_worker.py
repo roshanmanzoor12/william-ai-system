@@ -12,10 +12,13 @@ Purpose:
     real JWT `Authorization: Bearer <token>` auth the dashboard uses --
     there is no separate device-token auth system for voice yet.
 
-    This worker does NOT implement real microphone capture, real STT, or
-    real TTS. Those provider integrations (pyaudio/whisper/vosk/etc.) are
-    not installed in this environment and this file never imports them.
-    What it does provide is real, working plumbing:
+    Real microphone capture, real STT, and real TTS are provided by
+    apps/worker_nodes/voice/providers/ (audio_input.py/stt.py/tts.py/
+    wake_word.py/provider_status.py) -- this file composes those adapters
+    rather than reimplementing them. Every one of them degrades honestly
+    to dependency_required when its package/env var isn't configured; this
+    worker never fabricates a listen/transcribe/speak event. What it
+    provides beyond that composition is real, working plumbing:
 
       - Startup + periodic dependency-status reporting (GET /voice/status),
         staying alive in a safe idle loop even when no audio/STT/TTS/
@@ -50,17 +53,27 @@ Purpose:
         error/redaction handling) this task was told to reuse rather than
         rebuild.
 
-    Hard privacy/safety rule (mirrors the rest of this codebase): this
-    worker never captures, buffers, or persists raw audio -- there is no
-    microphone integration in this file. The method a future real
-    microphone integration would extend to hold a short rolling audio
-    buffer before wake-word/STT hand-off is documented at
-    VoiceWorker.on_audio_frame() below: it intentionally discards whatever
-    it receives and stores nothing.
+    Hard privacy/safety rule (mirrors the rest of this codebase): raw audio
+    is never persisted by default. audio_input.py::record_to_tempfile()
+    writes one real WAV file per capture to the OS temp directory; this
+    worker deletes it immediately after stt.py::transcribe() consumes it
+    (see _dispatch_transcript's finally block), unless
+    WILLIAM_VOICE_DEBUG_KEEP_AUDIO=true is explicitly set for local
+    debugging. Every real wake/listen/transcribe/speak event is logged
+    (metadata only -- duration, confidence, provider name -- never audio
+    content) via the existing audit path
+    (apps/api/services/voice_service.py::record_voice_event, called
+    server-side on every /voice/wake-event and /voice/push-to-talk/text
+    call this worker already makes).
 
 Run:
     python -m apps.worker_nodes.voice.voice_worker
     python -m apps.worker_nodes.voice.voice_worker --simulate-text "William create a VEO prompt for ClickRonix"
+    python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --list-audio-devices
+    python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --test-tts
+    python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --test-mic
+    python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --test-stt
+    python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --test-wake-word
 
 Config (CLI flag, then env var, then default):
     --token / WILLIAM_VOICE_WORKER_TOKEN            real JWT access token (dev/manual mode)
@@ -79,6 +92,15 @@ Config (CLI flag, then env var, then default):
     --ignore-mode-for-dev                             bypass the local "voice mode disabled" gate for
                                                           --simulate-text dev/test runs only -- never use
                                                           this for production listening
+    --list-audio-devices                              print real input devices (sounddevice) and exit; no auth needed
+    --test-mic                                          record a few real seconds from the mic and report
+                                                          duration/path (deletes the file after); no auth needed
+    --test-stt                                          record + transcribe with the configured STT provider and
+                                                          print the real text; no auth needed
+    --test-tts                                          speak a fixed test sentence with the configured TTS
+                                                          provider (or report tts_missing); no auth needed
+    --test-wake-word                                    listen for the real audio wake word for a few seconds and
+                                                          report detected/not detected; no auth needed
 
 If no token/device-token is configured, the worker still starts (it will
 not crash) -- the status call will honestly fail with an auth error and
@@ -126,6 +148,21 @@ except Exception:  # pragma: no cover - import-safe fallback
     WakeWordDetector = None  # type: ignore
     WakeWordConfig = None  # type: ignore
 
+try:
+    from apps.worker_nodes.voice.providers import (  # type: ignore
+        audio_input as audio_input_provider,
+        stt as stt_provider,
+        tts as tts_provider,
+        wake_word as wake_word_provider,
+        provider_status as provider_status_module,
+    )
+except Exception:  # pragma: no cover - import-safe fallback
+    audio_input_provider = None  # type: ignore
+    stt_provider = None  # type: ignore
+    tts_provider = None  # type: ignore
+    wake_word_provider = None  # type: ignore
+    provider_status_module = None  # type: ignore
+
 
 LOGGER_NAME = "william.worker_nodes.voice"
 logger = logging.getLogger(LOGGER_NAME)
@@ -154,6 +191,17 @@ VOICE_MODE_DISABLED = "disabled"
 VOICE_MODE_PUSH_TO_TALK = "push_to_talk"
 VOICE_MODE_STANDBY = "standby"
 WAKE_WORD_GATED_MODES = {"wake_word_admin", "wake_word_trusted_users", "standby"}
+# Modes that mean "start the real always-listening audio loop if this
+# worker's local providers support it" -- distinct from WAKE_WORD_GATED_MODES
+# above (which is about server-side/text-path gating semantics that already
+# applied before real audio existed). standby is deliberately excluded here:
+# it means "connected but not listening" even with providers fully installed.
+ALWAYS_LISTENING_MODES = {"wake_word_admin", "wake_word_trusted_users"}
+
+# Local debug-only escape hatch: real captured audio is deleted immediately
+# after STT consumes it unless this is explicitly set to keep it on disk
+# for troubleshooting a bad transcription. Never enabled by default.
+DEBUG_KEEP_AUDIO_ENV_VAR = "WILLIAM_VOICE_DEBUG_KEEP_AUDIO"
 
 
 class VoiceWorkerState(str, Enum):
@@ -613,11 +661,9 @@ class VoiceWorker:
             )
             return False
 
-        wake_word_for_command: Optional[str] = None
         transcript = text.strip()
 
         if detected:
-            wake_word_for_command = detection["trigger"]
             transcript = self._strip_wake_word(text, detection["match_metadata"])
 
             wake_event_result = self.send_wake_event(confidence=detection["confidence"])
@@ -632,6 +678,24 @@ class VoiceWorker:
                 f"server_mode={wake_data.get('mode')}"
             )
 
+        # No real STT ran on this path -- the "transcript" is the text the
+        # caller already gave us (via --simulate-text or the interactive
+        # stdin fallback). Kept honest about that in the state detail; the
+        # real-audio path (_run_wake_word_admin_loop -> stt_provider.
+        # transcribe) logs the real thing instead.
+        self._set_state(
+            VoiceWorkerState.TRANSCRIBING,
+            f"no real STT provider used on this path; using provided text as transcript (length={len(transcript)})",
+        )
+        return self._send_transcript_and_respond(transcript)
+
+    def _send_transcript_and_respond(self, transcript: str) -> bool:
+        """Shared tail of the pipeline: a transcript is already in hand
+        (either typed/simulated text, or a real STT transcription from
+        _run_wake_word_admin_loop) -- verify speaker (honest skip, no
+        provider), detect language (honest default), send to the shared
+        assistant dispatcher, print the response, and speak it with real
+        TTS if configured. Returns True if a command was sent."""
         # No real speaker-recognition provider is configured in this
         # environment (see dependency_status.speaker_recognition_provider)
         # -- honestly report that this step is skipped rather than
@@ -642,19 +706,11 @@ class VoiceWorker:
             "(server still applies its own admin/owner or profile-based authorization)",
         )
 
-        # No real STT ran -- the "transcript" is the text the caller
-        # already gave us (via --simulate-text or the interactive stdin
-        # fallback). This state transition is kept honest about that.
-        self._set_state(
-            VoiceWorkerState.TRANSCRIBING,
-            f"no real STT provider installed; using provided text as transcript (length={len(transcript)})",
-        )
-
         detected_language = "en"
         self._set_state(VoiceWorkerState.LANGUAGE_DETECTED, f"detected_language={detected_language} (default; no language-ID provider configured)")
 
         self._set_state(VoiceWorkerState.SENDING_TO_MASTER, f"session_id={self.session_id}")
-        command_result = self.send_command(transcript, detected_language, wake_word_for_command)
+        command_result = self.send_command(transcript, detected_language, None)
 
         if not command_result["ok"]:
             self._set_state(VoiceWorkerState.ERROR, "voice command request failed")
@@ -663,16 +719,253 @@ class VoiceWorker:
 
         command_envelope = command_result["envelope"]
         command_data = command_envelope.get("data") or {}
-        speech_status = command_data.get("speech_output_status", "tts_missing")
+        self._print_command_response(command_data)
+        self._speak_response(command_data)
+        return True
+
+    def _speak_response(self, command_data: Dict[str, Any]) -> None:
+        """Real TTS, spoken client-side (this is the machine with the real
+        speaker attached) -- the server's own speech_output_status field
+        (based on the BACKEND's WILLIAM_TTS_PROVIDER) is informative only;
+        the actual speak-or-not decision is this worker's local provider
+        status, since a real distributed deployment's backend and worker
+        need not share the same env vars. Never claims spoken=True unless
+        tts_provider.speak() really ran the engine."""
+        text = command_data.get("final_answer") or command_data.get("response_text") or ""
+        if not text:
+            return
+        if tts_provider is None:
+            return
+        status = tts_provider.check_status()
+        if not status["configured"]:
+            self._log(f"TTS not configured locally ({status['reason']}); text response only.")
+            return
+        self._set_state(VoiceWorkerState.SPEAKING, "speaking final_answer with local TTS provider")
+        result = tts_provider.speak(text)
+        if result["ok"]:
+            self._log("Spoken via local TTS provider.")
+        else:
+            self._log(f"TTS speak failed ({result['error']}); text response only.")
+
+    # -----------------------------------------------------------------
+    # Real always-listening audio loop (wake_word_admin / wake_word_trusted_users)
+    # -----------------------------------------------------------------
+
+    def _local_provider_readiness(self) -> Dict[str, Any]:
+        if provider_status_module is None:
+            return {
+                "always_listening_available": False,
+                "reason": "apps.worker_nodes.voice.providers is unavailable",
+                "full_status": {},
+            }
+        full_status = provider_status_module.get_full_status()
+        return {
+            "always_listening_available": bool(full_status.get("always_listening_available")),
+            "reason": None,
+            "full_status": full_status,
+        }
+
+    def _run_wake_word_admin_loop(self, mode: str) -> None:
+        """Real always-listening loop: blocks on real audio wake-word
+        detection, then real microphone capture, then real STT, then the
+        same dispatcher every other path uses, then real TTS. Falls back
+        to the safe heartbeat-only idle loop (never a crash, never a fake
+        "listening") if any of audio_input/stt/wake_word isn't actually
+        configured on this machine."""
+        readiness = self._local_provider_readiness()
+        if not readiness["always_listening_available"]:
+            full_status = readiness["full_status"]
+            missing = full_status.get("missing_dependencies") or ["audio_input_worker", "stt_provider", "wake_word_provider"]
+            self._log(
+                f"dependency_required: mode={mode!r} wants real always-listening audio, but "
+                f"{', '.join(missing)} are not all configured on this machine. Keeping heartbeat "
+                "alive; text push-to-talk and --simulate-text still work regardless. Run "
+                "check_voice_dependencies.ps1 for exact setup guidance."
+            )
+            self._run_idle_loop()
+            return
 
         self._set_state(
-            VoiceWorkerState.SPEAKING,
-            f"speech_output_status={speech_status} (no local speaker/TTS provider attached; "
-            "text response only)",
+            VoiceWorkerState.IDLE,
+            f"real always-listening audio loop starting (mode={mode}); say the wake word to activate.",
         )
+        listener = wake_word_provider.WakeWordListener()  # type: ignore[union-attr]
+        try:
+            while True:
+                self._log(f"Listening for real wake word (poll window {self.config.poll_interval_seconds}s)...")
+                self._set_state(VoiceWorkerState.LISTENING, "real audio wake-word detection active")
+                detection = listener.listen_until_detected(max_seconds=self.config.poll_interval_seconds)
 
-        self._print_command_response(command_data)
-        return True
+                heartbeat_result = self.send_heartbeat()
+                if self._is_auth_failure(heartbeat_result):
+                    self._set_state(VoiceWorkerState.ERROR, "authentication failed (401)")
+                    print(self._auth_failure_message())
+                    return
+
+                if not detection["detected"]:
+                    continue
+
+                self._set_state(
+                    VoiceWorkerState.WAKE_DETECTED,
+                    f"trigger={detection['trigger']!r} confidence={detection['score']:.2f} (real audio)",
+                )
+                wake_event_result = self.send_wake_event(confidence=detection["score"])
+                if not wake_event_result["ok"]:
+                    self._set_state(VoiceWorkerState.ERROR, "failed to register wake event with backend")
+                    self._print_api_failure("POST /voice/wake-event", wake_event_result)
+                    continue
+
+                self._capture_transcribe_and_respond()
+        except KeyboardInterrupt:
+            raise
+        finally:
+            listener.stop()
+
+    def _capture_transcribe_and_respond(self) -> bool:
+        """Real microphone capture -> real STT -> shared dispatch/response/
+        TTS tail. The captured WAV is always deleted immediately after STT
+        consumes it unless WILLIAM_VOICE_DEBUG_KEEP_AUDIO=true -- "no raw
+        audio stored by default" is enforced right here, not just claimed
+        in a comment."""
+        self._set_state(VoiceWorkerState.LISTENING, "capturing real microphone audio")
+        record_result = audio_input_provider.record_to_tempfile()  # type: ignore[union-attr]
+        if not record_result["ok"]:
+            self._set_state(VoiceWorkerState.ERROR, "microphone capture failed")
+            self._log(f"Could not capture audio: {record_result['error']}")
+            return False
+
+        audio_path = record_result["audio_path"]
+        try:
+            self._set_state(
+                VoiceWorkerState.TRANSCRIBING,
+                f"transcribing {record_result['duration_seconds']:.1f}s of real captured audio",
+            )
+            transcribe_result = stt_provider.transcribe(audio_path)  # type: ignore[union-attr]
+            if not transcribe_result["ok"]:
+                self._set_state(VoiceWorkerState.ERROR, "transcription failed")
+                self._log(f"STT could not produce a transcript: {transcribe_result['error']}")
+                return False
+
+            transcript = transcribe_result["text"]
+            self._log(f"Transcript: {transcript!r} (confidence={transcribe_result.get('confidence')})")
+            return self._send_transcript_and_respond(transcript)
+        finally:
+            keep_audio = os.getenv(DEBUG_KEEP_AUDIO_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+            if keep_audio:
+                self._log(f"WILLIAM_VOICE_DEBUG_KEEP_AUDIO is set -- keeping captured audio at {audio_path}")
+            else:
+                try:
+                    os.remove(audio_path)
+                except OSError as exc:
+                    logger.warning("Could not delete temp audio file %s: %s", audio_path, exc)
+
+    # -----------------------------------------------------------------
+    # Local diagnostic commands (--list-audio-devices / --test-mic /
+    # --test-stt / --test-tts / --test-wake-word) -- no backend auth
+    # required, no fabricated results.
+    # -----------------------------------------------------------------
+
+    def list_audio_devices(self) -> int:
+        if audio_input_provider is None:
+            print("dependency_required: apps.worker_nodes.voice.providers.audio_input is unavailable.")
+            return 1
+        status = audio_input_provider.check_status()
+        devices = status["devices"]
+        if not devices:
+            print(f"No input devices found. {status.get('install_guidance') or ''}")
+            return 1
+        print(f"Found {len(devices)} real input device(s):")
+        for device in devices:
+            marker = " (default)" if device.get("is_default") else ""
+            print(f"  [{device['index']}] {device['name']}{marker} -- {device['max_input_channels']}ch @ {device['default_samplerate']}Hz")
+        if not status["available"]:
+            print(f"\nNote: {status['reason']}. {status.get('install_guidance') or ''}")
+        return 0
+
+    def test_mic(self) -> int:
+        if audio_input_provider is None:
+            print("dependency_required: apps.worker_nodes.voice.providers.audio_input is unavailable.")
+            return 1
+        print("Recording a few real seconds from the microphone (speak now)...")
+        result = audio_input_provider.record_to_tempfile(max_duration_seconds=6.0)
+        if not result["ok"]:
+            print(f"Microphone test failed: {result['error']}")
+            return 1
+        print(f"Captured {result['duration_seconds']:.1f}s of real audio -> {result['audio_path']}")
+        try:
+            os.remove(result["audio_path"])
+            print("Temp audio file deleted (no raw audio stored by default).")
+        except OSError as exc:
+            print(f"Could not delete temp audio file: {exc}")
+        return 0
+
+    def test_stt(self) -> int:
+        if stt_provider is None or audio_input_provider is None:
+            print("dependency_required: STT/audio provider modules are unavailable.")
+            return 1
+        stt_status = stt_provider.check_status()
+        if not stt_status["configured"]:
+            print(f"dependency_required: {stt_status['reason']}. {stt_status.get('install_guidance') or ''}")
+            return 1
+        print("Recording a few real seconds from the microphone (speak now)...")
+        record_result = audio_input_provider.record_to_tempfile(max_duration_seconds=8.0)
+        if not record_result["ok"]:
+            print(f"Microphone capture failed: {record_result['error']}")
+            return 1
+        try:
+            print("Transcribing real captured audio...")
+            transcribe_result = stt_provider.transcribe(record_result["audio_path"])
+            if not transcribe_result["ok"]:
+                print(f"Transcription failed: {transcribe_result['error']}")
+                return 1
+            print(f"Real transcript: {transcribe_result['text']!r} (confidence={transcribe_result.get('confidence')})")
+            return 0
+        finally:
+            try:
+                os.remove(record_result["audio_path"])
+            except OSError:
+                pass
+
+    def test_tts(self) -> int:
+        if tts_provider is None:
+            print("dependency_required: apps.worker_nodes.voice.providers.tts is unavailable.")
+            return 1
+        status = tts_provider.check_status()
+        if not status["configured"]:
+            print(f"tts_missing: {status['reason']}. {status.get('install_guidance') or ''}")
+            print("Text response only: This is a test of William's text to speech.")
+            return 0
+        print("Speaking a real test sentence through the configured TTS provider...")
+        result = tts_provider.speak("This is a test of William's text to speech.")
+        if result["ok"]:
+            print("Spoken successfully via local TTS provider.")
+            return 0
+        print(f"TTS speak failed: {result['error']}")
+        return 1
+
+    def test_wake_word(self) -> int:
+        if wake_word_provider is None:
+            print("dependency_required: apps.worker_nodes.voice.providers.wake_word is unavailable.")
+            return 1
+        status = wake_word_provider.check_status()
+        if not status["configured"]:
+            print(f"dependency_required: {status['reason']}. {status.get('install_guidance') or ''}")
+            return 1
+        try:
+            listener = wake_word_provider.WakeWordListener()
+        except RuntimeError as exc:
+            print(f"dependency_required: {exc}")
+            return 1
+        wake_word_phrase = os.getenv("WILLIAM_WAKE_WORD_PHRASE", DEFAULT_WAKE_WORD)
+        print(f"Configured wake word: {wake_word_phrase!r} -- real audio model in use: {listener.active_model_name!r}")
+        print(f"Listening for real audio wake word ({listener.active_model_name!r}) for 10 seconds -- say it now...")
+        result = listener.listen_until_detected(max_seconds=10.0)
+        listener.stop()
+        if result["detected"]:
+            print(f"Wake word detected! trigger={result['trigger']!r} score={result['score']:.2f}")
+            return 0
+        print("Wake word not detected within 10 seconds.")
+        return 1
 
     # -----------------------------------------------------------------
     # Output formatting
@@ -748,8 +1041,23 @@ class VoiceWorker:
             else:
                 self._log("Heartbeat failed; dashboard may show this worker as offline until the next successful check-in.")
 
+        envelope = status_result.get("envelope") or {}
+        settings = (envelope.get("data") or {}).get("settings") or {}
+        mode = settings.get("mode", VOICE_MODE_DISABLED)
+
         try:
-            if sys.stdin.isatty():
+            if status_result.get("ok") and mode in ALWAYS_LISTENING_MODES:
+                # The workspace's real mode is wake_word_admin/
+                # wake_word_trusted_users -- start the real audio loop if
+                # this machine's providers support it, honestly falling
+                # back to heartbeat-only otherwise (see
+                # _run_wake_word_admin_loop's own dependency_required
+                # check). Takes priority over the TTY check below: a real
+                # always-listening mode should listen for real audio, not
+                # fall into the typed-text interactive fallback, even when
+                # run from an interactive terminal.
+                self._run_wake_word_admin_loop(mode)
+            elif sys.stdin.isatty():
                 self._run_interactive_loop()
             else:
                 self._run_idle_loop()
@@ -865,6 +1173,31 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         help="Bypass this worker's local 'voice mode is disabled' gate for --simulate-text dev/test runs. "
         "Does not change the workspace's real voice mode setting. Do not use this for production listening.",
     )
+    parser.add_argument(
+        "--list-audio-devices",
+        action="store_true",
+        help="Print real input devices (sounddevice) and exit. No backend auth required.",
+    )
+    parser.add_argument(
+        "--test-mic",
+        action="store_true",
+        help="Record a few real seconds from the microphone, report duration, delete the file, and exit. No backend auth required.",
+    )
+    parser.add_argument(
+        "--test-stt",
+        action="store_true",
+        help="Record + transcribe with the configured STT provider and print the real text. No backend auth required.",
+    )
+    parser.add_argument(
+        "--test-tts",
+        action="store_true",
+        help="Speak a fixed test sentence with the configured TTS provider (or report tts_missing). No backend auth required.",
+    )
+    parser.add_argument(
+        "--test-wake-word",
+        action="store_true",
+        help="Listen for the real audio wake word for a few seconds and report detected/not detected. No backend auth required.",
+    )
     return parser.parse_args(argv)
 
 
@@ -887,7 +1220,15 @@ def build_config(args: argparse.Namespace) -> VoiceWorkerConfig:
     if args.config:
         config.config_path = args.config
         try:
-            with open(args.config, "r", encoding="utf-8") as config_file:
+            # utf-8-sig transparently strips a leading BOM if present (and
+            # behaves exactly like utf-8 if not) -- scripts/windows/
+            # install_voice_worker.ps1 writes this file via PowerShell's
+            # `ConvertTo-Json | Set-Content -Encoding UTF8`, which (Windows
+            # PowerShell 5.1) always emits a UTF-8 BOM. Plain "utf-8" here
+            # raised "Unexpected UTF-8 BOM" and crashed the worker on every
+            # installed-mode startup -- found via a real install+run, not
+            # a hypothetical.
+            with open(args.config, "r", encoding="utf-8-sig") as config_file:
                 file_config = json.load(config_file)
             if not isinstance(file_config, dict):
                 raise ValueError("Config file must contain a JSON object.")
@@ -902,11 +1243,23 @@ def build_config(args: argparse.Namespace) -> VoiceWorkerConfig:
     return config
 
 
+_LOCAL_DIAGNOSTIC_FLAGS = ("list_audio_devices", "test_mic", "test_stt", "test_tts", "test_wake_word")
+
+
 def main(argv: Optional[list] = None) -> int:
     args = parse_args(argv)
     config = build_config(args)
     worker = VoiceWorker(config)
     try:
+        # Local diagnostics never touch the backend -- no token/device-token
+        # is required to run them, matching the "no auth needed" examples
+        # in this module's own docstring. Mutually exclusive by construction
+        # (only one can meaningfully run per invocation); the first one set
+        # wins if more than one flag is passed.
+        for flag_name in _LOCAL_DIAGNOSTIC_FLAGS:
+            if getattr(args, flag_name):
+                return getattr(worker, flag_name)()
+
         return worker.run()
     except Exception as exc:  # pragma: no cover - last-resort safety net
         # Never surface a raw traceback to the console for a worker whose

@@ -472,6 +472,34 @@ async def get_voice_status(context: "AuthContext" = Depends(get_voice_worker_aut
     from database.models.voice import compute_voice_connection_state
     from apps.api.services import voice_service as vs
 
+    # Real provider status (audio input/STT/TTS/wake word) as seen from
+    # THIS process's own machine/environment -- honest for the common
+    # single-machine dev/test setup this repo ships with. In a real
+    # distributed deployment (backend on a server with no microphone, a
+    # separately-installed Voice Worker on the operator's own machine),
+    # the WORKER independently re-checks its own local status before ever
+    # attempting to listen (see voice_worker.py::_run_wake_word_admin_loop
+    # -> _local_provider_readiness) -- it never blindly trusts this
+    # server-side view for its own listen/speak decisions.
+    try:
+        from apps.worker_nodes.voice.providers import provider_status as voice_provider_status
+        real_provider_status = voice_provider_status.get_full_status()
+    except Exception as provider_status_exc:  # pragma: no cover - import-safe fallback
+        logger.warning("Voice provider status unavailable in voice.py: %s", provider_status_exc)
+        real_provider_status = {
+            "audio_input_status": {"status": "external_dependency_required", "install_guidance": None},
+            "stt_status": {"status": "external_dependency_required", "install_guidance": None},
+            "tts_status": {"status": "external_dependency_required", "install_guidance": None},
+            "wake_word_status": {"status": "external_dependency_required", "install_guidance": None},
+            "speaker_recognition_status": {"status": "external_dependency_required", "install_guidance": None},
+            "real_microphone_available": False,
+            "speech_output_available": False,
+            "always_listening_available": False,
+            "text_command_available": True,
+            "missing_dependencies": [],
+            "setup_commands": {},
+        }
+
     with db_manager.session_scope() as db:
         settings = vs.get_or_create_settings(db, context.workspace_id, context.user_id)
         dependency_status = compute_dependency_status()
@@ -517,6 +545,20 @@ async def get_voice_status(context: "AuthContext" = Depends(get_voice_worker_aut
             # the dashboard to infer from the absence of a "typed text
             # needs X" dependency key.
             "text_command_available": True,
+            # Real audio-input/STT/TTS/wake-word/speaker-recognition status
+            # (apps/worker_nodes/voice/providers/provider_status.py) -- see
+            # the comment above real_provider_status's computation for why
+            # this reflects THIS process's own environment, not necessarily
+            # a separately-installed Voice Worker's.
+            "audio_input_status": real_provider_status["audio_input_status"],
+            "stt_status": real_provider_status["stt_status"],
+            "tts_status": real_provider_status["tts_status"],
+            "wake_word_status": real_provider_status["wake_word_status"],
+            "speaker_recognition_status": real_provider_status["speaker_recognition_status"],
+            "real_microphone_available": real_provider_status["real_microphone_available"],
+            "speech_output_available": real_provider_status["speech_output_available"],
+            "always_listening_available": real_provider_status["always_listening_available"],
+            "setup_commands": real_provider_status["setup_commands"],
             "active_sessions": active_sessions,
             "last_wake_event": settings["last_wake_event_at"],
             "last_command": settings["last_command_transcript"],
@@ -569,6 +611,25 @@ async def get_voice_worker_status(
     from database.models.voice import VoiceSettings, compute_voice_connection_state
     from apps.api.services import voice_service as vs
 
+    try:
+        from apps.worker_nodes.voice.providers import provider_status as voice_provider_status
+        real_provider_status = voice_provider_status.get_full_status()
+    except Exception as provider_status_exc:  # pragma: no cover - import-safe fallback
+        logger.warning("Voice provider status unavailable in voice.py: %s", provider_status_exc)
+        real_provider_status = {
+            "audio_input_status": {"status": "external_dependency_required", "install_guidance": None},
+            "stt_status": {"status": "external_dependency_required", "install_guidance": None},
+            "tts_status": {"status": "external_dependency_required", "install_guidance": None},
+            "wake_word_status": {"status": "external_dependency_required", "install_guidance": None},
+            "speaker_recognition_status": {"status": "external_dependency_required", "install_guidance": None},
+            "real_microphone_available": False,
+            "speech_output_available": False,
+            "always_listening_available": False,
+            "text_command_available": True,
+            "missing_dependencies": [],
+            "setup_commands": {},
+        }
+
     with db_manager.session_scope() as db:
         row = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == context.workspace_id).first()
         row_dict = row.to_dict() if row is not None else None
@@ -578,6 +639,7 @@ async def get_voice_worker_status(
     return api_success(
         "Voice worker status loaded.",
         data={
+            "mode": row_dict.get("mode") if row_dict else "disabled",
             "connection_state": connection_state,
             "worker_connected": worker_connected,
             "device_id": row_dict.get("device_id") if row_dict else None,
@@ -587,6 +649,17 @@ async def get_voice_worker_status(
             "supported_features": row_dict.get("supported_features") if row_dict else [],
             "worker_last_seen_at": row_dict.get("voice_worker_last_seen_at") if row_dict else None,
             "setup_completed_at": row_dict.get("setup_completed_at") if row_dict else None,
+            "audio_input_status": real_provider_status["audio_input_status"],
+            "stt_status": real_provider_status["stt_status"],
+            "tts_status": real_provider_status["tts_status"],
+            "wake_word_status": real_provider_status["wake_word_status"],
+            "speaker_recognition_status": real_provider_status["speaker_recognition_status"],
+            "text_command_available": real_provider_status["text_command_available"],
+            "real_microphone_available": real_provider_status["real_microphone_available"],
+            "speech_output_available": real_provider_status["speech_output_available"],
+            "always_listening_available": real_provider_status["always_listening_available"],
+            "missing_dependencies": real_provider_status["missing_dependencies"],
+            "setup_commands": real_provider_status["setup_commands"],
         },
         request_id=context.request_id,
     )

@@ -656,7 +656,30 @@ export type VoiceSettings = {
 // as before device tokens existed.
 export type VoiceWorkerConnectionState = "needs_setup" | "disabled_device" | "connected" | "offline";
 
-export type VoiceStatusData = {
+// Real provider status (apps/worker_nodes/voice/providers/provider_status.py)
+// -- shared shape returned by both GET /voice/status and GET
+// /voice/worker/status. Reflects the responding process's OWN local
+// environment (see apps/api/routes/voice.py::get_voice_status's own
+// comment) -- a separately-installed Voice Worker independently re-checks
+// its own local status before ever attempting to listen or speak, so this
+// is informative for the dashboard, not a live guarantee about what a
+// remote worker machine can do.
+export type RealVoiceProviderStatus = {
+  audio_input_status: VoiceDependencyEntry;
+  stt_status: VoiceDependencyEntry;
+  tts_status: VoiceDependencyEntry;
+  wake_word_status: VoiceDependencyEntry;
+  speaker_recognition_status: VoiceDependencyEntry;
+  real_microphone_available: boolean;
+  speech_output_available: boolean;
+  always_listening_available: boolean;
+  setup_commands: {
+    install_dependencies: string;
+    check_dependencies: string;
+  };
+};
+
+export type VoiceStatusData = RealVoiceProviderStatus & {
   settings: VoiceSettings;
   connection_state: VoiceWorkerConnectionState;
   wake_word_default: string;
@@ -930,7 +953,8 @@ export const voiceApi = {
 // voice mode -- see voiceApi.updateConfig above for that separate choice.
 // =============================================================================
 
-export type VoiceWorkerStatusData = {
+export type VoiceWorkerStatusData = RealVoiceProviderStatus & {
+  mode: VoiceMode;
   connection_state: VoiceWorkerConnectionState;
   worker_connected: boolean;
   device_id: string | null;
@@ -940,6 +964,8 @@ export type VoiceWorkerStatusData = {
   supported_features: string[];
   worker_last_seen_at: string | null;
   setup_completed_at: string | null;
+  text_command_available: boolean;
+  missing_dependencies: string[];
 };
 
 export const voiceWorkerApi = {

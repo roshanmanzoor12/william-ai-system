@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 
 from apps.worker_nodes.common.worker_client import WorkerResponse
+from apps.worker_nodes.voice import voice_worker as voice_worker_module
 from apps.worker_nodes.voice.voice_worker import VoiceWorker, VoiceWorkerConfig
 
 
@@ -291,3 +292,160 @@ class TestAuthFailureCleanStop:
         assert exit_code == 1
         assert "Device token revoked. Re-enable worker from dashboard." in captured.out
         assert "Traceback" not in captured.out
+
+
+class TestLocalDiagnosticsHandleMissingProvidersCleanly:
+    """Phase 9 coverage (items 3, 4): --test-tts / --list-audio-devices
+    must never crash or fabricate a result when the underlying provider
+    module is unavailable -- they print dependency_required and exit 1."""
+
+    def test_test_tts_handles_missing_provider_module_cleanly(self, monkeypatch, capsys) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        monkeypatch.setattr(voice_worker_module, "tts_provider", None)
+
+        exit_code = worker.test_tts()
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "dependency_required" in captured.out
+        assert "Traceback" not in captured.out
+
+    def test_list_audio_devices_handles_missing_module_cleanly(self, monkeypatch, capsys) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        monkeypatch.setattr(voice_worker_module, "audio_input_provider", None)
+
+        exit_code = worker.list_audio_devices()
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "dependency_required" in captured.out
+        assert "Traceback" not in captured.out
+
+
+class TestWakeWordAdminDependencyRequired:
+    """Phase 9 coverage (item 5): wake_word_admin mode must fall back to
+    the safe heartbeat-only idle loop -- never a fake "listening" state --
+    when audio_input/stt/wake_word aren't all configured on this machine."""
+
+    def test_falls_back_to_idle_loop_when_providers_missing(self, monkeypatch, caplog) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        class _FakeProviderStatusModule:
+            @staticmethod
+            def get_full_status() -> Dict[str, Any]:
+                return {
+                    "always_listening_available": False,
+                    "missing_dependencies": ["audio_input_worker", "stt_provider", "wake_word_provider"],
+                }
+
+        monkeypatch.setattr(voice_worker_module, "provider_status_module", _FakeProviderStatusModule())
+
+        idle_loop_calls: List[bool] = []
+        monkeypatch.setattr(worker, "_run_idle_loop", lambda: idle_loop_calls.append(True))
+
+        import logging
+
+        with caplog.at_level(logging.INFO):
+            worker._run_wake_word_admin_loop("wake_word_admin")
+
+        assert idle_loop_calls == [True]
+        assert any("dependency_required" in record.message for record in caplog.records)
+
+
+class TestNoRawAudioStoredByDefault:
+    """Phase 9 coverage (item 9): a real captured WAV must be deleted
+    immediately after STT consumes it, unless WILLIAM_VOICE_DEBUG_KEEP_AUDIO
+    is explicitly set."""
+
+    def test_captured_audio_deleted_after_transcription(self, tmp_path, monkeypatch) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        fake_audio_path = tmp_path / "captured.wav"
+        fake_audio_path.write_bytes(b"RIFF....WAVEfmt ")
+        assert fake_audio_path.exists()
+
+        class _FakeAudioInput:
+            @staticmethod
+            def record_to_tempfile(**kwargs: Any) -> Dict[str, Any]:
+                return {"ok": True, "audio_path": str(fake_audio_path), "duration_seconds": 1.2, "error": None}
+
+        class _FakeStt:
+            @staticmethod
+            def transcribe(path: str) -> Dict[str, Any]:
+                assert path == str(fake_audio_path)
+                return {"ok": True, "text": "open notepad", "confidence": 0.9, "error": None}
+
+        monkeypatch.setattr(voice_worker_module, "audio_input_provider", _FakeAudioInput())
+        monkeypatch.setattr(voice_worker_module, "stt_provider", _FakeStt())
+        monkeypatch.delenv("WILLIAM_VOICE_DEBUG_KEEP_AUDIO", raising=False)
+        monkeypatch.setattr(worker, "_send_transcript_and_respond", lambda transcript: True)
+
+        result = worker._capture_transcribe_and_respond()
+
+        assert result is True
+        assert not fake_audio_path.exists()
+
+    def test_captured_audio_kept_when_debug_flag_set(self, tmp_path, monkeypatch) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        fake_audio_path = tmp_path / "captured_debug.wav"
+        fake_audio_path.write_bytes(b"RIFF....WAVEfmt ")
+
+        class _FakeAudioInput:
+            @staticmethod
+            def record_to_tempfile(**kwargs: Any) -> Dict[str, Any]:
+                return {"ok": True, "audio_path": str(fake_audio_path), "duration_seconds": 1.2, "error": None}
+
+        class _FakeStt:
+            @staticmethod
+            def transcribe(path: str) -> Dict[str, Any]:
+                return {"ok": True, "text": "open notepad", "confidence": 0.9, "error": None}
+
+        monkeypatch.setattr(voice_worker_module, "audio_input_provider", _FakeAudioInput())
+        monkeypatch.setattr(voice_worker_module, "stt_provider", _FakeStt())
+        monkeypatch.setenv("WILLIAM_VOICE_DEBUG_KEEP_AUDIO", "true")
+        monkeypatch.setattr(worker, "_send_transcript_and_respond", lambda transcript: True)
+
+        worker._capture_transcribe_and_respond()
+
+        assert fake_audio_path.exists()
+        fake_audio_path.unlink()
+
+
+class TestTtsNotCalledWhenMissing:
+    """Phase 9 coverage (item 10): TTS must never be invoked -- not even
+    check_status()-then-speak() -- when no provider is configured. Real
+    text-based --simulate-text path, real dispatcher mocked at the
+    transport layer only (see _build_worker), TTS specifically watched."""
+
+    def test_speak_not_called_when_tts_unconfigured(self, monkeypatch) -> None:
+        worker, _transport = _build_worker("William open Notepad", mode="push_to_talk")
+        monkeypatch.delenv("WILLIAM_TTS_PROVIDER", raising=False)
+
+        def _fail_if_called(text: str) -> Dict[str, Any]:
+            raise AssertionError("tts_provider.speak() must not be called when TTS is not configured")
+
+        monkeypatch.setattr(voice_worker_module.tts_provider, "speak", _fail_if_called)
+
+        worker.run()  # must not raise
+
+
+class TestSttNotCalledInSimulateText:
+    """Phase 9 coverage (item 11): --simulate-text uses the typed/provided
+    text directly -- stt_provider.transcribe() must never be invoked on
+    this path, real STT or not."""
+
+    def test_transcribe_not_called_for_simulate_text(self, monkeypatch) -> None:
+        worker, _transport = _build_worker("William open Notepad", mode="push_to_talk")
+
+        def _fail_if_called(path: str) -> Dict[str, Any]:
+            raise AssertionError("stt_provider.transcribe() must not be called on the --simulate-text path")
+
+        monkeypatch.setattr(voice_worker_module.stt_provider, "transcribe", _fail_if_called)
+
+        worker.run()  # must not raise

@@ -234,8 +234,8 @@ export function VoiceWorkerStatusCard({ variant = "full" }: Props) {
           )}
 
           <p className="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
-            Dashboard cannot keep microphone always listening by itself. Install the Voice Worker to
-            listen in the background.
+            Browser cannot keep microphone always listening by itself. Install and run Voice Worker
+            for real background listening.
           </p>
 
           {actionError && (

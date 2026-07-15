@@ -13,10 +13,11 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Mic, RefreshCcw, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Check, Copy, Mic, RefreshCcw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { readSession, hasMinRole, type SessionData } from "@/lib/auth";
 import {
   voiceApi,
+  type VoiceDependencyEntry,
   type VoiceDependencyStatus,
   type VoiceDependencyStatusValue,
   type VoiceMode,
@@ -152,6 +153,28 @@ function fieldValue(value?: string | null): string {
   return value && value.trim().length > 0 ? value : "—";
 }
 
+const PROVIDER_LABELS: Record<
+  "audio_input_status" | "stt_status" | "tts_status" | "wake_word_status" | "speaker_recognition_status",
+  string
+> = {
+  audio_input_status: "Microphone / audio input",
+  stt_status: "Speech-to-text (STT)",
+  tts_status: "Text-to-speech (TTS)",
+  wake_word_status: "Wake word (real audio)",
+  speaker_recognition_status: "Speaker recognition",
+};
+
+function providerEntryStyle(entry: VoiceDependencyEntry): string {
+  return entry.status === "configured" || entry.status === "available"
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]";
+}
+
+function providerEntryLabel(entry: VoiceDependencyEntry): string {
+  if (entry.status === "configured" || entry.status === "available") return "Ready";
+  return "Needs setup";
+}
+
 export function VoiceControlSettings() {
   const [session, setSession] = useState<SessionData | null>(null);
   const [state, setState] = useState<LoadState>("loading");
@@ -166,6 +189,18 @@ export function VoiceControlSettings() {
     type: "success" | "error" | "info";
     message: string;
   } | null>(null);
+  const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
+
+  const copyCommand = useCallback(async (key: string, command: string) => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopiedCommand(key);
+      setTimeout(() => setCopiedCommand((current) => (current === key ? null : current)), 2000);
+    } catch {
+      // Clipboard access denied/unavailable -- the command text is still
+      // visible on the page, so this is a non-fatal degradation.
+    }
+  }, []);
 
   const canConfigureVoice = Boolean(
     session && hasMinRole(session.role, "admin"),
@@ -371,14 +406,16 @@ export function VoiceControlSettings() {
           ) : null}
 
           {status &&
-          status.missing_dependencies.length > 0 &&
+          !status.always_listening_available &&
           WAKE_WORD_GATED_MODES.has(settings.mode) ? (
             <div className="rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3 text-xs font-bold text-orange-200">
-              Wake-word mode is enabled, but real microphone listening needs{" "}
-              {status.missing_dependencies
-                .map((key) => DEPENDENCY_LABELS[key as keyof VoiceDependencyStatus] || key)
-                .join(", ")}
-              .
+              Wake word mode is enabled, but real listening needs audio input, STT, and wake-word provider.
+            </div>
+          ) : null}
+
+          {status?.always_listening_available ? (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-700">
+              Voice Worker ready. Say &ldquo;William&rdquo; followed by your command.
             </div>
           ) : null}
 
@@ -393,6 +430,78 @@ export function VoiceControlSettings() {
           {settings.last_error_message ? (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700">
               Last error: {settings.last_error_message}
+            </div>
+          ) : null}
+
+          {status ? (
+            <div>
+              <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
+                Real voice providers
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {(
+                  Object.keys(PROVIDER_LABELS) as Array<keyof typeof PROVIDER_LABELS>
+                ).map((key) => {
+                  const entry = status[key];
+                  return (
+                    <div
+                      key={key}
+                      className="flex flex-col gap-2 rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs font-semibold text-neutral-600">
+                          {PROVIDER_LABELS[key]}
+                        </span>
+                        <span
+                          className={`rounded-full border px-2.5 py-1 text-[10px] font-black ${providerEntryStyle(entry)}`}
+                        >
+                          {providerEntryLabel(entry)}
+                        </span>
+                      </div>
+                      {entry.install_guidance ? (
+                        <p className="text-[11px] leading-4 text-neutral-400">
+                          {entry.install_guidance}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {[
+                  {
+                    key: "install",
+                    label: "Copy Voice Dependency Install Command",
+                    command: status.setup_commands.install_dependencies,
+                  },
+                  {
+                    key: "check",
+                    label: "Check Voice Dependencies",
+                    command: status.setup_commands.check_dependencies,
+                  },
+                  {
+                    key: "test-tts",
+                    label: "Test TTS",
+                    command: `python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --test-tts`,
+                  },
+                  {
+                    key: "test-sim",
+                    label: "Test Voice Simulation",
+                    command: `python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --simulate-text "William open Notepad"`,
+                  },
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => void copyCommand(item.key, item.command)}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 px-3 py-2 text-[11px] font-black text-neutral-600 transition hover:border-[#ff5a3d] hover:text-[#ff5a3d]"
+                  >
+                    {copiedCommand === item.key ? <Check size={12} /> : <Copy size={12} />}
+                    {copiedCommand === item.key ? "Copied" : item.label}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : null}
 

@@ -2006,7 +2006,15 @@ def main() -> int:
     if args.config:
         config.config_path = args.config
         try:
-            with open(args.config, "r", encoding="utf-8") as config_file:
+            # utf-8-sig transparently strips a leading BOM if present (and
+            # behaves exactly like utf-8 if not) -- scripts/windows/
+            # install_windows_worker.ps1 writes this file via PowerShell's
+            # `ConvertTo-Json | Set-Content -Encoding UTF8`, which (Windows
+            # PowerShell 5.1) always emits a UTF-8 BOM. Plain "utf-8" here
+            # raised "Unexpected UTF-8 BOM" and crashed the worker on every
+            # installed-mode startup -- found via a real install+run, not
+            # a hypothetical.
+            with open(args.config, "r", encoding="utf-8-sig") as config_file:
                 file_config = json.load(config_file)
             if not isinstance(file_config, dict):
                 raise ValueError("Config file must contain a JSON object.")
