@@ -33,7 +33,8 @@ def local_package_available() -> bool:
 
 
 def _provider_name() -> str:
-    return os.getenv("WILLIAM_TTS_PROVIDER", "").strip().lower()
+    raw = os.getenv("WILLIAM_TTS_PROVIDER", "").strip().lower()
+    return "" if raw == "none" else raw
 
 
 def check_status() -> Dict[str, Any]:

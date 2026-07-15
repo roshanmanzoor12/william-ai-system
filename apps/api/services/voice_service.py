@@ -208,6 +208,7 @@ def update_settings(
     *,
     mode: Optional[str] = None,
     wake_word: Optional[str] = None,
+    assistant_display_name: Optional[str] = None,
     updated_by_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     from database.models.voice import VoiceSettings, VALID_VOICE_MODES
@@ -224,9 +225,34 @@ def update_settings(
     if wake_word:
         settings.wake_word = wake_word[:60]
 
+    if assistant_display_name:
+        settings.assistant_display_name = assistant_display_name[:60]
+
     if updated_by_user_id:
         settings.updated_by_user_id = updated_by_user_id
 
+    settings.updated_at = _utc_now()
+    db.flush()
+    return settings.to_dict()
+
+
+def record_command_timing(db, workspace_id: str, timing_ms: Dict[str, float]) -> Optional[Dict[str, Any]]:
+    """Real, worker-reported per-stage timing for the most recent voice
+    command (see database/models/voice.py::VoiceSettings.last_command_timing's
+    own docstring) -- never computed/estimated server-side, only stored
+    verbatim from what the worker measured on its own machine.
+
+    Creates the workspace's VoiceSettings row if it doesn't exist yet --
+    POST /voice/push-to-talk/text (the only caller) can be the very first
+    voice-related call for a workspace, before GET /voice/status or POST
+    /voice/config has ever run, so this must not silently no-op."""
+    from database.models.voice import VoiceSettings
+
+    settings = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == workspace_id).first()
+    if settings is None:
+        settings, _ = _get_or_create_settings_row(db, workspace_id, "system")
+
+    settings.last_command_timing = timing_ms
     settings.updated_at = _utc_now()
     db.flush()
     return settings.to_dict()
@@ -862,6 +888,49 @@ def _voice_response_envelope(
         "master_result": master_result,
         "request_id": request_id,
     }
+
+
+def record_command_result(
+    db,
+    workspace_id: str,
+    *,
+    transcript: str,
+    response_text: str,
+    routed_agent: Optional[str] = None,
+    detected_language: str = "en",
+    success: bool = True,
+    error_message: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Public counterpart to _update_settings_last_command, for callers that
+    have no voice PROFILE (POST /voice/push-to-talk/text authenticates as
+    the real signed-in user/device, not an enrolled voice profile) -- this
+    is what makes the dashboard's "Last voice activity" section (transcript/
+    routed agent/response) actually reflect the real, working
+    SystemAgent/CreatorAgent/CodeAgent dispatch path instead of staying
+    permanently blank for every command that goes through push-to-talk-text
+    (the only path voice_worker.py and the dashboard chat UI actually use).
+    Creates the workspace's VoiceSettings row if it doesn't exist yet, same
+    reasoning as record_command_timing."""
+    from database.models.voice import VoiceSettings
+
+    settings = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == workspace_id).first()
+    if settings is None:
+        settings, _ = _get_or_create_settings_row(db, workspace_id, "system")
+
+    settings.last_command_transcript = transcript[:2000]
+    settings.last_detected_language = detected_language
+    settings.last_response_text = (response_text or "")[:2000]
+    if routed_agent:
+        settings.last_routed_agent = routed_agent[:80]
+    if success:
+        settings.last_error_message = None
+        settings.last_error_at = None
+    else:
+        settings.last_error_message = (error_message or "The command could not be completed.")[:2000]
+        settings.last_error_at = _utc_now()
+    settings.updated_at = _utc_now()
+    db.flush()
+    return settings.to_dict()
 
 
 def _update_settings_last_command(

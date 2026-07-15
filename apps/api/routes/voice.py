@@ -365,6 +365,10 @@ def compute_dependency_status() -> Dict[str, Dict[str, Any]]:
 class VoiceConfigRequest(BaseModel):
     mode: Optional[str] = None
     wake_word: Optional[str] = Field(default=None, max_length=60)
+    # Cosmetic only -- what William calls itself in typed/spoken responses.
+    # Does not affect the real audio wake-word model (see `wake_word` above
+    # and resolve_bundled_wake_word_model()).
+    assistant_display_name: Optional[str] = Field(default=None, max_length=60)
 
 
 class VoiceProfileCreateRequest(BaseModel):
@@ -438,6 +442,11 @@ class PushToTalkTextRequest(BaseModel):
     transcript: Optional[str] = Field(default=None, max_length=4000)
     detected_language: str = Field(default="en")
     session_id: Optional[str] = None
+    # Real, worker-measured per-stage wall-clock milliseconds (see
+    # database/models/voice.py::VoiceSettings.last_command_timing) -- optional,
+    # omitted entirely by callers that don't measure it (e.g. the dashboard
+    # chat UI). Never computed/estimated server-side.
+    timing_ms: Optional[Dict[str, float]] = None
 
 
 class EnrollStartRequest(BaseModel):
@@ -520,12 +529,26 @@ async def get_voice_status(context: "AuthContext" = Depends(get_voice_worker_aut
         last_speaker_name = vs.resolve_last_speaker_name(db, context.workspace_id, settings)
         active_sessions = vs.count_active_sessions(db, context.workspace_id)
 
+    from agents.voice_agent.provider_capabilities import resolve_bundled_wake_word_model
+
+    wake_word_model_info = resolve_bundled_wake_word_model(settings["wake_word"])
+
     return api_success(
         "Voice status loaded.",
         data={
             "settings": settings,
             "connection_state": connection_state,
             "wake_word_default": "william",
+            "assistant_display_name": settings.get("assistant_display_name") or "William",
+            # Honest mapping of the workspace's chosen wake_word phrase to
+            # the real openwakeword model that will actually load -- never
+            # implies a custom phrase (e.g. "William") has its own trained
+            # model. See agents/voice_agent/provider_capabilities.py::
+            # resolve_bundled_wake_word_model.
+            "active_wake_word_model": wake_word_model_info["active_model"],
+            "wake_word_matches_supported_model": wake_word_model_info["matched_phrase"],
+            "wake_word_custom_model_notice": wake_word_model_info["notice"],
+            "last_command_timing": settings.get("last_command_timing"),
             # Flattened, dashboard-shaped view of the same settings row --
             # kept alongside `settings` (not replacing it) so existing
             # callers reading data.settings.* keep working unchanged.
@@ -694,11 +717,15 @@ async def update_voice_config(
 
     with db_manager.session_scope() as db:
         settings = vs.update_settings(
-            db, context.workspace_id, mode=payload.mode, wake_word=payload.wake_word, updated_by_user_id=context.user_id,
+            db, context.workspace_id, mode=payload.mode, wake_word=payload.wake_word,
+            assistant_display_name=payload.assistant_display_name, updated_by_user_id=context.user_id,
         )
         vs.write_voice_audit(
             db, user_id=context.user_id, workspace_id=context.workspace_id, action="voice.config.updated",
-            metadata={"mode": payload.mode, "wake_word": payload.wake_word, "approval": approval_info},
+            metadata={
+                "mode": payload.mode, "wake_word": payload.wake_word,
+                "assistant_display_name": payload.assistant_display_name, "approval": approval_info,
+            },
         )
 
     return api_success(
@@ -1042,6 +1069,24 @@ async def push_to_talk_text(
     # a failure message ("Boss, I need an LLM provider...") is just as
     # speakable as a success one once a real TTS provider exists.
     data["speech_output_status"] = "spoken" if tts_available else "tts_missing"
+
+    with db_manager.session_scope() as db:
+        route = data.get("route")
+        vs.record_command_result(
+            db, context.workspace_id,
+            transcript=effective_text,
+            response_text=str(data.get("final_answer") or ""),
+            routed_agent=", ".join(route) if isinstance(route, list) and route else None,
+            detected_language=payload.detected_language,
+            success=bool(result.get("success")) and data.get("status") != "failed",
+            error_message=(data.get("error") or {}).get("message") if isinstance(data.get("error"), dict) else None,
+        )
+        if payload.timing_ms:
+            vs.record_command_timing(db, context.workspace_id, payload.timing_ms)
+
+    if payload.timing_ms:
+        data["timing_ms"] = payload.timing_ms
+
     return {**result, "data": data}
 
 

@@ -243,6 +243,13 @@ class VoiceSettings(Base):
 
     mode = Column(String(40), nullable=False, default=VOICE_MODE_DISABLED)
     wake_word = Column(String(60), nullable=False, default="william")
+    # Per-workspace display name only -- purely cosmetic (what William calls
+    # itself in typed/spoken responses). Text commands can address the
+    # assistant by any name the user types; only the real *audio* wake-word
+    # phrase (`wake_word` above) is constrained to a supported openwakeword
+    # model -- see database/models/voice.py's module docstring and
+    # agents/voice_agent/provider_capabilities.py::resolve_bundled_wake_word_model.
+    assistant_display_name = Column(String(60), nullable=False, default="William")
     requires_security_approval = Column(Boolean, nullable=False, default=True)
     pending_approval_id = Column(String(80), nullable=True)
 
@@ -283,6 +290,16 @@ class VoiceSettings(Base):
     last_error_message = Column(Text, nullable=True)
     last_error_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Per-stage wall-clock timing (milliseconds) for the most recent voice
+    # command, reported by apps/worker_nodes/voice/voice_worker.py itself
+    # (the worker is the machine that actually did the listening/recording/
+    # speaking, so it is the only honest source for these numbers) --
+    # {wake_detect_ms, record_ms, stt_ms, routing_ms, action_ms, tts_ms,
+    # total_ms}, any key omitted when that stage didn't run (e.g. no real
+    # STT ran on a --simulate-text call). Never fabricated: absent entirely
+    # until a real command actually reports timing.
+    last_command_timing_json = Column(Text, nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
 
@@ -306,6 +323,14 @@ class VoiceSettings(Base):
     def supported_features(self, value: List[str]) -> None:
         self.supported_features_json = _json_dumps(value)
 
+    @property
+    def last_command_timing(self) -> Optional[Dict[str, float]]:
+        return _json_loads(self.last_command_timing_json, None)
+
+    @last_command_timing.setter
+    def last_command_timing(self, value: Optional[Dict[str, float]]) -> None:
+        self.last_command_timing_json = _json_dumps(value) if value else None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -314,6 +339,7 @@ class VoiceSettings(Base):
             "updated_by_user_id": self.updated_by_user_id,
             "mode": self.mode,
             "wake_word": self.wake_word,
+            "assistant_display_name": self.assistant_display_name,
             "requires_security_approval": bool(self.requires_security_approval),
             "pending_approval_id": self.pending_approval_id,
             "dependency_status": self.dependency_status,
@@ -334,6 +360,7 @@ class VoiceSettings(Base):
             "last_response_text": self.last_response_text,
             "last_error_message": self.last_error_message,
             "last_error_at": self.last_error_at.isoformat() if self.last_error_at else None,
+            "last_command_timing": self.last_command_timing,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

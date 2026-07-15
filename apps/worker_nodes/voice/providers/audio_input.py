@@ -81,7 +81,7 @@ def check_status() -> Dict[str, Any]:
             "install_guidance": "Connect a microphone, then re-run --list-audio-devices.",
             "devices": [],
         }
-    if not os.getenv("WILLIAM_AUDIO_INPUT_PROVIDER", "").strip():
+    if os.getenv("WILLIAM_AUDIO_INPUT_PROVIDER", "").strip().lower() in ("", "none"):
         return {
             "available": False,
             "reason": "WILLIAM_AUDIO_INPUT_PROVIDER is not set",

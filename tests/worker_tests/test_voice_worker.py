@@ -382,7 +382,7 @@ class TestNoRawAudioStoredByDefault:
         monkeypatch.setattr(voice_worker_module, "audio_input_provider", _FakeAudioInput())
         monkeypatch.setattr(voice_worker_module, "stt_provider", _FakeStt())
         monkeypatch.delenv("WILLIAM_VOICE_DEBUG_KEEP_AUDIO", raising=False)
-        monkeypatch.setattr(worker, "_send_transcript_and_respond", lambda transcript: True)
+        monkeypatch.setattr(worker, "_send_transcript_and_respond", lambda transcript, **kwargs: True)
 
         result = worker._capture_transcribe_and_respond()
 
@@ -409,7 +409,7 @@ class TestNoRawAudioStoredByDefault:
         monkeypatch.setattr(voice_worker_module, "audio_input_provider", _FakeAudioInput())
         monkeypatch.setattr(voice_worker_module, "stt_provider", _FakeStt())
         monkeypatch.setenv("WILLIAM_VOICE_DEBUG_KEEP_AUDIO", "true")
-        monkeypatch.setattr(worker, "_send_transcript_and_respond", lambda transcript: True)
+        monkeypatch.setattr(worker, "_send_transcript_and_respond", lambda transcript, **kwargs: True)
 
         worker._capture_transcribe_and_respond()
 

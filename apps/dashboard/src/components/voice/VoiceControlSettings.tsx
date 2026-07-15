@@ -13,7 +13,14 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Copy, Mic, RefreshCcw, ShieldAlert, ShieldCheck } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Mic,
+  RefreshCcw,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react";
 import { readSession, hasMinRole, type SessionData } from "@/lib/auth";
 import {
   voiceApi,
@@ -154,7 +161,11 @@ function fieldValue(value?: string | null): string {
 }
 
 const PROVIDER_LABELS: Record<
-  "audio_input_status" | "stt_status" | "tts_status" | "wake_word_status" | "speaker_recognition_status",
+  | "audio_input_status"
+  | "stt_status"
+  | "tts_status"
+  | "wake_word_status"
+  | "speaker_recognition_status",
   string
 > = {
   audio_input_status: "Microphone / audio input",
@@ -171,7 +182,8 @@ function providerEntryStyle(entry: VoiceDependencyEntry): string {
 }
 
 function providerEntryLabel(entry: VoiceDependencyEntry): string {
-  if (entry.status === "configured" || entry.status === "available") return "Ready";
+  if (entry.status === "configured" || entry.status === "available")
+    return "Ready";
   return "Needs setup";
 }
 
@@ -183,8 +195,10 @@ export function VoiceControlSettings() {
   const [status, setStatus] = useState<VoiceStatusData | null>(null);
   const [wakeWordDefault, setWakeWordDefault] = useState("william");
   const [wakeWordInput, setWakeWordInput] = useState("");
+  const [assistantNameInput, setAssistantNameInput] = useState("");
   const [savingMode, setSavingMode] = useState<VoiceMode | null>(null);
   const [savingWakeWord, setSavingWakeWord] = useState(false);
+  const [savingAssistantName, setSavingAssistantName] = useState(false);
   const [notice, setNotice] = useState<{
     type: "success" | "error" | "info";
     message: string;
@@ -195,7 +209,10 @@ export function VoiceControlSettings() {
     try {
       await navigator.clipboard.writeText(command);
       setCopiedCommand(key);
-      setTimeout(() => setCopiedCommand((current) => (current === key ? null : current)), 2000);
+      setTimeout(
+        () => setCopiedCommand((current) => (current === key ? null : current)),
+        2000,
+      );
     } catch {
       // Clipboard access denied/unavailable -- the command text is still
       // visible on the page, so this is a non-fatal degradation.
@@ -222,6 +239,7 @@ export function VoiceControlSettings() {
     setStatus(response.data);
     setWakeWordDefault(response.data.wake_word_default || "william");
     setWakeWordInput(response.data.settings.wake_word || "");
+    setAssistantNameInput(response.data.assistant_display_name || "William");
     setState("ready");
   }, []);
 
@@ -289,6 +307,33 @@ export function VoiceControlSettings() {
     setSavingWakeWord(false);
   }
 
+  async function handleSaveAssistantName() {
+    if (!canConfigureVoice || savingAssistantName) return;
+    const trimmed = assistantNameInput.trim();
+    if (!trimmed) return;
+
+    setSavingAssistantName(true);
+    setNotice(null);
+
+    const response = await voiceApi.updateConfig({
+      assistant_display_name: trimmed,
+    });
+
+    if (response.success === false) {
+      setNotice({
+        type: "error",
+        message:
+          response.error.message || "Assistant name could not be updated.",
+      });
+      setSavingAssistantName(false);
+      return;
+    }
+
+    setSettings(response.data.settings);
+    setNotice({ type: "success", message: "Assistant name updated." });
+    setSavingAssistantName(false);
+  }
+
   return (
     <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
       <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -298,8 +343,8 @@ export function VoiceControlSettings() {
             William Voice Agent (Phase 9)
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-400">
-            Live workspace voice mode, wake word, and dependency status --
-            wired directly to /voice/status and /voice/config.
+            Live workspace voice mode, wake word, and dependency status -- wired
+            directly to /voice/status and /voice/config.
           </p>
         </div>
 
@@ -388,7 +433,9 @@ export function VoiceControlSettings() {
                 Voice worker
               </p>
               <p className="mt-2 text-sm font-bold text-neutral-950">
-                {settings.voice_worker_connected ? "Connected" : "Not connected"}
+                {settings.voice_worker_connected
+                  ? "Connected"
+                  : "Not connected"}
               </p>
               <p className="mt-1 text-xs text-neutral-400">
                 Last seen: {formatDate(settings.voice_worker_last_seen_at)}
@@ -409,21 +456,22 @@ export function VoiceControlSettings() {
           !status.always_listening_available &&
           WAKE_WORD_GATED_MODES.has(settings.mode) ? (
             <div className="rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3 text-xs font-bold text-orange-200">
-              Wake word mode is enabled, but real listening needs audio input, STT, and wake-word provider.
+              Wake word mode is enabled, but real listening needs audio input,
+              STT, and wake-word provider.
             </div>
           ) : null}
 
           {status?.always_listening_available ? (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-700">
-              Voice Worker ready. Say &ldquo;William&rdquo; followed by your command.
+              Voice Worker ready. Say &ldquo;William&rdquo; followed by your
+              command.
             </div>
           ) : null}
 
           {status?.text_command_available ? (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-700">
-              Text push-to-talk works right now, even with the missing
-              providers above -- only always-listening wake-word mode needs
-              them.
+              Text push-to-talk works right now, even with the missing providers
+              above -- only always-listening wake-word mode needs them.
             </div>
           ) : null}
 
@@ -440,7 +488,9 @@ export function VoiceControlSettings() {
               </p>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {(
-                  Object.keys(PROVIDER_LABELS) as Array<keyof typeof PROVIDER_LABELS>
+                  Object.keys(PROVIDER_LABELS) as Array<
+                    keyof typeof PROVIDER_LABELS
+                  >
                 ).map((key) => {
                   const entry = status[key];
                   return (
@@ -486,8 +536,18 @@ export function VoiceControlSettings() {
                     command: `python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --test-tts`,
                   },
                   {
+                    key: "test-mic",
+                    label: "Test Mic",
+                    command: `python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --test-mic`,
+                  },
+                  {
+                    key: "test-wake-word",
+                    label: "Test Wake Word",
+                    command: `python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --test-wake-word`,
+                  },
+                  {
                     key: "test-sim",
-                    label: "Test Voice Simulation",
+                    label: "Test Voice Command",
                     command: `python -m apps.worker_nodes.voice.voice_worker --config "%USERPROFILE%\\.william\\voice_worker.json" --simulate-text "William open Notepad"`,
                   },
                 ].map((item) => (
@@ -497,7 +557,11 @@ export function VoiceControlSettings() {
                     onClick={() => void copyCommand(item.key, item.command)}
                     className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 px-3 py-2 text-[11px] font-black text-neutral-600 transition hover:border-[#ff5a3d] hover:text-[#ff5a3d]"
                   >
-                    {copiedCommand === item.key ? <Check size={12} /> : <Copy size={12} />}
+                    {copiedCommand === item.key ? (
+                      <Check size={12} />
+                    ) : (
+                      <Copy size={12} />
+                    )}
                     {copiedCommand === item.key ? "Copied" : item.label}
                   </button>
                 ))}
@@ -514,8 +578,8 @@ export function VoiceControlSettings() {
 
             {!canConfigureVoice ? (
               <div className="mb-3 rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3 text-xs font-bold text-orange-200">
-                Only owner/admin roles can change voice mode. You are viewing
-                in read-only mode.
+                Only owner/admin roles can change voice mode. You are viewing in
+                read-only mode.
               </div>
             ) : null}
 
@@ -593,6 +657,54 @@ export function VoiceControlSettings() {
               >
                 <Mic className="h-4 w-4" />
                 {savingWakeWord ? "Saving..." : "Save Wake Word"}
+              </button>
+            </div>
+            {status ? (
+              <p className="mt-3 text-[11px] font-semibold text-neutral-500">
+                Real audio wake-word model in use:{" "}
+                <span className="font-black text-neutral-700">
+                  {status.active_wake_word_model}
+                </span>
+              </p>
+            ) : null}
+            {status?.wake_word_custom_model_notice ? (
+              <p className="mt-2 rounded-2xl border border-orange-400/25 bg-orange-500/10 px-3 py-2 text-xs font-bold text-orange-200">
+                {status.wake_word_custom_model_notice}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
+              Assistant name
+            </p>
+            <p className="mb-3 text-xs text-neutral-400">
+              What William calls itself in typed/spoken responses. Any name
+              works for text commands -- only the real audio wake word above is
+              limited to a supported model.
+            </p>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <input
+                type="text"
+                value={assistantNameInput}
+                disabled={!canConfigureVoice || savingAssistantName}
+                onChange={(event) => setAssistantNameInput(event.target.value)}
+                maxLength={60}
+                placeholder="William"
+                className="w-full rounded-2xl border border-neutral-100 bg-white px-4 py-3 text-sm font-semibold text-neutral-700 outline-none transition placeholder:text-neutral-400 focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10 disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-xs"
+              />
+              <button
+                type="button"
+                disabled={
+                  !canConfigureVoice ||
+                  savingAssistantName ||
+                  !assistantNameInput.trim() ||
+                  assistantNameInput.trim() === settings.assistant_display_name
+                }
+                onClick={() => void handleSaveAssistantName()}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-orange-500 px-4 py-3 text-sm font-black text-black transition hover:bg-orange-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {savingAssistantName ? "Saving..." : "Save Assistant Name"}
               </button>
             </div>
           </div>
@@ -675,6 +787,29 @@ export function VoiceControlSettings() {
                 <p className="mt-1 text-sm font-medium leading-5 text-neutral-950">
                   {fieldValue(settings.last_command_transcript)}
                 </p>
+              </div>
+              <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3 sm:col-span-2 lg:col-span-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+                  Last command timing (ms, worker-measured)
+                </p>
+                {settings.last_command_timing ? (
+                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm font-bold text-neutral-950">
+                    {Object.entries(settings.last_command_timing).map(
+                      ([key, value]) => (
+                        <span key={key}>
+                          {key.replace(/_ms$/, "")}:{" "}
+                          <span className="font-black text-[#ff5a3d]">
+                            {value}
+                          </span>
+                        </span>
+                      ),
+                    )}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-sm font-bold text-neutral-400">
+                    No timing reported yet.
+                  </p>
+                )}
               </div>
               <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-3">
                 <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">

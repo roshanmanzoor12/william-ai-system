@@ -489,7 +489,13 @@ class VoiceWorker:
         }
         return self._call_with_backoff(lambda: self._call_api("POST", "/voice/wake-event", payload), max_attempts=3)
 
-    def send_command(self, transcript: str, detected_language: str, wake_word: Optional[str]) -> Dict[str, Any]:
+    def send_command(
+        self,
+        transcript: str,
+        detected_language: str,
+        wake_word: Optional[str],
+        timing_ms: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
         """POSTs to /voice/push-to-talk/text, not /voice/command --
         push-to-talk-text is the route that shares apps/api/routes/
         assistant.py's real SystemAgent/Windows Worker dispatcher (see
@@ -498,11 +504,13 @@ class VoiceWorker:
         profile logic (which `wake_word` fed into) doesn't apply to
         push-to-talk-text, so it's accepted here but no longer sent."""
         del wake_word  # kept in the signature for backward-compat call sites
-        payload = {
+        payload: Dict[str, Any] = {
             "text": transcript,
             "detected_language": detected_language,
             "session_id": self.session_id,
         }
+        if timing_ms:
+            payload["timing_ms"] = timing_ms
         return self._call_with_backoff(lambda: self._call_api("POST", "/voice/push-to-talk/text", payload), max_attempts=3)
 
     # -----------------------------------------------------------------
@@ -616,6 +624,9 @@ class VoiceWorker:
         gating + API pipeline. Returns True if a command was actually
         sent to /voice/push-to-talk/text.
         """
+        timing: Dict[str, float] = {}
+        pipeline_started = time.monotonic()
+
         if not text or not text.strip():
             self._log("Empty input; nothing to process.")
             return False
@@ -631,7 +642,9 @@ class VoiceWorker:
 
         self._set_state(VoiceWorkerState.LISTENING, f"input_length={len(text)} mode={mode}")
 
+        wake_detect_started = time.monotonic()
         detection = self._detect_wake_word(text)
+        timing["wake_detect_ms"] = round((time.monotonic() - wake_detect_started) * 1000, 1)
         detected = detection["detected"]
 
         if detected:
@@ -687,15 +700,32 @@ class VoiceWorker:
             VoiceWorkerState.TRANSCRIBING,
             f"no real STT provider used on this path; using provided text as transcript (length={len(transcript)})",
         )
-        return self._send_transcript_and_respond(transcript)
+        timing["stt_ms"] = 0.0  # no real STT ran on this path -- stated honestly, not omitted silently
+        return self._send_transcript_and_respond(transcript, timing=timing, pipeline_started=pipeline_started)
 
-    def _send_transcript_and_respond(self, transcript: str) -> bool:
+    def _send_transcript_and_respond(
+        self,
+        transcript: str,
+        *,
+        timing: Optional[Dict[str, float]] = None,
+        pipeline_started: Optional[float] = None,
+    ) -> bool:
         """Shared tail of the pipeline: a transcript is already in hand
         (either typed/simulated text, or a real STT transcription from
         _run_wake_word_admin_loop) -- verify speaker (honest skip, no
         provider), detect language (honest default), send to the shared
         assistant dispatcher, print the response, and speak it with real
-        TTS if configured. Returns True if a command was sent."""
+        TTS if configured. Returns True if a command was sent.
+
+        `timing`/`pipeline_started` carry real, locally-measured wall-clock
+        stage durations (see Phase 3 "SPEED / PERFORMANCE" requirements) --
+        never estimated, only what this process actually measured. Each
+        stage is reported in milliseconds; a stage that didn't run on this
+        path (e.g. no real STT for --simulate-text) is set to 0.0 by the
+        caller rather than omitted, so the shape is always the same."""
+        timing = timing if timing is not None else {}
+        pipeline_started = pipeline_started if pipeline_started is not None else time.monotonic()
+
         # No real speaker-recognition provider is configured in this
         # environment (see dependency_status.speaker_recognition_provider)
         # -- honestly report that this step is skipped rather than
@@ -709,8 +739,19 @@ class VoiceWorker:
         detected_language = "en"
         self._set_state(VoiceWorkerState.LANGUAGE_DETECTED, f"detected_language={detected_language} (default; no language-ID provider configured)")
 
+        # Everything measured so far (wake_detect_ms, record_ms/stt_ms if
+        # this came from the real-audio path) is sent WITH this same
+        # request -- routing_ms/tts_ms/total_ms are only knowable AFTER the
+        # request completes, so they cannot be included in this call's own
+        # body (sending them would require a second request that could only
+        # either re-run the command or add a dedicated timing-report
+        # endpoint, neither of which exists yet -- an honest, documented
+        # limitation, not silently dropped). Those three are still logged
+        # locally below and printed in the command response either way.
         self._set_state(VoiceWorkerState.SENDING_TO_MASTER, f"session_id={self.session_id}")
-        command_result = self.send_command(transcript, detected_language, None)
+        routing_started = time.monotonic()
+        command_result = self.send_command(transcript, detected_language, None, timing_ms=dict(timing))
+        timing["routing_ms"] = round((time.monotonic() - routing_started) * 1000, 1)
 
         if not command_result["ok"]:
             self._set_state(VoiceWorkerState.ERROR, "voice command request failed")
@@ -720,7 +761,15 @@ class VoiceWorker:
         command_envelope = command_result["envelope"]
         command_data = command_envelope.get("data") or {}
         self._print_command_response(command_data)
+
+        tts_started = time.monotonic()
         self._speak_response(command_data)
+        timing["tts_ms"] = round((time.monotonic() - tts_started) * 1000, 1)
+        timing["total_ms"] = round((time.monotonic() - pipeline_started) * 1000, 1)
+
+        self._log(
+            "Timing (ms): " + ", ".join(f"{key}={value}" for key, value in timing.items())
+        )
         return True
 
     def _speak_response(self, command_data: Dict[str, Any]) -> None:
@@ -794,7 +843,9 @@ class VoiceWorker:
             while True:
                 self._log(f"Listening for real wake word (poll window {self.config.poll_interval_seconds}s)...")
                 self._set_state(VoiceWorkerState.LISTENING, "real audio wake-word detection active")
+                wake_detect_started = time.monotonic()
                 detection = listener.listen_until_detected(max_seconds=self.config.poll_interval_seconds)
+                wake_detect_ms = round((time.monotonic() - wake_detect_started) * 1000, 1)
 
                 heartbeat_result = self.send_heartbeat()
                 if self._is_auth_failure(heartbeat_result):
@@ -815,20 +866,25 @@ class VoiceWorker:
                     self._print_api_failure("POST /voice/wake-event", wake_event_result)
                     continue
 
-                self._capture_transcribe_and_respond()
+                self._capture_transcribe_and_respond(wake_detect_ms=wake_detect_ms)
         except KeyboardInterrupt:
             raise
         finally:
             listener.stop()
 
-    def _capture_transcribe_and_respond(self) -> bool:
+    def _capture_transcribe_and_respond(self, *, wake_detect_ms: float = 0.0) -> bool:
         """Real microphone capture -> real STT -> shared dispatch/response/
         TTS tail. The captured WAV is always deleted immediately after STT
         consumes it unless WILLIAM_VOICE_DEBUG_KEEP_AUDIO=true -- "no raw
         audio stored by default" is enforced right here, not just claimed
         in a comment."""
+        timing: Dict[str, float] = {"wake_detect_ms": wake_detect_ms}
+        pipeline_started = time.monotonic()
+
         self._set_state(VoiceWorkerState.LISTENING, "capturing real microphone audio")
+        record_started = time.monotonic()
         record_result = audio_input_provider.record_to_tempfile()  # type: ignore[union-attr]
+        timing["record_ms"] = round((time.monotonic() - record_started) * 1000, 1)
         if not record_result["ok"]:
             self._set_state(VoiceWorkerState.ERROR, "microphone capture failed")
             self._log(f"Could not capture audio: {record_result['error']}")
@@ -840,7 +896,9 @@ class VoiceWorker:
                 VoiceWorkerState.TRANSCRIBING,
                 f"transcribing {record_result['duration_seconds']:.1f}s of real captured audio",
             )
+            stt_started = time.monotonic()
             transcribe_result = stt_provider.transcribe(audio_path)  # type: ignore[union-attr]
+            timing["stt_ms"] = round((time.monotonic() - stt_started) * 1000, 1)
             if not transcribe_result["ok"]:
                 self._set_state(VoiceWorkerState.ERROR, "transcription failed")
                 self._log(f"STT could not produce a transcript: {transcribe_result['error']}")
@@ -848,7 +906,7 @@ class VoiceWorker:
 
             transcript = transcribe_result["text"]
             self._log(f"Transcript: {transcript!r} (confidence={transcribe_result.get('confidence')})")
-            return self._send_transcript_and_respond(transcript)
+            return self._send_transcript_and_respond(transcript, timing=timing, pipeline_started=pipeline_started)
         finally:
             keep_audio = os.getenv(DEBUG_KEEP_AUDIO_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
             if keep_audio:

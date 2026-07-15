@@ -103,9 +103,45 @@ def wake_word_install_guidance() -> Dict[str, Any]:
     }
 
 
+# Backend-safe mirror of apps/worker_nodes/voice/providers/wake_word.py's own
+# BUNDLED_MODEL_NAMES/FALLBACK_BUNDLED_MODEL constants -- duplicated here
+# (rather than importing the worker-side module into a backend API route)
+# because this is pure data (no openwakeword import required), and the
+# backend process may not have openwakeword installed at all in a real
+# distributed deployment. Keep both lists in sync if openwakeword ever adds
+# a new bundled model.
+BUNDLED_WAKE_WORD_MODELS = {"alexa", "hey_mycroft", "hey_jarvis", "hey_rhasspy", "timer", "weather"}
+FALLBACK_BUNDLED_WAKE_WORD_MODEL = "hey_jarvis"
+
+
+def resolve_bundled_wake_word_model(phrase: str) -> Dict[str, Any]:
+    """Maps a per-workspace wake_word phrase to the real openwakeword
+    bundled model that will actually be loaded -- never claims a custom
+    phrase (e.g. "William") has a pretrained model when it doesn't.
+    Returns {"active_model", "matched_phrase", "notice"}; `notice` is the
+    exact honest message to surface to the user when matched_phrase is
+    False, e.g. "This wake word requires a custom model. Current active
+    local model is hey_jarvis." -- None when the phrase already has a real
+    bundled model."""
+    normalized = (phrase or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if normalized in BUNDLED_WAKE_WORD_MODELS:
+        return {"active_model": normalized, "matched_phrase": True, "notice": None}
+    return {
+        "active_model": FALLBACK_BUNDLED_WAKE_WORD_MODEL,
+        "matched_phrase": False,
+        "notice": (
+            "This wake word requires a custom model. Current active local "
+            f"model is {FALLBACK_BUNDLED_WAKE_WORD_MODEL}."
+        ),
+    }
+
+
 __all__ = [
     "detect_local_package",
     "stt_install_guidance",
     "tts_install_guidance",
     "wake_word_install_guidance",
+    "resolve_bundled_wake_word_model",
+    "BUNDLED_WAKE_WORD_MODELS",
+    "FALLBACK_BUNDLED_WAKE_WORD_MODEL",
 ]

@@ -624,11 +624,28 @@ export type VoiceRuntimeState =
   | "listening"
   | "standby";
 
+// Real, worker-measured per-stage wall-clock milliseconds for the most
+// recent voice command (see database/models/voice.py::VoiceSettings.
+// last_command_timing) -- routing_ms/tts_ms/total_ms are logged locally by
+// the worker but not currently persisted server-side (only whatever was
+// measured before the command was sent -- wake_detect_ms/record_ms/stt_ms
+// -- is stored), so this type only promises the keys that are actually
+// ever present.
+export type VoiceCommandTiming = {
+  wake_detect_ms?: number;
+  record_ms?: number;
+  stt_ms?: number;
+  routing_ms?: number;
+  tts_ms?: number;
+  total_ms?: number;
+};
+
 export type VoiceSettings = {
   id: string;
   workspace_id: string;
   mode: VoiceMode;
   wake_word: string;
+  assistant_display_name: string;
   requires_security_approval: boolean;
   dependency_status: VoiceDependencyStatus;
   voice_worker_connected: boolean;
@@ -642,6 +659,7 @@ export type VoiceSettings = {
   last_response_text: string | null;
   last_error_message: string | null;
   last_error_at: string | null;
+  last_command_timing: VoiceCommandTiming | null;
   created_at: string;
   updated_at: string;
 };
@@ -687,6 +705,17 @@ export type VoiceStatusData = RealVoiceProviderStatus & {
   settings: VoiceSettings;
   connection_state: VoiceWorkerConnectionState;
   wake_word_default: string;
+  assistant_display_name: string;
+  // Honest mapping of the workspace's wake_word phrase to the real
+  // openwakeword bundled model that will actually load -- see
+  // agents/voice_agent/provider_capabilities.py::resolve_bundled_wake_word_model.
+  // wake_word_custom_model_notice is non-null exactly when
+  // wake_word_matches_supported_model is false, e.g. "This wake word
+  // requires a custom model. Current active local model is hey_jarvis."
+  active_wake_word_model: string;
+  wake_word_matches_supported_model: boolean;
+  wake_word_custom_model_notice: string | null;
+  last_command_timing: VoiceCommandTiming | null;
   // Flattened, dashboard-shaped view of the same settings row (see
   // apps/api/routes/voice.py::get_voice_status) -- prefer these over
   // digging into `settings` when driving the Voice Control UI's states.
@@ -919,8 +948,11 @@ export type VoiceEnrollCompleteData = {
 export const voiceApi = {
   status: () => get<VoiceStatusData>("/voice/status"),
 
-  updateConfig: (payload: { mode?: VoiceMode; wake_word?: string }) =>
-    post<VoiceConfigUpdateData>("/voice/config", payload),
+  updateConfig: (payload: {
+    mode?: VoiceMode;
+    wake_word?: string;
+    assistant_display_name?: string;
+  }) => post<VoiceConfigUpdateData>("/voice/config", payload),
 
   listProfiles: () => get<VoiceProfileListData>("/voice/profiles"),
 

@@ -74,7 +74,8 @@ def resolve_bundled_model_name() -> Dict[str, Any]:
 
 
 def _provider_name() -> str:
-    return os.getenv("WILLIAM_WAKE_WORD_PROVIDER", "").strip().lower()
+    raw = os.getenv("WILLIAM_WAKE_WORD_PROVIDER", "").strip().lower()
+    return "" if raw == "none" else raw
 
 
 def check_status() -> Dict[str, Any]:

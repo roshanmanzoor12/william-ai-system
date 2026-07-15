@@ -33,8 +33,18 @@ def local_package_available() -> bool:
     return WhisperModel is not None
 
 
+# "local_whisper" is accepted as an honest alias for "faster_whisper" --
+# same local engine, matching the exact provider value names the product
+# spec documents (WILLIAM_STT_PROVIDER=openai/local_whisper/faster_whisper/
+# none) without adding a second code path.
+_LOCAL_WHISPER_PROVIDER_NAMES = {"faster_whisper", "local_whisper"}
+
+
 def _provider_name() -> str:
-    return os.getenv("WILLIAM_STT_PROVIDER", "").strip().lower()
+    raw = os.getenv("WILLIAM_STT_PROVIDER", "").strip().lower()
+    if raw == "none":
+        return ""
+    return "faster_whisper" if raw in _LOCAL_WHISPER_PROVIDER_NAMES else raw
 
 
 def check_status() -> Dict[str, Any]:
