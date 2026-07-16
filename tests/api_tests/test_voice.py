@@ -121,6 +121,162 @@ class TestVoiceConfig:
         assert data["requires_approval"] is False
 
 
+def make_platform_admin(user_id: str) -> None:
+    """Flip is_platform_admin=True for an already-registered real user (same
+    helper as tests/api_tests/test_admin.py -- get_current_auth_context()
+    re-fetches the User row fresh on every request, so an already-issued
+    access token picks this up immediately)."""
+
+    from database.db import db_manager
+    from database.models.user import User
+
+    with db_manager.session_scope() as db:
+        user = db.query(User).filter(User.id == user_id).first()
+        assert user is not None
+        user.is_platform_admin = True
+
+
+class TestVoiceModeApprovalFlow:
+    """Phase 4 coverage for the wake_word_admin approval flow: POST
+    /voice/enable, /voice/disable, /voice/config/decide, and
+    apps/api/services/voice_service.py::request_mode_change/
+    decide_pending_mode. See that module's docstrings for why this bypasses
+    both pre-existing (in-memory, non-durable) SecurityAgent/Security
+    approval subsystems in favor of a workspace-scoped pending_mode/
+    pending_approval_id column pair on VoiceSettings."""
+
+    def test_platform_admin_can_enable_wake_word_admin_through_approved_flow(self, client, make_owner, make_member) -> None:
+        owner = make_owner()
+        member = make_member(owner, role="member")
+        make_platform_admin(member.user_id)
+
+        response = client.post("/api/v1/voice/enable", headers=member.headers)
+        assert response.status_code == 200
+        data = response_json(response)["data"]
+        assert data["approved"] is True
+        assert data["mode"] == "wake_word_admin"
+        assert data["settings"]["mode"] == "wake_word_admin"
+
+    def test_non_admin_requires_approval_request(self, client, make_owner, make_member) -> None:
+        owner = make_owner()
+        member = make_member(owner, role="member")
+
+        response = client.post("/api/v1/voice/enable", headers=member.headers)
+        assert response.status_code == 200
+        data = response_json(response)["data"]
+        assert data["approved"] is False
+        assert data["approval_id"]
+        assert data["settings"]["mode"] == "disabled"
+        assert data["settings"]["pending_mode"] == "wake_word_admin"
+        assert data["settings"]["pending_approval_id"] == data["approval_id"]
+
+    def test_denied_approval_keeps_mode_unchanged_with_clear_next_step(self, client, make_owner, make_member) -> None:
+        owner = make_owner()
+        member = make_member(owner, role="member")
+
+        requested = response_json(client.post("/api/v1/voice/enable", headers=member.headers))["data"]
+        approval_id = requested["approval_id"]
+
+        decide = client.post(
+            "/api/v1/voice/config/decide",
+            json={"approval_id": approval_id, "decision": "deny"},
+            headers=owner.headers,
+        )
+        assert decide.status_code == 200
+        decide_data = response_json(decide)["data"]
+        assert decide_data["settings"]["mode"] == "disabled"
+        assert decide_data["settings"]["pending_mode"] is None
+        assert decide_data["settings"]["pending_approval_id"] is None
+
+        status_payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert status_payload["mode"] == "disabled"
+
+    def test_approved_wake_word_admin_persists_in_db(self, client, make_owner, make_member) -> None:
+        owner = make_owner()
+        member = make_member(owner, role="member")
+
+        requested = response_json(client.post("/api/v1/voice/enable", headers=member.headers))["data"]
+        approval_id = requested["approval_id"]
+
+        decide = client.post(
+            "/api/v1/voice/config/decide",
+            json={"approval_id": approval_id, "decision": "approve"},
+            headers=owner.headers,
+        )
+        assert decide.status_code == 200
+        assert response_json(decide)["data"]["settings"]["mode"] == "wake_word_admin"
+
+        from database.db import db_manager
+        from database.models.voice import VoiceSettings
+
+        with db_manager.session_scope() as db:
+            row = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == owner.workspace_id).first()
+            assert row is not None
+            assert row.mode == "wake_word_admin"
+            assert row.pending_mode is None
+            assert row.pending_approval_id is None
+
+        status_payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert status_payload["mode"] == "wake_word_admin"
+
+    def test_push_to_talk_only_selected_when_explicitly_requested(self, client, make_owner) -> None:
+        """POST /voice/enable always means wake_word_admin (never
+        push_to_talk); push_to_talk only ever gets set by an explicit
+        POST /voice/config {"mode": "push_to_talk"} call."""
+        owner = make_owner()
+
+        enabled = response_json(client.post("/api/v1/voice/enable", headers=owner.headers))["data"]
+        assert enabled["mode"] == "wake_word_admin"
+
+        explicit = client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        assert response_json(explicit)["data"]["settings"]["mode"] == "push_to_talk"
+
+    def test_missing_speaker_recognition_does_not_block_normal_command(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/enable", headers=owner.headers)
+
+        status_payload = response_json(client.get("/api/v1/voice/status", headers=owner.headers))["data"]
+        assert status_payload["dependencies"]["speaker_recognition_provider"]["status"] == "external_dependency_required"
+        # runtime_state honestly reports dependency_required (missing STT/TTS
+        # too in this test environment) but a normal typed command must
+        # still work -- push-to-talk/text never requires speaker recognition.
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William what is moderation?"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 200
+        data = response_json(response)["data"]
+        assert isinstance(data["final_answer"], str)
+        assert data["final_answer"] != ""
+
+    @pytest.mark.asyncio
+    async def test_risky_voice_command_still_requires_security_agent_approval_after_enable(self, client, make_owner) -> None:
+        """Enabling voice via the new POST /voice/enable flow must never
+        loosen the existing SecurityAgent gate on risky actions -- lock this
+        in explicitly rather than only relying on
+        TestVoiceSharesAssistantDispatcher's pre-existing coverage."""
+        owner = make_owner()
+        enabled = response_json(client.post("/api/v1/voice/enable", headers=owner.headers))["data"]
+        assert enabled["mode"] == "wake_word_admin"
+
+        from apps.api.routes.system_worker import classify_worker_action
+        from apps.api.routes.auth import AuthContext
+        import uuid
+
+        context = AuthContext(
+            request_id=f"req_{uuid.uuid4().hex[:12]}",
+            user_id=owner.user_id,
+            workspace_id=owner.workspace_id,
+            session_id="voice_test_session",
+            role="owner",
+            plan="free",
+            email=owner.email,
+        )
+        classification = await classify_worker_action("delete_file", context=context)
+        assert classification == "requires_approval"
+
+
 class TestVoiceWorkerHeartbeat:
     def test_heartbeat_requires_auth(self, client) -> None:
         response = client.post("/api/v1/voice/worker/heartbeat", json={})

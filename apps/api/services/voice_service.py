@@ -258,6 +258,154 @@ def record_command_timing(db, workspace_id: str, timing_ms: Dict[str, float]) ->
     return settings.to_dict()
 
 
+# =============================================================================
+# Wake-word-admin / always-listening mode approval
+# =============================================================================
+#
+# core/security's own SecurityAgent.authorize_action() and apps/api/routes/
+# security.py's separate Security/InMemoryApprovalRepository service both
+# store pending approvals in a plain in-process dict (see their own module
+# docstrings) -- neither persists across a restart, and the latter scopes
+# decide_approval() to the SAME user_id that created the request, which
+# cannot satisfy "a different workspace owner approves a member's request".
+# This uses VoiceSettings.pending_mode/pending_approval_id (real DB columns,
+# workspace-scoped, already migrated) as the actual source of truth for
+# voice-runtime-mode approval instead -- durable, and decidable by ANY
+# owner/admin in the same workspace, not just the original requester.
+# SecurityAgent is still consulted for a real, audited authorization
+# attempt (see apps/api/routes/voice.py::request_voice_mode_approval) --
+# this function only owns the DURABLE pending/approved state, not whether
+# SecurityAgent was asked.
+
+OWNER_ADMIN_ROLES = {"owner", "admin"}
+
+
+def role_can_approve_voice_runtime(role: Optional[str], is_platform_admin: bool = False) -> bool:
+    """Platform admin, or workspace owner/admin -- matches this feature's
+    own product requirement ("Platform admin / workspace owner should be
+    able to approve wake_word_admin"), deliberately narrower than the
+    broader owner/admin/manager set apps/api/routes/security.py's
+    can_decide_approval() allows for generic approvals."""
+    if is_platform_admin:
+        return True
+    return (role or "").strip().lower() in OWNER_ADMIN_ROLES
+
+
+def request_mode_change(
+    db,
+    workspace_id: str,
+    *,
+    user_id: str,
+    role: Optional[str],
+    is_platform_admin: bool,
+    mode: str,
+) -> Dict[str, Any]:
+    """Real, workspace-scoped gate for VOICE_MODES_REQUIRING_APPROVAL.
+
+    Owner/admin/platform-admin requesting: approved immediately (they are
+    already authorized to decide this class of request -- see
+    role_can_approve_voice_runtime -- so a separate approval round trip
+    would only add friction, not safety).
+
+    Anyone else: creates a durable pending_mode/pending_approval_id on the
+    workspace's VoiceSettings row (mode is NOT changed) and returns the
+    approval_id so a real owner/admin can decide it later via
+    decide_pending_mode -- never silently left stuck, never silently
+    applied either.
+
+    Returns {"approved": bool, "mode_applied": bool, "approval_id":
+    str | None, "settings": dict}.
+    """
+    from database.models.voice import VoiceSettings
+
+    settings_row = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == workspace_id).first()
+    if settings_row is None:
+        settings_row, _ = _get_or_create_settings_row(db, workspace_id, user_id)
+
+    if role_can_approve_voice_runtime(role, is_platform_admin):
+        settings_row.mode = mode
+        settings_row.pending_mode = None
+        settings_row.pending_approval_id = None
+        settings_row.updated_by_user_id = user_id
+        settings_row.updated_at = _utc_now()
+        db.flush()
+        write_voice_audit(
+            db, user_id=user_id, workspace_id=workspace_id, action="voice.mode.self_approved",
+            status="success", metadata={"mode": mode, "role": role},
+        )
+        return {"approved": True, "mode_applied": True, "approval_id": None, "settings": settings_row.to_dict()}
+
+    approval_id = _new_id("voiceapproval")
+    settings_row.pending_mode = mode
+    settings_row.pending_approval_id = approval_id
+    settings_row.updated_at = _utc_now()
+    db.flush()
+    write_voice_audit(
+        db, user_id=user_id, workspace_id=workspace_id, action="voice.mode.approval_requested",
+        status="pending", resource_id=approval_id, metadata={"mode": mode, "requested_by_role": role},
+    )
+    return {"approved": False, "mode_applied": False, "approval_id": approval_id, "settings": settings_row.to_dict()}
+
+
+def decide_pending_mode(
+    db,
+    workspace_id: str,
+    *,
+    decided_by_user_id: str,
+    decided_by_role: Optional[str],
+    decided_by_is_platform_admin: bool,
+    approval_id: str,
+    decision: str,
+) -> Dict[str, Any]:
+    """Real owner/admin decides a pending voice-mode request created by
+    ANY user in the SAME workspace (workspace-scoped, not requester-user-
+    scoped -- the actual gap in apps/api/routes/security.py's generic
+    approval decide flow for this use case). Returns {"success", "message",
+    "settings"} -- never applies a mode change on denial, never leaves the
+    pending state dangling on approval."""
+    from database.models.voice import VoiceSettings
+
+    if not role_can_approve_voice_runtime(decided_by_role, decided_by_is_platform_admin):
+        return {
+            "success": False,
+            "message": "Only a workspace owner/admin (or platform admin) can decide this request.",
+            "settings": None,
+        }
+
+    settings_row = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == workspace_id).first()
+    if settings_row is None or not settings_row.pending_approval_id:
+        return {"success": False, "message": "No pending voice-mode approval for this workspace.", "settings": None}
+
+    if settings_row.pending_approval_id != approval_id:
+        return {"success": False, "message": "approval_id does not match the current pending request.", "settings": None}
+
+    pending_mode = settings_row.pending_mode
+
+    if decision == "approve":
+        settings_row.mode = pending_mode
+        settings_row.pending_mode = None
+        settings_row.pending_approval_id = None
+        settings_row.updated_by_user_id = decided_by_user_id
+        settings_row.updated_at = _utc_now()
+        db.flush()
+        write_voice_audit(
+            db, user_id=decided_by_user_id, workspace_id=workspace_id, action="voice.mode.approved",
+            status="success", resource_id=approval_id, metadata={"mode": pending_mode},
+        )
+        return {"success": True, "message": f"Approved. Voice mode is now '{pending_mode}'.", "settings": settings_row.to_dict()}
+
+    settings_row.pending_mode = None
+    settings_row.pending_approval_id = None
+    settings_row.updated_by_user_id = decided_by_user_id
+    settings_row.updated_at = _utc_now()
+    db.flush()
+    write_voice_audit(
+        db, user_id=decided_by_user_id, workspace_id=workspace_id, action="voice.mode.denied",
+        status="denied", resource_id=approval_id, metadata={"mode": pending_mode},
+    )
+    return {"success": True, "message": f"Denied. Voice mode remains unchanged.", "settings": settings_row.to_dict()}
+
+
 def _get_or_create_settings_row(db, workspace_id: str, created_by_user_id: str):
     from database.seeders.seed_voice_defaults import get_or_create_voice_settings
 

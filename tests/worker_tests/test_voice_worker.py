@@ -355,6 +355,56 @@ class TestWakeWordAdminDependencyRequired:
         assert idle_loop_calls == [True]
         assert any("dependency_required" in record.message for record in caplog.records)
 
+    def test_missing_speaker_recognition_alone_does_not_block_listening(self, monkeypatch) -> None:
+        """Wake-word-approval Phase 4 (item 7): speaker_recognition_provider
+        is optional (sensitive commands fall back to typed confirmation/PIN
+        without it, per apps/worker_nodes/voice/providers/provider_status.py)
+        -- always_listening_available is computed from audio/stt/wake_word
+        only, so a missing speaker_recognition_provider alone must never
+        keep the worker out of the real listening loop."""
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        class _FakeProviderStatusModule:
+            @staticmethod
+            def get_full_status() -> Dict[str, Any]:
+                return {
+                    # Real provider_status.py behavior: speaker recognition
+                    # missing shows up in missing_dependencies for display,
+                    # but never flips always_listening_available to False.
+                    "always_listening_available": True,
+                    "missing_dependencies": ["speaker_recognition_provider"],
+                }
+
+        monkeypatch.setattr(voice_worker_module, "provider_status_module", _FakeProviderStatusModule())
+
+        idle_loop_calls: List[bool] = []
+        monkeypatch.setattr(worker, "_run_idle_loop", lambda: idle_loop_calls.append(True))
+
+        class _FakeListener:
+            def listen_until_detected(self, max_seconds: float | None = None) -> Dict[str, Any]:
+                raise KeyboardInterrupt
+
+            def stop(self) -> None:
+                pass
+
+        class _FakeWakeWordProvider:
+            @staticmethod
+            def WakeWordListener() -> _FakeListener:  # noqa: N802
+                return _FakeListener()
+
+        monkeypatch.setattr(voice_worker_module, "wake_word_provider", _FakeWakeWordProvider())
+
+        try:
+            worker._run_wake_word_admin_loop("wake_word_admin")
+        except KeyboardInterrupt:
+            pass
+
+        # Never fell back to the idle/heartbeat-only loop -- it reached the
+        # real listen_until_detected call instead (which raised to stop the
+        # test cleanly).
+        assert idle_loop_calls == []
+
 
 class TestNoRawAudioStoredByDefault:
     """Phase 9 coverage (item 9): a real captured WAV must be deleted

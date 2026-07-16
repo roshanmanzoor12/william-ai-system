@@ -647,6 +647,8 @@ export type VoiceSettings = {
   wake_word: string;
   assistant_display_name: string;
   requires_security_approval: boolean;
+  pending_approval_id: string | null;
+  pending_mode: VoiceMode | null;
   dependency_status: VoiceDependencyStatus;
   voice_worker_connected: boolean;
   voice_worker_last_seen_at: string | null;
@@ -753,6 +755,18 @@ export type VoiceConfigUpdateData = {
   settings: VoiceSettings;
   requires_approval: boolean;
   approved: boolean;
+  approval_id?: string | null;
+};
+
+export type VoiceEnableData = {
+  settings: VoiceSettings;
+  mode: VoiceMode;
+  approved: boolean;
+  approval_id: string | null;
+};
+
+export type VoiceModeDecisionData = {
+  settings: VoiceSettings;
 };
 
 // The 14 real agent keys from AGENT_CATALOG (apps/api/routes/agents.py),
@@ -953,6 +967,21 @@ export const voiceApi = {
     wake_word?: string;
     assistant_display_name?: string;
   }) => post<VoiceConfigUpdateData>("/voice/config", payload),
+
+  // "Enable Voice Agent" always means real, always-listening wake_word_admin
+  // mode -- never push_to_talk (that stays a separate, explicit manual
+  // fallback via updateConfig). Any signed-in member may call this; only a
+  // workspace owner/admin's call is auto-approved, everyone else gets a
+  // real approval_id back (see decideModeRequest).
+  enable: () => post<VoiceEnableData>("/voice/enable", {}),
+
+  disable: () =>
+    post<{ settings: VoiceSettings; mode: VoiceMode }>("/voice/disable", {}),
+
+  decideModeRequest: (payload: {
+    approval_id: string;
+    decision: "approve" | "deny";
+  }) => post<VoiceModeDecisionData>("/voice/config/decide", payload),
 
   listProfiles: () => get<VoiceProfileListData>("/voice/profiles"),
 

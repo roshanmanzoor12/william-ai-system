@@ -700,31 +700,57 @@ async def update_voice_config(
     if payload.mode is not None and payload.mode not in VALID_VOICE_MODES:
         raise_api_error(status.HTTP_400_BAD_REQUEST, f"Invalid voice mode: {payload.mode}", "INVALID_MODE", context.request_id)
 
-    approval_info: Optional[Dict[str, Any]] = None
+    mode_result: Optional[Dict[str, Any]] = None
 
     if payload.mode in VOICE_MODES_REQUIRING_APPROVAL:
-        approval_info = await request_voice_mode_approval(
+        # Real, audited SecurityAgent authorization attempt -- kept for the
+        # audit trail (SecurityAgent must stay in the loop). The actual
+        # mode-change GATE below is role-based via vs.request_mode_change,
+        # not this call's own (fragile, in-memory, non-workspace-scoped)
+        # approved/denied result -- see that function's docstring for why:
+        # neither agents/security_agent/security_agent.py's in-memory
+        # approval store nor apps/api/routes/security.py's separate
+        # InMemoryApprovalRepository can durably, workspace-scope this
+        # specific decision (the latter's decide_approval() only lets the
+        # ORIGINAL requester decide their own request, never a different
+        # workspace owner/admin).
+        await request_voice_mode_approval(
             workspace_id=context.workspace_id, user_id=context.user_id, role=context.role, mode=payload.mode,
         )
-        if not approval_info["approved"]:
-            with db_manager.session_scope() as db:
-                settings = vs.get_or_create_settings(db, context.workspace_id, context.user_id)
+        with db_manager.session_scope() as db:
+            mode_result = vs.request_mode_change(
+                db, context.workspace_id,
+                user_id=context.user_id, role=context.role,
+                is_platform_admin=bool(getattr(context, "is_platform_admin", False)),
+                mode=payload.mode,
+            )
+
+        if not mode_result["approved"]:
             return api_success(
-                f"Mode '{payload.mode}' requires Security Agent approval, which was not granted. Voice mode unchanged.",
-                data={"settings": settings, "requires_approval": True, "approved": False},
+                f"Mode '{payload.mode}' requires a workspace owner/admin to approve it first. "
+                f"approval_id={mode_result['approval_id']}",
+                data={
+                    "settings": mode_result["settings"],
+                    "requires_approval": True,
+                    "approved": False,
+                    "approval_id": mode_result["approval_id"],
+                },
                 request_id=context.request_id,
             )
 
     with db_manager.session_scope() as db:
         settings = vs.update_settings(
-            db, context.workspace_id, mode=payload.mode, wake_word=payload.wake_word,
+            db, context.workspace_id,
+            mode=None if payload.mode in VOICE_MODES_REQUIRING_APPROVAL else payload.mode,
+            wake_word=payload.wake_word,
             assistant_display_name=payload.assistant_display_name, updated_by_user_id=context.user_id,
         )
         vs.write_voice_audit(
             db, user_id=context.user_id, workspace_id=context.workspace_id, action="voice.config.updated",
             metadata={
                 "mode": payload.mode, "wake_word": payload.wake_word,
-                "assistant_display_name": payload.assistant_display_name, "approval": approval_info,
+                "assistant_display_name": payload.assistant_display_name,
+                "approved_via_role": mode_result is not None,
             },
         )
 
@@ -733,6 +759,137 @@ async def update_voice_config(
         data={"settings": settings, "requires_approval": payload.mode in VOICE_MODES_REQUIRING_APPROVAL, "approved": True},
         request_id=context.request_id,
     )
+
+
+@router.post("/enable")
+async def enable_voice_agent(
+    context: "AuthContext" = Depends(get_current_auth_context),
+) -> Dict[str, Any]:
+    """Convenience endpoint: "Enable Voice Agent" always means real,
+    always-listening wake_word_admin mode (per this feature's product
+    requirement) -- never push_to_talk, which stays an explicit, separate
+    manual fallback. Open to any signed-in workspace member (not just
+    admin, unlike POST /voice/config) precisely so a non-admin member CAN
+    request it and get a real approval_id back rather than a 403 with no
+    next step -- see vs.request_mode_change for the role-based approve/
+    pending split. Deliberately uses get_current_auth_context (not
+    require_auth_role(Role.USER.value)): apps/api/routes/auth.py's
+    has_min_role() ranks context.role against the auth Role enum
+    (owner/admin/manager/developer/analyst/agent/user/viewer), but real
+    workspace memberships are stored with WorkspaceMemberRole values
+    (owner/admin/manager/member/viewer) -- a real "member" role isn't in
+    ROLE_RANK at all, so it scores 0 and fails even the lowest Role.USER
+    gate, 403ing before this endpoint's own role_can_approve_voice_runtime
+    check ever runs. The real authorization for this endpoint already
+    happens inside vs.request_mode_change (self-approve vs. pending), so
+    the route itself only needs "is this a real, authenticated user"."""
+    from database.db import db_manager
+    from database.models.voice import VOICE_MODE_WAKE_WORD_ADMIN
+    from apps.api.services import voice_service as vs
+
+    await request_voice_mode_approval(
+        workspace_id=context.workspace_id, user_id=context.user_id, role=context.role, mode=VOICE_MODE_WAKE_WORD_ADMIN,
+    )
+
+    with db_manager.session_scope() as db:
+        mode_result = vs.request_mode_change(
+            db, context.workspace_id,
+            user_id=context.user_id, role=context.role,
+            is_platform_admin=bool(getattr(context, "is_platform_admin", False)),
+            mode=VOICE_MODE_WAKE_WORD_ADMIN,
+        )
+        vs.write_voice_audit(
+            db, user_id=context.user_id, workspace_id=context.workspace_id, action="voice.enable_requested",
+            status="success" if mode_result["approved"] else "pending",
+            metadata={"approval_id": mode_result["approval_id"]},
+        )
+
+    if mode_result["approved"]:
+        return api_success(
+            "Voice Agent enabled. Runtime mode is now wake_word_admin.",
+            data={
+                "settings": mode_result["settings"], "mode": "wake_word_admin",
+                "approved": True, "approval_id": None,
+            },
+            request_id=context.request_id,
+        )
+
+    return api_success(
+        f"Boss, this needs a workspace owner/admin to approve it. approval_id={mode_result['approval_id']} -- "
+        "ask an owner/admin to approve it from Settings or POST /voice/config/decide.",
+        data={
+            "settings": mode_result["settings"], "mode": mode_result["settings"]["mode"],
+            "approved": False, "approval_id": mode_result["approval_id"],
+        },
+        request_id=context.request_id,
+    )
+
+
+@router.post("/disable")
+async def disable_voice_agent(
+    context: "AuthContext" = Depends(get_current_auth_context),
+) -> Dict[str, Any]:
+    """Always allowed, no approval needed (turning voice OFF is never the
+    risky direction) -- clears any pending mode-change request too, so a
+    disable always leaves the workspace in a clean, unambiguous state.
+    Uses get_current_auth_context directly for the same reason as
+    enable_voice_agent above (a real "member" WorkspaceMemberRole fails
+    Role.USER's rank check under has_min_role)."""
+    from database.db import db_manager
+    from database.models.voice import VOICE_MODE_DISABLED
+    from apps.api.services import voice_service as vs
+
+    with db_manager.session_scope() as db:
+        settings = vs.update_settings(
+            db, context.workspace_id, mode=VOICE_MODE_DISABLED, updated_by_user_id=context.user_id,
+        )
+        from database.models.voice import VoiceSettings
+
+        row = db.query(VoiceSettings).filter(VoiceSettings.workspace_id == context.workspace_id).first()
+        if row is not None:
+            row.pending_mode = None
+            row.pending_approval_id = None
+        vs.write_voice_audit(
+            db, user_id=context.user_id, workspace_id=context.workspace_id, action="voice.disable", status="success",
+        )
+
+    return api_success(
+        "Voice Agent disabled.",
+        data={"settings": settings, "mode": "disabled"},
+        request_id=context.request_id,
+    )
+
+
+class VoiceModeDecisionRequest(BaseModel):
+    approval_id: str = Field(..., min_length=2, max_length=140)
+    decision: str = Field(..., pattern="^(approve|deny)$")
+
+
+@router.post("/config/decide")
+async def decide_voice_mode_request(
+    payload: VoiceModeDecisionRequest,
+    context: "AuthContext" = Depends(require_auth_role(Role.ADMIN.value)),
+) -> Dict[str, Any]:
+    """A real owner/admin (or platform admin) approves or denies a pending
+    wake_word_admin/wake_word_trusted_users/continuous_conversation
+    request created by ANY user in this workspace -- see
+    vs.decide_pending_mode's docstring for why this is workspace-scoped
+    rather than requester-user-scoped."""
+    from database.db import db_manager
+    from apps.api.services import voice_service as vs
+
+    with db_manager.session_scope() as db:
+        result = vs.decide_pending_mode(
+            db, context.workspace_id,
+            decided_by_user_id=context.user_id, decided_by_role=context.role,
+            decided_by_is_platform_admin=bool(getattr(context, "is_platform_admin", False)),
+            approval_id=payload.approval_id, decision=payload.decision,
+        )
+
+    if not result["success"]:
+        raise_api_error(status.HTTP_400_BAD_REQUEST, result["message"], "VOICE_MODE_DECISION_FAILED", context.request_id)
+
+    return api_success(result["message"], data={"settings": result["settings"]}, request_id=context.request_id)
 
 
 @router.get("/profiles")

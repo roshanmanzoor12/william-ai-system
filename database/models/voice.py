@@ -252,6 +252,12 @@ class VoiceSettings(Base):
     assistant_display_name = Column(String(60), nullable=False, default="William")
     requires_security_approval = Column(Boolean, nullable=False, default=True)
     pending_approval_id = Column(String(80), nullable=True)
+    # The mode a non-owner/admin requester asked for via POST /voice/config
+    # or /voice/enable, awaiting a real owner/admin decision -- NULL means
+    # no request is pending. `mode` itself is left untouched until a real
+    # owner/admin approves (see apps/api/services/voice_service.py::
+    # request_mode_change/decide_pending_mode) -- never silently applied.
+    pending_mode = Column(String(40), nullable=True)
 
     # Cached dependency status (wake_word_engine/audio_input_worker/stt_provider/
     # tts_provider/speaker_recognition_provider), refreshed on GET /voice/status
@@ -342,6 +348,7 @@ class VoiceSettings(Base):
             "assistant_display_name": self.assistant_display_name,
             "requires_security_approval": bool(self.requires_security_approval),
             "pending_approval_id": self.pending_approval_id,
+            "pending_mode": self.pending_mode,
             "dependency_status": self.dependency_status,
             "voice_worker_connected": bool(self.voice_worker_connected),
             "voice_worker_last_seen_at": self.voice_worker_last_seen_at.isoformat() if self.voice_worker_last_seen_at else None,

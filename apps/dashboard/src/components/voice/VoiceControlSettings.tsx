@@ -199,6 +199,10 @@ export function VoiceControlSettings() {
   const [savingMode, setSavingMode] = useState<VoiceMode | null>(null);
   const [savingWakeWord, setSavingWakeWord] = useState(false);
   const [savingAssistantName, setSavingAssistantName] = useState(false);
+  const [enablingVoice, setEnablingVoice] = useState(false);
+  const [decidingApproval, setDecidingApproval] = useState<
+    "approve" | "deny" | null
+  >(null);
   const [notice, setNotice] = useState<{
     type: "success" | "error" | "info";
     message: string;
@@ -334,6 +338,69 @@ export function VoiceControlSettings() {
     setSavingAssistantName(false);
   }
 
+  async function handleEnableVoiceAgent() {
+    if (enablingVoice) return;
+    setEnablingVoice(true);
+    setNotice(null);
+
+    const response = await voiceApi.enable();
+
+    if (response.success === false) {
+      setNotice({
+        type: "error",
+        message: response.error.message || "Voice Agent could not be enabled.",
+      });
+      setEnablingVoice(false);
+      return;
+    }
+
+    setSettings(response.data.settings);
+    void load();
+
+    if (response.data.approved) {
+      setNotice({
+        type: "success",
+        message: "Voice Agent enabled. Runtime mode is now Wake Word (Admin).",
+      });
+    } else {
+      setNotice({
+        type: "info",
+        message: `This needs a workspace owner/admin to approve it (approval_id: ${response.data.approval_id}). Ask an owner/admin to approve it below.`,
+      });
+    }
+    setEnablingVoice(false);
+  }
+
+  async function handleDecideModeRequest(decision: "approve" | "deny") {
+    if (!settings?.pending_approval_id || decidingApproval) return;
+    setDecidingApproval(decision);
+    setNotice(null);
+
+    const response = await voiceApi.decideModeRequest({
+      approval_id: settings.pending_approval_id,
+      decision,
+    });
+
+    if (response.success === false) {
+      setNotice({
+        type: "error",
+        message: response.error.message || "Could not decide this request.",
+      });
+      setDecidingApproval(null);
+      return;
+    }
+
+    setSettings(response.data.settings);
+    setNotice({
+      type: "success",
+      message:
+        decision === "approve"
+          ? "Approved. Wake Word (Admin) mode is now active."
+          : "Denied. Voice mode is unchanged.",
+    });
+    setDecidingApproval(null);
+  }
+
   return (
     <section className="rounded-[32px] border border-neutral-100 bg-white p-5 shadow-sm md:p-6">
       <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -348,14 +415,31 @@ export function VoiceControlSettings() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void load()}
-          className="inline-flex items-center gap-2 rounded-2xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
-        >
-          <RefreshCcw className="h-3.5 w-3.5" />
-          Refresh
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {canConfigureVoice ? (
+            <button
+              type="button"
+              onClick={() => void handleEnableVoiceAgent()}
+              disabled={enablingVoice || settings?.mode === "wake_word_admin"}
+              className="inline-flex items-center gap-2 rounded-2xl bg-[#ff5a3d] px-4 py-2 text-xs font-black text-white shadow-lg shadow-[#ff5a3d]/20 transition hover:bg-neutral-950 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Mic className="h-3.5 w-3.5" />
+              {settings?.mode === "wake_word_admin"
+                ? "Voice Agent Enabled"
+                : enablingVoice
+                  ? "Enabling..."
+                  : "Enable Voice Agent"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="inline-flex items-center gap-2 rounded-2xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
+          >
+            <RefreshCcw className="h-3.5 w-3.5" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {state === "loading" ? (
@@ -385,6 +469,40 @@ export function VoiceControlSettings() {
               ].join(" ")}
             >
               {notice.message}
+            </div>
+          ) : null}
+
+          {settings.pending_approval_id ? (
+            <div className="rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3">
+              <p className="text-sm font-bold text-[#ff5a3d]">
+                Approval required: {settings.pending_mode?.replace(/_/g, " ")}{" "}
+                mode is waiting on a workspace owner/admin.
+              </p>
+              <p className="mt-1 text-xs font-semibold text-neutral-500">
+                approval_id: {settings.pending_approval_id}
+              </p>
+              {canConfigureVoice ? (
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleDecideModeRequest("approve")}
+                    disabled={decidingApproval !== null}
+                    className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {decidingApproval === "approve"
+                      ? "Approving..."
+                      : "Approve"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDecideModeRequest("deny")}
+                    disabled={decidingApproval !== null}
+                    className="rounded-full border border-red-200 px-4 py-2 text-xs font-black text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {decidingApproval === "deny" ? "Denying..." : "Deny"}
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
