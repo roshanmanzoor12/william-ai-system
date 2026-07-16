@@ -20,6 +20,7 @@ in this file to accidentally exercise, by construction.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Tuple
 
 import pytest
@@ -641,18 +642,25 @@ class TestSpeaksFinalAnswerOnly:
 
 
 class TestReturnsToListeningAfterCommand:
-    """Item 8: after handling one real wake-word-triggered command, the
-    always-listening loop must go back to listening for the next wake
-    word -- not stop, not fall into idle/heartbeat-only mode."""
+    """Item 8 (continuous conversation session): after handling one real
+    wake-word-triggered command, the worker must stay in active_conversation
+    and capture a SECOND command WITHOUT requiring the wake word again --
+    the outer wake-word-waiting loop is only re-entered once a local sleep
+    phrase is detected (or the inactivity timeout expires), never after
+    just one command."""
 
-    def test_wake_word_admin_loop_listens_again_after_responding(self, monkeypatch) -> None:
+    def test_active_conversation_captures_second_command_without_wake_word(self, monkeypatch) -> None:
         config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
         worker = VoiceWorker(config)
 
         class _FakeProviderStatusModule:
             @staticmethod
             def get_full_status() -> Dict[str, Any]:
-                return {"always_listening_available": True, "missing_dependencies": []}
+                return {
+                    "always_listening_available": True,
+                    "missing_dependencies": [],
+                    "always_listening_blocking_dependencies": [],
+                }
 
         monkeypatch.setattr(voice_worker_module, "provider_status_module", _FakeProviderStatusModule())
 
@@ -665,8 +673,9 @@ class TestReturnsToListeningAfterCommand:
             def listen_until_detected(self, max_seconds: float | None = None) -> Dict[str, Any]:
                 listen_call_count["n"] += 1
                 if listen_call_count["n"] >= 2:
-                    # Proves the loop came back to listen a SECOND time
-                    # after fully handling the first detection -- stop the
+                    # Proves the outer wake-word loop was only re-entered
+                    # AFTER the active-conversation session ended (the 2nd
+                    # captured command below requests sleep) -- stop the
                     # test cleanly here rather than looping forever.
                     raise KeyboardInterrupt
                 return {"detected": True, "score": 0.9, "trigger": "hey_jarvis"}
@@ -688,10 +697,82 @@ class TestReturnsToListeningAfterCommand:
             }
         )
         worker._client._request = transport  # type: ignore[method-assign]
+        monkeypatch.setattr(worker, "_speak_and_print", lambda text: None)
 
         respond_calls: List[bool] = []
+
+        def _fake_capture(**kwargs: Any) -> bool:
+            respond_calls.append(True)
+            if len(respond_calls) >= 2:
+                # The second captured command in this session is a local
+                # sleep phrase -- ends the active_conversation session.
+                worker._sleep_requested = True
+                return False
+            return True
+
+        monkeypatch.setattr(worker, "_capture_transcribe_and_respond", _fake_capture)
+
+        try:
+            worker._run_wake_word_admin_loop("wake_word_admin")
+        except KeyboardInterrupt:
+            pass
+
+        # Two commands captured in ONE active-conversation session (no
+        # second wake-word detection between them); the outer loop only
+        # re-entered listen_until_detected once the session ended.
+        assert len(respond_calls) == 2
+        assert listen_call_count["n"] == 2
+
+    def test_inactivity_timeout_returns_to_wake_word_waiting(self, monkeypatch) -> None:
+        """Item 4: a session with no real activity for
+        WILLIAM_VOICE_ACTIVE_SESSION_TIMEOUT_SECONDS returns to wake-word
+        waiting even though no sleep phrase was ever said."""
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        monkeypatch.setenv("WILLIAM_VOICE_ACTIVE_SESSION_TIMEOUT_SECONDS", "0")
+
+        class _FakeProviderStatusModule:
+            @staticmethod
+            def get_full_status() -> Dict[str, Any]:
+                return {
+                    "always_listening_available": True,
+                    "missing_dependencies": [],
+                    "always_listening_blocking_dependencies": [],
+                }
+
+        monkeypatch.setattr(voice_worker_module, "provider_status_module", _FakeProviderStatusModule())
+
+        listen_call_count = {"n": 0}
+
+        class _FakeListener:
+            def listen_until_detected(self, max_seconds: float | None = None) -> Dict[str, Any]:
+                listen_call_count["n"] += 1
+                if listen_call_count["n"] >= 2:
+                    raise KeyboardInterrupt
+                return {"detected": True, "score": 0.9, "trigger": "hey_jarvis"}
+
+            def stop(self) -> None:
+                pass
+
+        class _FakeWakeWordProvider:
+            @staticmethod
+            def WakeWordListener() -> _FakeListener:  # noqa: N802
+                return _FakeListener()
+
+        monkeypatch.setattr(voice_worker_module, "wake_word_provider", _FakeWakeWordProvider())
+
+        transport = FakeTransport(
+            {
+                "/voice/wake-event": _envelope(data={"should_listen": True, "mode": "wake_word_admin"}),
+                "/voice/worker/heartbeat": _envelope(data={"worker_connected": True}),
+            }
+        )
+        worker._client._request = transport  # type: ignore[method-assign]
+        monkeypatch.setattr(worker, "_speak_and_print", lambda text: None)
+
+        capture_calls: List[bool] = []
         monkeypatch.setattr(
-            worker, "_capture_transcribe_and_respond", lambda **kwargs: respond_calls.append(True) or True
+            worker, "_capture_transcribe_and_respond", lambda **kwargs: capture_calls.append(True) or False
         )
 
         try:
@@ -699,9 +780,11 @@ class TestReturnsToListeningAfterCommand:
         except KeyboardInterrupt:
             pass
 
-        # Detected+handled once, then the loop genuinely went back to
-        # listen_until_detected for a second time before this test stopped it.
-        assert len(respond_calls) == 1
+        # timeout=0 means the very first inactivity check (before the
+        # first capture attempt) already exceeds it -- session ends without
+        # ever calling _capture_transcribe_and_respond, and the outer loop
+        # re-enters listen_until_detected.
+        assert capture_calls == []
         assert listen_call_count["n"] == 2
 
 
@@ -948,3 +1031,326 @@ class TestWakeWordAdminSimulateTextRoutesToWindowsWorker:
         ]
         assert len(push_to_talk_calls) == 1
         assert "notepad" in push_to_talk_calls[0]["text"].lower()
+
+
+def _build_capture_worker(*, transcript: str, confidence: float = 0.9) -> Tuple[VoiceWorker, FakeTransport, List[Any]]:
+    """A worker wired for _capture_transcribe_and_respond with fake audio
+    input + STT (real record/transcribe call shapes, no real hardware) and
+    a fake transport for /voice/push-to-talk/text -- used by the
+    continuous-conversation-session tests below. Returns
+    (worker, transport, tts_spoken_calls)."""
+    config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+    worker = VoiceWorker(config)
+
+    class _FakeAudioInput:
+        @staticmethod
+        def record_to_tempfile(**kwargs: Any) -> Dict[str, Any]:
+            return {"ok": True, "audio_path": "C:\\fake\\captured.wav", "duration_seconds": 1.5, "error": None, "peak_rms": 900.0}
+
+    class _FakeStt:
+        @staticmethod
+        def transcribe(path: str) -> Dict[str, Any]:
+            return {"ok": True, "text": transcript, "confidence": confidence, "error": None}
+
+    tts_spoken_calls: List[str] = []
+
+    class _FakeTts:
+        @staticmethod
+        def check_status() -> Dict[str, Any]:
+            return {"configured": True, "reason": None, "install_guidance": None}
+
+        @staticmethod
+        def speak(text: str) -> Dict[str, Any]:
+            tts_spoken_calls.append(text)
+            return {"ok": True, "spoken": True, "error": None}
+
+    orig_audio = voice_worker_module.audio_input_provider
+    orig_stt = voice_worker_module.stt_provider
+    orig_tts = voice_worker_module.tts_provider
+    voice_worker_module.audio_input_provider = _FakeAudioInput()
+    voice_worker_module.stt_provider = _FakeStt()
+    voice_worker_module.tts_provider = _FakeTts()
+
+    def _restore() -> None:
+        voice_worker_module.audio_input_provider = orig_audio
+        voice_worker_module.stt_provider = orig_stt
+        voice_worker_module.tts_provider = orig_tts
+
+    worker._test_restore_providers = _restore  # type: ignore[attr-defined]
+
+    transport = FakeTransport(
+        {
+            "/voice/push-to-talk/text": _envelope(
+                data={
+                    "final_answer": "Done boss.",
+                    "status": "completed",
+                    "route": ["system"],
+                    "worker_task_id": "wtask_fake999",
+                    "speech_output_status": "spoken",
+                }
+            ),
+        }
+    )
+    worker._client._request = transport  # type: ignore[method-assign]
+    return worker, transport, tts_spoken_calls
+
+
+class TestActiveConversationAcknowledgement:
+    """Item 1: wake word activates active_conversation mode with a short
+    spoken/printed acknowledgement, before any command is captured."""
+
+    def test_wake_word_speaks_acknowledgement_and_enters_active_conversation(self, monkeypatch, capsys) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        capture_calls: List[bool] = []
+
+        def _fake_capture(**kwargs: Any) -> bool:
+            capture_calls.append(True)
+            # Confirm we're already in active_conversation by the time the
+            # first command capture happens.
+            assert worker._active_conversation is True
+            worker._sleep_requested = True
+            return False
+
+        monkeypatch.setattr(worker, "_capture_transcribe_and_respond", _fake_capture)
+        monkeypatch.setattr(worker, "send_heartbeat", lambda: {"ok": True, "transport_ok": True, "transport_status": "http_200"})
+
+        worker._run_active_conversation_session(wake_detect_ms=12.3)
+
+        captured = capsys.readouterr()
+        assert "Yes boss?" in captured.out
+        assert len(capture_calls) == 1
+        # Session must clean up back to False once it ends.
+        assert worker._active_conversation is False
+
+
+class TestSleepPhrasesEndSession:
+    """Items 3 and 5: a local sleep phrase said during active_conversation
+    ends the session, is spoken back, and -- critically -- is NEVER sent to
+    the assistant dispatcher/MasterAgent."""
+
+    def test_william_bye_returns_to_wake_word_waiting(self, monkeypatch, capsys) -> None:
+        worker, transport, _tts_calls = _build_capture_worker(transcript="William bye")
+        worker._active_conversation = True
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is False
+        assert worker._sleep_requested is True
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" not in called_paths
+        captured = capsys.readouterr()
+        assert "Okay boss, I'll wait for the wake word." in captured.out
+
+    def test_go_to_sleep_is_not_sent_to_assistant_dispatcher(self, monkeypatch) -> None:
+        worker, transport, _tts_calls = _build_capture_worker(transcript="okay, go to sleep now")
+        worker._active_conversation = True
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is False
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" not in called_paths
+
+    def test_sleep_phrases_ignored_outside_active_conversation(self) -> None:
+        """A plain --simulate-text/one-shot call (self._active_conversation
+        left False) must NOT treat "William bye" as a sleep phrase -- that
+        gate only applies during a real continuous-conversation session."""
+        worker, transport, _tts_calls = _build_capture_worker(transcript="William bye")
+        assert worker._active_conversation is False
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is True
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" in called_paths
+
+
+class TestRiskyCommandNotTreatedAsSleep:
+    """Item 6: "shutdown computer" is a real risky command, not a local
+    sleep phrase ("shutdown voice" is the sleep phrase) -- it must still
+    reach the assistant dispatcher, which routes it to SecurityAgent."""
+
+    def test_shutdown_computer_is_dispatched_not_treated_as_sleep(self, monkeypatch) -> None:
+        # Isolates the sleep-vs-risky distinction from the separate,
+        # already-tested speaker-sensitivity gate (TestSpeakerRecognition
+        # AndTtsOptional) -- "shutdown" is also a SENSITIVE_TRANSCRIPT_
+        # KEYWORDS entry, which would otherwise hold this back locally for
+        # an unrelated reason (no speaker-recognition provider configured)
+        # and mask what this test is actually checking.
+        monkeypatch.setenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "test_provider")
+        worker, transport, _tts_calls = _build_capture_worker(transcript="shutdown computer")
+        worker._active_conversation = True
+        assert worker._is_sleep_transcript("shutdown computer") is False
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is True
+        assert worker._sleep_requested is False
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" in called_paths
+
+
+class TestWeakTranscriptRejectedLocally:
+    """Item 9: an empty/garbled/low-confidence transcript is never sent to
+    the assistant dispatcher -- the worker asks the user to repeat
+    instead."""
+
+    def test_dot_transcript_rejected_and_asks_repeat(self, capsys) -> None:
+        worker, transport, _tts_calls = _build_capture_worker(transcript=".", confidence=0.9)
+        worker._active_conversation = True
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is False
+        assert worker._sleep_requested is False
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" not in called_paths
+        captured = capsys.readouterr()
+        assert "Boss, I heard you but could not understand. Please repeat." in captured.out
+
+    def test_low_confidence_transcript_rejected(self) -> None:
+        worker, transport, _tts_calls = _build_capture_worker(transcript="open notepad", confidence=0.02)
+        worker._active_conversation = True
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is False
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" not in called_paths
+
+    def test_clear_transcript_not_rejected(self) -> None:
+        worker, transport, _tts_calls = _build_capture_worker(transcript="open notepad", confidence=0.9)
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is True
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" in called_paths
+
+
+class TestSpokenReplyShortening:
+    """Item 12: WILLIAM_VOICE_MAX_SPOKEN_CHARS caps what gets SPOKEN
+    through TTS by default -- never the printed/logged full text."""
+
+    def test_long_reply_is_truncated_for_speech(self, monkeypatch) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        monkeypatch.setenv("WILLIAM_VOICE_MAX_SPOKEN_CHARS", "40")
+        monkeypatch.delenv("WILLIAM_VOICE_REPLY_STYLE", raising=False)
+
+        long_text = "This is a very long answer that goes on and on well past the configured spoken character limit."
+        spoken = worker._prepare_spoken_text(long_text)
+
+        assert len(spoken) <= 44  # 40 + "..." plus a little slack for word-boundary cut
+        assert spoken != long_text
+        assert long_text.startswith(spoken.rstrip("."))
+
+    def test_reply_style_full_disables_truncation(self, monkeypatch) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        monkeypatch.setenv("WILLIAM_VOICE_MAX_SPOKEN_CHARS", "10")
+        monkeypatch.setenv("WILLIAM_VOICE_REPLY_STYLE", "full")
+
+        long_text = "This text is much longer than ten characters."
+        assert worker._prepare_spoken_text(long_text) == long_text
+
+    def test_short_reply_unaffected(self, monkeypatch) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        monkeypatch.delenv("WILLIAM_VOICE_MAX_SPOKEN_CHARS", raising=False)
+        monkeypatch.delenv("WILLIAM_VOICE_REPLY_STYLE", raising=False)
+
+        assert worker._prepare_spoken_text("Done boss.") == "Done boss."
+
+
+class TestCliDiagnosticsWork:
+    """Items 13-15: --test-tts / --test-mic / --test-stt each do a real
+    (fake-provider-backed) capture/speak cycle and report success."""
+
+    def test_test_tts_speaks_custom_text(self, monkeypatch, capsys) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        spoken_calls: List[str] = []
+
+        class _FakeTts:
+            @staticmethod
+            def check_status() -> Dict[str, Any]:
+                return {"configured": True, "reason": None, "install_guidance": None}
+
+            @staticmethod
+            def speak(text: str) -> Dict[str, Any]:
+                spoken_calls.append(text)
+                return {"ok": True, "spoken": True, "error": None}
+
+        monkeypatch.setattr(voice_worker_module, "tts_provider", _FakeTts())
+
+        exit_code = worker.test_tts(text="Boss, William voice output is working.")
+
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        assert spoken_calls == ["Boss, William voice output is working."]
+        assert "Spoken successfully" in captured.out
+
+    def test_test_mic_records_and_reports_duration(self, monkeypatch, capsys) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        class _FakeAudioInput:
+            @staticmethod
+            def record_to_tempfile(**kwargs: Any) -> Dict[str, Any]:
+                return {"ok": True, "audio_path": "C:\\fake\\mic_test.wav", "duration_seconds": 3.2, "error": None, "peak_rms": 700.0}
+
+        monkeypatch.setattr(voice_worker_module, "audio_input_provider", _FakeAudioInput())
+        monkeypatch.setattr(os, "remove", lambda path: None)
+
+        exit_code = worker.test_mic()
+
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        assert "3.2s" in captured.out
+
+    def test_test_stt_records_and_transcribes(self, monkeypatch, capsys) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        class _FakeAudioInput:
+            @staticmethod
+            def record_to_tempfile(**kwargs: Any) -> Dict[str, Any]:
+                return {"ok": True, "audio_path": "C:\\fake\\stt_test.wav", "duration_seconds": 2.0, "error": None, "peak_rms": 800.0}
+
+        class _FakeStt:
+            @staticmethod
+            def check_status() -> Dict[str, Any]:
+                return {"configured": True, "reason": None, "install_guidance": None}
+
+            @staticmethod
+            def transcribe(path: str) -> Dict[str, Any]:
+                return {"ok": True, "text": "open notepad", "confidence": 0.93, "error": None}
+
+        monkeypatch.setattr(voice_worker_module, "audio_input_provider", _FakeAudioInput())
+        monkeypatch.setattr(voice_worker_module, "stt_provider", _FakeStt())
+        monkeypatch.setattr(os, "remove", lambda path: None)
+
+        exit_code = worker.test_stt()
+
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        assert "open notepad" in captured.out
+        assert "0.93" in captured.out

@@ -58,7 +58,9 @@ class TestKnowledgeQuestionDispatch:
         )
         assert response.status_code == 200
         data = response.json()["data"]
-        assert data["final_answer"] == "Boss, AI knowledge provider is not configured yet."
+        assert data["final_answer"] == (
+            "Boss, the knowledge provider is not connected yet. Connect Ollama, OpenAI, or LM Studio from settings."
+        )
         assert data["status"] == "failed"
         assert data["generated_files"] == []
 

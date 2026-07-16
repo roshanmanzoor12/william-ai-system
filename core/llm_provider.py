@@ -232,7 +232,9 @@ def is_live_data_query(message: str) -> Optional[str]:
 
 LIVE_WEATHER_FALLBACK_MESSAGE = "Boss, live weather provider is not connected yet."
 LIVE_DATA_FALLBACK_MESSAGE = "Boss, I don't have a connected live/current data provider for that yet."
-KNOWLEDGE_PROVIDER_MISSING_MESSAGE = "Boss, AI knowledge provider is not configured yet."
+KNOWLEDGE_PROVIDER_MISSING_MESSAGE = (
+    "Boss, the knowledge provider is not connected yet. Connect Ollama, OpenAI, or LM Studio from settings."
+)
 
 
 __all__ = [

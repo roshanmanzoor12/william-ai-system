@@ -97,10 +97,32 @@ Config (CLI flag, then env var, then default):
                                                           duration/path (deletes the file after); no auth needed
     --test-stt                                          record + transcribe with the configured STT provider and
                                                           print the real text; no auth needed
-    --test-tts                                          speak a fixed test sentence with the configured TTS
-                                                          provider (or report tts_missing); no auth needed
+    --test-tts ["<text>"]                               speak a test sentence (the default one, or the given
+                                                          text) with the configured TTS provider (or report
+                                                          tts_missing); no auth needed
     --test-wake-word                                    listen for the real audio wake word for a few seconds and
                                                           report detected/not detected; no auth needed
+
+Continuous conversation session (wake_word_admin/wake_word_trusted_users
+only -- see _run_active_conversation_session): after the wake word is
+detected, the worker stays in active_conversation and keeps capturing/
+dispatching commands WITHOUT requiring the wake word again, until a local
+sleep phrase (SLEEP_PHRASES) is said or the session times out.
+    WILLIAM_VOICE_ACTIVE_SESSION_TIMEOUT_SECONDS      inactivity timeout, seconds (default 60)
+    WILLIAM_VOICE_COMMAND_RECORD_SECONDS              max seconds per command capture (default 5)
+    WILLIAM_VOICE_COMMAND_SILENCE_TIMEOUT             silence-to-stop-recording seconds (default 1.5)
+    WILLIAM_VOICE_REPLY_STYLE                          "short" (default) or "full" -- only the SPOKEN
+                                                          copy of a reply is ever shortened; the printed/
+                                                          logged text is always shown in full
+    WILLIAM_VOICE_MAX_SPOKEN_CHARS                     spoken-reply character cap when REPLY_STYLE=short
+                                                          (default 240)
+    WILLIAM_VOICE_DEBUG                                 "1"/"true" prints extra debug info (selected mic
+                                                          device, RMS input level, TTS voice/rate/volume)
+                                                          from --test-mic/--test-stt/--test-tts
+    WILLIAM_VOICE_SAVE_DEBUG_WAV                        alias for WILLIAM_VOICE_DEBUG_KEEP_AUDIO -- keeps
+                                                          the captured WAV instead of deleting it
+    WILLIAM_VOICE_MIC_DEVICE                           preferred alias for WILLIAM_AUDIO_DEVICE (device
+                                                          index or a substring of its name)
 
 If no token/device-token is configured, the worker still starts (it will
 not crash) -- the status call will honestly fail with an auth error and
@@ -208,7 +230,17 @@ ALWAYS_LISTENING_MODES = {"wake_word_admin", "wake_word_trusted_users"}
 # Local debug-only escape hatch: real captured audio is deleted immediately
 # after STT consumes it unless this is explicitly set to keep it on disk
 # for troubleshooting a bad transcription. Never enabled by default.
+# WILLIAM_VOICE_SAVE_DEBUG_WAV is an honest alias for the exact same
+# behavior (matches the naming this feature's spec asks for) -- either one
+# set keeps the WAV.
 DEBUG_KEEP_AUDIO_ENV_VAR = "WILLIAM_VOICE_DEBUG_KEEP_AUDIO"
+SAVE_DEBUG_WAV_ENV_VAR = "WILLIAM_VOICE_SAVE_DEBUG_WAV"
+VOICE_DEBUG_ENV_VAR = "WILLIAM_VOICE_DEBUG"
+MIC_DEVICE_ENV_VAR = "WILLIAM_VOICE_MIC_DEVICE"
+
+
+def _voice_debug_enabled() -> bool:
+    return os.getenv(VOICE_DEBUG_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
 
 # Local, worker-side heuristic ONLY -- deciding whether to hold a command
 # back locally pending speaker verification (see _is_sensitive_transcript).
@@ -238,20 +270,79 @@ LOCAL_PROVIDER_ENV_VARS = (
     "WILLIAM_WAKE_WORD_PHRASE",
 )
 
+# Continuous conversation session -- local, worker-side control phrases
+# ONLY (never sent to the assistant dispatcher/MasterAgent when matched
+# during an active_conversation session; see _is_sleep_transcript). This is
+# deliberately distinct from the SERVER-side "William standby"/"William
+# shutdown voice" control phrases apps/api/routes/voice.py's push-to-talk-
+# text dispatcher already recognizes (which fully disable/pause the
+# workspace's voice mode) -- these phrases only end THIS worker's local
+# active_conversation session and return to wake-word waiting; the
+# workspace's server-side voice mode is untouched. "shutdown voice"
+# appearing in both lists is intentional: said during an active
+# conversation it now means "stop this local session" (per this feature's
+# spec), not "disable the workspace" -- an operator who wants the full
+# server-side disable can still do it from the dashboard or via
+# POST /voice/disable.
+SLEEP_PHRASES = (
+    "william bye",
+    "bye william",
+    "go to sleep",
+    "stop listening",
+    "shutdown voice",
+    "sleep now",
+    "that's all",
+    "thank you william",
+)
+
+# Continuous conversation session env vars.
+ACTIVE_SESSION_TIMEOUT_ENV_VAR = "WILLIAM_VOICE_ACTIVE_SESSION_TIMEOUT_SECONDS"
+DEFAULT_ACTIVE_SESSION_TIMEOUT_SECONDS = 60.0
+COMMAND_RECORD_SECONDS_ENV_VAR = "WILLIAM_VOICE_COMMAND_RECORD_SECONDS"
+DEFAULT_COMMAND_RECORD_SECONDS = 5.0
+COMMAND_SILENCE_TIMEOUT_ENV_VAR = "WILLIAM_VOICE_COMMAND_SILENCE_TIMEOUT"
+DEFAULT_COMMAND_SILENCE_TIMEOUT = 1.5
+
+# A transcript this short/empty (after stripping trailing periods) is
+# never sent to the assistant dispatcher -- honest local rejection instead
+# of guessing at a garbled/empty STT result. Not itself an env var (the
+# spec only asks for the behavior, not a tunable threshold); a low
+# confidence floor is also applied when the STT provider reports one.
+WEAK_TRANSCRIPT_MIN_LENGTH = 2
+WEAK_TRANSCRIPT_MIN_CONFIDENCE = 0.15
+
+# Reply-shaping env vars (Phase 4: keep spoken replies short by default;
+# the full text is always still printed/logged/shown in the dashboard --
+# only what gets SPOKEN through TTS is ever shortened).
+VOICE_REPLY_STYLE_ENV_VAR = "WILLIAM_VOICE_REPLY_STYLE"
+DEFAULT_VOICE_REPLY_STYLE = "short"
+VOICE_MAX_SPOKEN_CHARS_ENV_VAR = "WILLIAM_VOICE_MAX_SPOKEN_CHARS"
+DEFAULT_VOICE_MAX_SPOKEN_CHARS = 240
+
 
 class VoiceWorkerState(str, Enum):
     """
-    Console lifecycle states, exact names from the Phase 9 spec.
+    Console lifecycle states, exact names from the Phase 9 spec, extended
+    with the continuous-conversation-session states (waiting_for_wake_word/
+    active_conversation/capturing_command/dispatching/sleeping) -- added
+    alongside the originals, not replacing them, so every existing state
+    transition (idle-loop/interactive-loop/wake-word-wait/speaker-
+    verification/language-detection stages) keeps working unchanged.
     """
 
     IDLE = "idle"
     LISTENING = "listening"
+    WAITING_FOR_WAKE_WORD = "waiting_for_wake_word"
     WAKE_DETECTED = "wake_detected"
+    ACTIVE_CONVERSATION = "active_conversation"
+    CAPTURING_COMMAND = "capturing_command"
     VERIFYING_SPEAKER = "verifying_speaker"
     TRANSCRIBING = "transcribing"
     LANGUAGE_DETECTED = "language_detected"
     SENDING_TO_MASTER = "sending_to_master"
+    DISPATCHING = "dispatching"
     SPEAKING = "speaking"
+    SLEEPING = "sleeping"
     ERROR = "error"
 
 
@@ -304,6 +395,16 @@ class VoiceWorker:
         self._client = self._build_worker_client()
         self._wake_detector = self._build_wake_detector()
         self._known_wake_word = (config.wake_word or DEFAULT_WAKE_WORD).strip().lower()
+        # Continuous conversation session state (see _run_active_conversation_
+        # session) -- _active_conversation gates the local sleep-phrase check
+        # in _capture_transcribe_and_respond (never applied to a single
+        # --simulate-text/interactive-loop call); _sleep_requested is set by
+        # that same method right before returning False for a detected sleep
+        # phrase, so the caller can distinguish "sleep" from "weak/failed
+        # capture" without changing _capture_transcribe_and_respond's
+        # existing bool return contract.
+        self._active_conversation = False
+        self._sleep_requested = False
 
     # -----------------------------------------------------------------
     # Construction helpers
@@ -711,6 +812,72 @@ class VoiceWorker:
         lowered = f" {text.strip().lower()} "
         return any(keyword in lowered for keyword in SENSITIVE_TRANSCRIPT_KEYWORDS)
 
+    @staticmethod
+    def _is_sleep_transcript(text: str) -> bool:
+        """Local session-control heuristic only (see SLEEP_PHRASES) --
+        only ever consulted while self._active_conversation is True (see
+        _capture_transcribe_and_respond), so a plain --simulate-text/
+        interactive-loop call is never affected by this check."""
+        lowered = " ".join(text.strip().lower().split())
+        return any(phrase in lowered for phrase in SLEEP_PHRASES)
+
+    @staticmethod
+    def _is_weak_transcript(text: Optional[str], confidence: Optional[float] = None) -> bool:
+        """True for an empty/garbled STT result (e.g. "", ".", "..") or a
+        result the STT provider itself reports very low confidence for --
+        never sent to the assistant dispatcher; the caller instead asks
+        the user to repeat themselves. Never applied to typed/simulated
+        text (which has no STT confidence to begin with)."""
+        if not text:
+            return True
+        normalized = text.strip().strip(".").strip()
+        if len(normalized) < WEAK_TRANSCRIPT_MIN_LENGTH:
+            return True
+        if confidence is not None and confidence < WEAK_TRANSCRIPT_MIN_CONFIDENCE:
+            return True
+        return False
+
+    def _speak_and_print(self, text: str) -> None:
+        """Standalone short spoken/printed message (wake acknowledgement,
+        sleep confirmation, weak-transcript reprompt) -- ALWAYS printed
+        (visible even without TTS configured -- "speak or print", never
+        silent), and additionally spoken via the local TTS provider when
+        one is configured. Distinct from _speak_response (which speaks a
+        command's final_answer -- that text is already printed separately
+        by _print_command_response, so it must never print again here)."""
+        if not text:
+            return
+        print(text)
+        self._log(f"[voice] {text}")
+        if tts_provider is None:
+            return
+        status = tts_provider.check_status()
+        if not status["configured"]:
+            return
+        self._set_state(VoiceWorkerState.SPEAKING, "speaking short message with local TTS provider")
+        result = tts_provider.speak(text)
+        if result["ok"]:
+            self._log("Spoken via local TTS provider.")
+        else:
+            self._log(f"TTS speak failed ({result['error']}); text response only.")
+
+    @staticmethod
+    def _prepare_spoken_text(text: str) -> str:
+        """The FULL text is always shown in the printed response/dashboard/
+        log unchanged -- only what gets SPOKEN through TTS is shortened by
+        default (WILLIAM_VOICE_REPLY_STYLE=short, the default; set to
+        "full" to speak everything verbatim). WILLIAM_VOICE_MAX_SPOKEN_CHARS
+        caps the spoken length (default 240), cut at the last whole word so
+        it never trails off mid-word."""
+        style = os.getenv(VOICE_REPLY_STYLE_ENV_VAR, DEFAULT_VOICE_REPLY_STYLE).strip().lower()
+        if style == "full":
+            return text
+        max_chars = _env_int(VOICE_MAX_SPOKEN_CHARS_ENV_VAR, DEFAULT_VOICE_MAX_SPOKEN_CHARS)
+        if max_chars <= 0 or len(text) <= max_chars:
+            return text
+        truncated = text[:max_chars].rsplit(" ", 1)[0].rstrip(",;: ")
+        return f"{truncated}..." if truncated else text[:max_chars]
+
     # -----------------------------------------------------------------
     # Core text-input pipeline (used by --simulate-text and the
     # interactive stdin fallback loop)
@@ -903,7 +1070,9 @@ class VoiceWorker:
         the actual speak-or-not decision is this worker's local provider
         status, since a real distributed deployment's backend and worker
         need not share the same env vars. Never claims spoken=True unless
-        tts_provider.speak() really ran the engine."""
+        tts_provider.speak() really ran the engine. Only the SPOKEN copy is
+        shortened (see _prepare_spoken_text) -- _print_command_response
+        above already printed the full, untruncated final_answer."""
         text = command_data.get("final_answer") or command_data.get("response_text") or ""
         if not text:
             return
@@ -914,7 +1083,7 @@ class VoiceWorker:
             self._log(f"TTS not configured locally ({status['reason']}); text response only.")
             return
         self._set_state(VoiceWorkerState.SPEAKING, "speaking final_answer with local TTS provider")
-        result = tts_provider.speak(text)
+        result = tts_provider.speak(self._prepare_spoken_text(text))
         if result["ok"]:
             self._log("Spoken via local TTS provider.")
         else:
@@ -982,14 +1151,14 @@ class VoiceWorker:
         self._log(f"Listening for wake word: {display_phrase}")
 
         self._set_state(
-            VoiceWorkerState.IDLE,
+            VoiceWorkerState.WAITING_FOR_WAKE_WORD,
             f"real always-listening audio loop starting (mode={mode}); say the wake word to activate.",
         )
         listener = wake_word_provider.WakeWordListener()  # type: ignore[union-attr]
         try:
             while True:
                 self._log(f"Listening for real wake word (poll window {self.config.poll_interval_seconds}s)...")
-                self._set_state(VoiceWorkerState.LISTENING, "real audio wake-word detection active")
+                self._set_state(VoiceWorkerState.WAITING_FOR_WAKE_WORD, "real audio wake-word detection active")
                 wake_detect_started = time.monotonic()
                 detection = listener.listen_until_detected(max_seconds=self.config.poll_interval_seconds)
                 wake_detect_ms = round((time.monotonic() - wake_detect_started) * 1000, 1)
@@ -1013,24 +1182,79 @@ class VoiceWorker:
                     self._print_api_failure("POST /voice/wake-event", wake_event_result)
                     continue
 
-                self._capture_transcribe_and_respond(wake_detect_ms=wake_detect_ms)
+                self._run_active_conversation_session(wake_detect_ms=wake_detect_ms)
         except KeyboardInterrupt:
             raise
         finally:
             listener.stop()
 
+    def _run_active_conversation_session(self, *, wake_detect_ms: float = 0.0) -> None:
+        """The wake word was just detected -- acknowledge it, then stay in
+        active_conversation, capturing and dispatching commands WITHOUT
+        requiring the wake word again, until a local sleep phrase is
+        detected (see _is_sleep_transcript) or
+        WILLIAM_VOICE_ACTIVE_SESSION_TIMEOUT_SECONDS of inactivity elapses.
+        Always returns control to the caller's outer wake-word loop one way
+        or another; only KeyboardInterrupt (a real Ctrl+C) propagates past
+        it, for a clean stop."""
+        self._active_conversation = True
+        try:
+            self._speak_and_print("Yes boss?")
+            self._set_state(VoiceWorkerState.ACTIVE_CONVERSATION, "active conversation session started")
+
+            timeout_seconds = _env_float(ACTIVE_SESSION_TIMEOUT_ENV_VAR, DEFAULT_ACTIVE_SESSION_TIMEOUT_SECONDS)
+            session_started = time.monotonic()
+            first_command = True
+
+            while True:
+                if time.monotonic() - session_started >= timeout_seconds:
+                    self._log(
+                        f"Active conversation session timed out after {timeout_seconds:.0f}s of "
+                        "inactivity; returning to wake-word waiting mode."
+                    )
+                    self._set_state(VoiceWorkerState.SLEEPING, "inactivity timeout")
+                    return
+
+                self._set_state(
+                    VoiceWorkerState.ACTIVE_CONVERSATION,
+                    "listening for the next command (no wake word needed)",
+                )
+                sent = self._capture_transcribe_and_respond(
+                    wake_detect_ms=wake_detect_ms if first_command else 0.0,
+                )
+                first_command = False
+
+                if self._sleep_requested:
+                    return
+                if sent:
+                    # Real activity resets the inactivity clock; a weak/
+                    # failed capture does not -- repeated silence still
+                    # counts toward the timeout.
+                    session_started = time.monotonic()
+        finally:
+            self._active_conversation = False
+
     def _capture_transcribe_and_respond(self, *, wake_detect_ms: float = 0.0) -> bool:
         """Real microphone capture -> real STT -> shared dispatch/response/
         TTS tail. The captured WAV is always deleted immediately after STT
-        consumes it unless WILLIAM_VOICE_DEBUG_KEEP_AUDIO=true -- "no raw
-        audio stored by default" is enforced right here, not just claimed
-        in a comment."""
+        consumes it unless WILLIAM_VOICE_DEBUG_KEEP_AUDIO/
+        WILLIAM_VOICE_SAVE_DEBUG_WAV is set -- "no raw audio stored by
+        default" is enforced right here, not just claimed in a comment.
+        Returns True only if a command was actually dispatched to the
+        assistant dispatcher; see self._sleep_requested (set just before
+        returning False) for the caller to distinguish "local sleep phrase"
+        from "weak/garbled/failed capture" without changing this method's
+        long-standing bool return contract."""
+        self._sleep_requested = False
         timing: Dict[str, float] = {"wake_detect_ms": wake_detect_ms}
         pipeline_started = time.monotonic()
 
-        self._set_state(VoiceWorkerState.LISTENING, "capturing real microphone audio")
+        self._set_state(VoiceWorkerState.CAPTURING_COMMAND, "capturing real microphone audio")
         record_started = time.monotonic()
-        record_result = audio_input_provider.record_to_tempfile()  # type: ignore[union-attr]
+        record_result = audio_input_provider.record_to_tempfile(  # type: ignore[union-attr]
+            max_duration_seconds=_env_float(COMMAND_RECORD_SECONDS_ENV_VAR, DEFAULT_COMMAND_RECORD_SECONDS),
+            silence_timeout_seconds=_env_float(COMMAND_SILENCE_TIMEOUT_ENV_VAR, DEFAULT_COMMAND_SILENCE_TIMEOUT),
+        )
         timing["record_ms"] = round((time.monotonic() - record_started) * 1000, 1)
         if not record_result["ok"]:
             self._set_state(VoiceWorkerState.ERROR, "microphone capture failed")
@@ -1049,15 +1273,35 @@ class VoiceWorker:
             if not transcribe_result["ok"]:
                 self._set_state(VoiceWorkerState.ERROR, "transcription failed")
                 self._log(f"STT could not produce a transcript: {transcribe_result['error']}")
+                if self._active_conversation:
+                    self._speak_and_print("Boss, I heard you but could not understand. Please repeat.")
                 return False
 
             transcript = transcribe_result["text"]
-            self._log(f"Transcript: {transcript!r} (confidence={transcribe_result.get('confidence')})")
+            confidence = transcribe_result.get("confidence")
+            self._log(f"Transcript: {transcript!r} (confidence={confidence})")
+
+            if self._is_weak_transcript(transcript, confidence):
+                self._log(f"Weak/garbled transcript rejected locally, not sent: {transcript!r}")
+                if self._active_conversation:
+                    self._speak_and_print("Boss, I heard you but could not understand. Please repeat.")
+                return False
+
+            if self._active_conversation and self._is_sleep_transcript(transcript):
+                self._sleep_requested = True
+                self._set_state(VoiceWorkerState.SLEEPING, f"sleep phrase detected: {transcript!r}")
+                self._log(f"Sleep phrase detected ({transcript!r}); not sending to the assistant dispatcher.")
+                self._speak_and_print("Okay boss, I'll wait for the wake word.")
+                return False
+
             return self._send_transcript_and_respond(transcript, timing=timing, pipeline_started=pipeline_started)
         finally:
-            keep_audio = os.getenv(DEBUG_KEEP_AUDIO_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+            keep_audio = (
+                os.getenv(DEBUG_KEEP_AUDIO_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+                or os.getenv(SAVE_DEBUG_WAV_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+            )
             if keep_audio:
-                self._log(f"WILLIAM_VOICE_DEBUG_KEEP_AUDIO is set -- keeping captured audio at {audio_path}")
+                self._log(f"Debug WAV retention is set -- keeping captured audio at {audio_path}")
             else:
                 try:
                     os.remove(audio_path)
@@ -1091,12 +1335,23 @@ class VoiceWorker:
         if audio_input_provider is None:
             print("dependency_required: apps.worker_nodes.voice.providers.audio_input is unavailable.")
             return 1
+        debug = _voice_debug_enabled()
+        if debug:
+            print(f"Selected microphone device: {audio_input_provider.selected_device_label()}")
         print("Recording a few real seconds from the microphone (speak now)...")
+        keep_wav = os.getenv(SAVE_DEBUG_WAV_ENV_VAR, "").strip().lower() in ("1", "true", "yes") or os.getenv(
+            DEBUG_KEEP_AUDIO_ENV_VAR, ""
+        ).strip().lower() in ("1", "true", "yes")
         result = audio_input_provider.record_to_tempfile(max_duration_seconds=6.0)
         if not result["ok"]:
             print(f"Microphone test failed: {result['error']}")
             return 1
         print(f"Captured {result['duration_seconds']:.1f}s of real audio -> {result['audio_path']}")
+        if debug:
+            print(f"Peak input level (RMS): {result.get('peak_rms', 0.0)}")
+        if keep_wav:
+            print(f"Debug WAV kept at: {result['audio_path']}")
+            return 0
         try:
             os.remove(result["audio_path"])
             print("Temp audio file deleted (no raw audio stored by default).")
@@ -1112,11 +1367,21 @@ class VoiceWorker:
         if not stt_status["configured"]:
             print(f"dependency_required: {stt_status['reason']}. {stt_status.get('install_guidance') or ''}")
             return 1
+        debug = _voice_debug_enabled()
+        if debug:
+            print(f"Selected microphone device: {audio_input_provider.selected_device_label()}")
+            print(f"WILLIAM_STT_MODEL={os.getenv('WILLIAM_STT_MODEL', 'base')!r} WILLIAM_STT_LANGUAGE={os.getenv('WILLIAM_STT_LANGUAGE', '') or '(auto-detect)'!r}")
         print("Recording a few real seconds from the microphone (speak now)...")
+        keep_wav = os.getenv(SAVE_DEBUG_WAV_ENV_VAR, "").strip().lower() in ("1", "true", "yes") or os.getenv(
+            DEBUG_KEEP_AUDIO_ENV_VAR, ""
+        ).strip().lower() in ("1", "true", "yes")
         record_result = audio_input_provider.record_to_tempfile(max_duration_seconds=8.0)
         if not record_result["ok"]:
             print(f"Microphone capture failed: {record_result['error']}")
             return 1
+        if debug:
+            print(f"Recording duration: {record_result['duration_seconds']:.1f}s")
+            print(f"Peak input level (RMS): {record_result.get('peak_rms', 0.0)}")
         try:
             print("Transcribing real captured audio...")
             transcribe_result = stt_provider.transcribe(record_result["audio_path"])
@@ -1124,24 +1389,39 @@ class VoiceWorker:
                 print(f"Transcription failed: {transcribe_result['error']}")
                 return 1
             print(f"Real transcript: {transcribe_result['text']!r} (confidence={transcribe_result.get('confidence')})")
+            if keep_wav:
+                print(f"Debug WAV kept at: {record_result['audio_path']}")
             return 0
         finally:
-            try:
-                os.remove(record_result["audio_path"])
-            except OSError:
-                pass
+            if not keep_wav:
+                try:
+                    os.remove(record_result["audio_path"])
+                except OSError:
+                    pass
 
-    def test_tts(self) -> int:
+    def test_tts(self, text: Optional[str] = None) -> int:
+        spoken_text = text or "This is a test of William's text to speech."
         if tts_provider is None:
             print("dependency_required: apps.worker_nodes.voice.providers.tts is unavailable.")
             return 1
         status = tts_provider.check_status()
         if not status["configured"]:
             print(f"tts_missing: {status['reason']}. {status.get('install_guidance') or ''}")
-            print("Text response only: This is a test of William's text to speech.")
+            print(f"Text response only: {spoken_text}")
             return 0
-        print("Speaking a real test sentence through the configured TTS provider...")
-        result = tts_provider.speak("This is a test of William's text to speech.")
+        if _voice_debug_enabled():
+            voice_selector = os.getenv("WILLIAM_TTS_VOICE", "").strip() or "(engine default)"
+            print(
+                f"TTS provider ready. WILLIAM_TTS_RATE={os.getenv('WILLIAM_TTS_RATE', '175')} "
+                f"WILLIAM_TTS_VOLUME={os.getenv('WILLIAM_TTS_VOLUME', '1.0')} WILLIAM_TTS_VOICE={voice_selector!r}"
+            )
+            try:
+                voices = tts_provider.list_voices()
+                print(f"Installed voices ({len(voices)}): {[v.get('name') for v in voices]}")
+            except Exception as exc:  # pragma: no cover - defensive only
+                print(f"Could not list installed voices: {exc}")
+        print(f"Speaking through the configured TTS provider: {spoken_text!r}")
+        result = tts_provider.speak(spoken_text)
         if result["ok"]:
             print("Spoken successfully via local TTS provider.")
             return 0
@@ -1353,12 +1633,30 @@ class VoiceWorker:
 # CLI entrypoint
 # ---------------------------------------------------------------------
 
+# argparse sentinel: distinguishes "--test-tts given with no value" (speak
+# the default sentence) from "--test-tts never given at all" (None,
+# nargs='?' + const so a bare flag doesn't collide with an empty-string
+# custom text, which would be falsy and get skipped by the diagnostic-flag
+# dispatch below).
+_TEST_TTS_FLAG_ONLY_SENTINEL = "\x00__test_tts_default__\x00"
+
+
 def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if not value:
         return default
     try:
         return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
     except ValueError:
         return default
 
@@ -1412,8 +1710,12 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--test-tts",
-        action="store_true",
-        help="Speak a fixed test sentence with the configured TTS provider (or report tts_missing). No backend auth required.",
+        nargs="?",
+        const=_TEST_TTS_FLAG_ONLY_SENTINEL,
+        default=None,
+        metavar="TEXT",
+        help="Speak a test sentence (the default one, or TEXT if given) with the configured TTS "
+        "provider (or report tts_missing). No backend auth required.",
     )
     parser.add_argument(
         "--test-wake-word",
@@ -1465,7 +1767,9 @@ def build_config(args: argparse.Namespace) -> VoiceWorkerConfig:
     return config
 
 
-_LOCAL_DIAGNOSTIC_FLAGS = ("list_audio_devices", "test_mic", "test_stt", "test_tts", "test_wake_word")
+# test_tts is dispatched separately (below) since it now carries an
+# optional custom-text value rather than being a plain boolean flag.
+_LOCAL_DIAGNOSTIC_FLAGS = ("list_audio_devices", "test_mic", "test_stt", "test_wake_word")
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -1478,6 +1782,10 @@ def main(argv: Optional[list] = None) -> int:
         # in this module's own docstring. Mutually exclusive by construction
         # (only one can meaningfully run per invocation); the first one set
         # wins if more than one flag is passed.
+        if args.test_tts is not None:
+            custom_text = None if args.test_tts == _TEST_TTS_FLAG_ONLY_SENTINEL else args.test_tts
+            return worker.test_tts(text=custom_text)
+
         for flag_name in _LOCAL_DIAGNOSTIC_FLAGS:
             if getattr(args, flag_name):
                 return getattr(worker, flag_name)()

@@ -119,7 +119,12 @@ def transcribe(audio_path: str) -> Dict[str, Any]:
     try:
         if provider == "faster_whisper":
             model = _get_local_model()
-            segments, info = model.transcribe(audio_path)
+            # WILLIAM_STT_LANGUAGE pins a language code (e.g. "en") instead
+            # of faster-whisper's default per-clip auto-detection -- blank/
+            # unset keeps auto-detect exactly as before (no behavior change
+            # for anyone not setting it).
+            language = os.getenv("WILLIAM_STT_LANGUAGE", "").strip() or None
+            segments, info = model.transcribe(audio_path, language=language)
             text_parts = [segment.text.strip() for segment in segments]
             text = " ".join(part for part in text_parts if part).strip()
             confidence = float(getattr(info, "language_probability", 0.0) or 0.0)

@@ -120,10 +120,12 @@ def list_devices() -> List[Dict[str, Any]]:
 
 
 def _resolve_device() -> Optional[Any]:
-    """WILLIAM_AUDIO_DEVICE may be a device index (int) or a substring of
-    a device name; blank means "use the system default input device"
-    (pass None to sounddevice, its own default-device resolution)."""
-    raw = os.getenv("WILLIAM_AUDIO_DEVICE", "").strip()
+    """WILLIAM_VOICE_MIC_DEVICE (preferred) or WILLIAM_AUDIO_DEVICE
+    (original name, still honored) may be a device index (int) or a
+    substring of a device name; blank means "use the system default input
+    device" (pass None to sounddevice, its own default-device
+    resolution)."""
+    raw = os.getenv("WILLIAM_VOICE_MIC_DEVICE", "").strip() or os.getenv("WILLIAM_AUDIO_DEVICE", "").strip()
     if not raw:
         return None
     try:
@@ -133,8 +135,21 @@ def _resolve_device() -> Optional[Any]:
     for device in list_devices():
         if raw.lower() in str(device.get("name", "")).lower():
             return device["index"]
-    logger.warning("WILLIAM_AUDIO_DEVICE=%r did not match any input device; falling back to system default.", raw)
+    logger.warning("WILLIAM_VOICE_MIC_DEVICE/WILLIAM_AUDIO_DEVICE=%r did not match any input device; falling back to system default.", raw)
     return None
+
+
+def selected_device_label() -> str:
+    """Human-readable label for whichever input device _resolve_device()
+    would pick right now -- used only for debug output (WILLIAM_VOICE_
+    DEBUG=1), never for the actual recording decision."""
+    resolved = _resolve_device()
+    if resolved is None:
+        return "system default"
+    for device in list_devices():
+        if device["index"] == resolved:
+            return f"[{device['index']}] {device['name']}"
+    return str(resolved)
 
 
 def record_to_tempfile(
@@ -164,6 +179,7 @@ def record_to_tempfile(
     speech_started_at: Optional[float] = None
     silence_started_at: Optional[float] = None
     started_at = time.monotonic()
+    peak_rms = 0.0
 
     try:
         with sd.InputStream(  # type: ignore[union-attr]
@@ -178,6 +194,7 @@ def record_to_tempfile(
                 frames.append(chunk.copy())
 
                 rms = float(np.sqrt(np.mean(np.square(chunk.astype(np.float64)))))  # type: ignore[union-attr]
+                peak_rms = max(peak_rms, rms)
                 now = time.monotonic()
                 if rms >= SILENCE_RMS_THRESHOLD:
                     if speech_started_at is None:
@@ -190,10 +207,10 @@ def record_to_tempfile(
                         elif (now - silence_started_at) >= silence_timeout_seconds:
                             break
     except Exception as exc:  # pragma: no cover - real hardware/driver failure
-        return {"ok": False, "audio_path": None, "duration_seconds": 0.0, "error": f"recording failed: {exc}"}
+        return {"ok": False, "audio_path": None, "duration_seconds": 0.0, "error": f"recording failed: {exc}", "peak_rms": 0.0}
 
     if not frames:
-        return {"ok": False, "audio_path": None, "duration_seconds": 0.0, "error": "no audio captured"}
+        return {"ok": False, "audio_path": None, "duration_seconds": 0.0, "error": "no audio captured", "peak_rms": 0.0}
 
     audio = np.concatenate(frames, axis=0)  # type: ignore[union-attr]
     duration_seconds = len(audio) / float(SAMPLE_RATE)
@@ -206,7 +223,12 @@ def record_to_tempfile(
         wav_file.setframerate(SAMPLE_RATE)
         wav_file.writeframes(audio.tobytes())
 
-    return {"ok": True, "audio_path": audio_path, "duration_seconds": duration_seconds, "error": None}
+    # peak_rms is debug-only telemetry (WILLIAM_VOICE_DEBUG=1 printing) --
+    # real int16 RMS energy of the loudest captured frame, never estimated.
+    return {
+        "ok": True, "audio_path": audio_path, "duration_seconds": duration_seconds, "error": None,
+        "peak_rms": round(peak_rms, 1),
+    }
 
 
 __all__ = ["is_available", "check_status", "list_devices", "record_to_tempfile", "SAMPLE_RATE"]
