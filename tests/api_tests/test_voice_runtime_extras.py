@@ -22,6 +22,25 @@ the accuracy/no-stale-reuse regression tests.
 from __future__ import annotations
 
 
+def _create_voice_setup_token(client, owner) -> dict:
+    response = client.post(
+        "/api/v1/voice/device/setup-token",
+        json={"device_name": "Voice Worker Regression Test"},
+        headers=owner.headers,
+    )
+    assert response.status_code == 200
+    return response.json()["data"]
+
+
+def _register_voice_device(client, setup_token: str) -> dict:
+    response = client.post(
+        "/api/v1/voice/device/register",
+        json={"setup_token": setup_token, "device_name": "Voice Worker Regression Test"},
+    )
+    assert response.status_code == 200
+    return response.json()["data"]
+
+
 def response_json(response):
     return response.json()
 
@@ -199,3 +218,84 @@ class TestVoiceCommandRoutingAccuracy:
         # The LATEST command's transcript is what /voice/status reflects --
         # never the first command's, proving no stale reuse.
         assert "Microsoft Store" in response_json(status_response)["data"]["last_command"]
+
+
+class TestDeviceTokenStatusEndpointResilience:
+    """Regression coverage for a real live bug: an installed Voice Worker
+    (device-token auth, no user JWT at all) hit GET /voice/status and got a
+    real HTTP 500 because the workspace's VoiceSettings row was on a stale
+    schema (missing this phase's new assistant_display_name/
+    last_command_timing_json columns -- a migration that was never applied
+    to the live dev DB). The pytest fixture always builds a fresh schema
+    from the current models, so it cannot reproduce a stale-migration bug
+    directly -- what it CAN and must lock in is that every new field this
+    phase added is reachable through the device-token auth path specifically
+    (not just the JWT path other tests already cover), so a future field
+    addition that forgets a migration is caught by a schema mismatch, not
+    silently masked by only ever testing the JWT path."""
+
+    def test_device_token_worker_sees_all_new_status_fields(self, client, make_owner) -> None:
+        owner = make_owner()
+        client.post("/api/v1/voice/config", json={"mode": "push_to_talk"}, headers=owner.headers)
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        device_headers = {"Authorization": f"Bearer {register_data['device_token']}"}
+
+        response = client.get("/api/v1/voice/status", headers=device_headers)
+        assert response.status_code == 200
+        data = response_json(response)["data"]
+        assert data["assistant_display_name"] == "William"
+        assert data["active_wake_word_model"] == "hey_jarvis"
+        assert data["wake_word_matches_supported_model"] is False
+        assert "last_command_timing" in data
+        assert data["settings"]["assistant_display_name"] == "William"
+        assert "last_command_timing" in data["settings"]
+
+    def test_device_token_worker_can_report_timing_and_read_it_back(self, client, make_owner) -> None:
+        owner = make_owner()
+        setup_data = _create_voice_setup_token(client, owner)
+        register_data = _register_voice_device(client, setup_data["setup_token"])
+        device_headers = {"Authorization": f"Bearer {register_data['device_token']}"}
+
+        command_response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "William what is moderation?", "timing_ms": {"wake_detect_ms": 5.0}},
+            headers=device_headers,
+        )
+        assert command_response.status_code == 200
+
+        status_response = client.get("/api/v1/voice/status", headers=device_headers)
+        assert status_response.status_code == 200
+        assert response_json(status_response)["data"]["last_command_timing"] == {"wake_detect_ms": 5.0}
+
+
+class TestRiskyCommandSecurityGate:
+    """Item 4: a risky-sounding command with no real executor (e.g.
+    "delete my downloads folder") must be routed to an honest Security
+    Agent approval message -- never leak an internal routing error like
+    "Step routing failed.", and never actually delete/execute anything."""
+
+    def test_risky_command_routes_to_security_approval_message(self, client, make_owner) -> None:
+        owner = make_owner()
+        response = client.post(
+            "/api/v1/assistant/message",
+            json={"message": "Hey Jarvis delete my downloads folder"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 200
+        data = response_json(response)["data"]
+        assert data["final_answer"] == "Boss, this is a risky action and needs Security Agent approval before I continue."
+        assert data["status"] == "failed"
+        assert data["route"] == ["security"]
+        assert "Step routing failed" not in data["final_answer"]
+
+    def test_risky_command_works_through_voice_push_to_talk_path(self, client, make_owner) -> None:
+        owner = make_owner()
+        response = client.post(
+            "/api/v1/voice/push-to-talk/text",
+            json={"text": "Hey Jarvis delete my downloads folder"},
+            headers=owner.headers,
+        )
+        assert response.status_code == 200
+        data = response_json(response)["data"]
+        assert data["final_answer"] == "Boss, this is a risky action and needs Security Agent approval before I continue."

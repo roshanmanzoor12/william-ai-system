@@ -126,6 +126,7 @@ from database.models.conversation_session import (  # noqa: E402
 )
 from core.intent_classifier import (  # noqa: E402
     INTENT_KNOWLEDGE_QUESTION,
+    INTENT_RISKY_SECURITY_ACTION,
     INTENT_WINDOWS_DEVICE_ACTION,
     FILE_GENERATION_STANDARD_DEFAULTS,
     PROJECT_BUILD_STANDARD_DEFAULTS,
@@ -390,6 +391,77 @@ async def _execute_windows_device_action(
     if worker_task_id:
         final["worker_task_id"] = worker_task_id
     return final
+
+
+async def _execute_risky_security_action(
+    context: "AuthContext",
+    last_message: str,
+) -> Dict[str, Any]:
+    """core/intent_classifier.py::classify() already relabels ANY message
+    core/planner.py risk-scored above "low" as INTENT_RISKY_SECURITY_ACTION
+    (e.g. "delete my downloads folder") -- but before this handler existed,
+    _dispatch had no branch for that category, so it fell through to
+    _dispatch_generic -> MasterAgent's generic pipeline, which has no real
+    agent/action for an arbitrary risky request and failed with an opaque
+    "Step routing failed." (a raw internal routing error, not a safety
+    message). This is the actual, honest safety gate for that category:
+    a real SecurityAgent.authorize() call (fails closed, matching every
+    other approval flow in this codebase -- e.g. apps/api/routes/voice.py::
+    request_voice_mode_approval), never a fabricated approval.
+
+    Deliberately never executes anything regardless of the decision: no
+    real destructive-action executor (real file deletion, real payments,
+    etc.) exists anywhere in this codebase, by design -- see CLAUDE.md's
+    sensitive-action list. Reporting "needs approval" is the correct,
+    honest terminal state for this category today, not a placeholder for
+    an executor that doesn't exist."""
+    try:
+        from agents.security_agent.security_agent import SecurityAgent
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not import SecurityAgent in assistant.py: %s", exc)
+        return build_final_response(
+            {
+                "success": False,
+                "message": "Boss, this is a risky action and needs Security Agent approval before I continue.",
+                "error": {"code": "SECURITY_AGENT_UNAVAILABLE"},
+            },
+            route_hint=["security"],
+        )
+
+    task = {
+        "command": "authorize",
+        "task_context": {
+            "user_id": context.user_id,
+            "workspace_id": context.workspace_id,
+            "role": getattr(context, "role", "owner"),
+            "request_id": context.request_id,
+        },
+        "action": "risky_voice_or_text_command",
+        "payload": {"message": last_message},
+    }
+
+    result = await call_agent(SecurityAgent(), task, agent_name="security")
+    data = result.get("data") if isinstance(result, dict) else {}
+    approved = bool(result.get("success")) and bool(
+        (data or {}).get("decision") in ("allow", "approved", True) or (data or {}).get("approved")
+    )
+
+    if approved:
+        # Security Agent approved the ACTION TYPE, but there is still no
+        # real executor for arbitrary risky commands -- honest either way.
+        final_answer = "Boss, Security Agent approved this, but I don't have a real way to carry it out yet."
+    else:
+        final_answer = "Boss, this is a risky action and needs Security Agent approval before I continue."
+
+    return build_final_response(
+        {
+            "success": False,
+            "message": final_answer,
+            "data": {},
+            "error": {"code": "SECURITY_APPROVAL_REQUIRED", "message": final_answer},
+        },
+        route_hint=["security"],
+    )
 
 
 async def _execute_knowledge_question(
@@ -801,6 +873,8 @@ async def _dispatch(
         final = await _execute_windows_device_action(context, last_message)
     elif session.intent_category == INTENT_KNOWLEDGE_QUESTION:
         final = await _execute_knowledge_question(context, last_message)
+    elif session.intent_category == INTENT_RISKY_SECURITY_ACTION:
+        final = await _execute_risky_security_action(context, last_message)
     else:
         final = await _dispatch_generic(session, context, last_message, classification_route)
 

@@ -19,6 +19,7 @@ in this file to accidentally exercise, by construction.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Tuple
 
 import pytest
@@ -449,3 +450,206 @@ class TestSttNotCalledInSimulateText:
         monkeypatch.setattr(voice_worker_module.stt_provider, "transcribe", _fail_if_called)
 
         worker.run()  # must not raise
+
+
+class TestLoggerDoesNotDuplicate:
+    """Regression coverage: this worker's module-level setup code guards
+    handler registration with `if not logger.handlers:` -- logging.
+    getLogger(LOGGER_NAME) always returns the SAME logger object regardless
+    of how many times/under how many names this module gets imported in one
+    process, so that guard alone is sufficient to guarantee the handler is
+    never attached twice (which would otherwise print every line twice)."""
+
+    def test_handler_registered_exactly_once(self) -> None:
+        assert len(voice_worker_module.logger.handlers) == 1
+
+    def test_reimporting_setup_does_not_add_a_second_handler(self) -> None:
+        # Simulates the module's own top-level guard running again (as it
+        # would on a second import under a different name) -- must be a
+        # no-op given a handler is already present.
+        if not voice_worker_module.logger.handlers:
+            voice_worker_module.logger.addHandler(logging.StreamHandler())
+        assert len(voice_worker_module.logger.handlers) == 1
+
+
+
+class TestDependencyStatusFailureNamesTheEndpoint:
+    """Regression coverage for the exact live bug report: GET /voice/status
+    returning HTTP 500 (e.g. from a stale DB schema) must be reported with
+    the specific endpoint and transport status -- not a bare, unattributed
+    "Internal server error." """
+
+    def test_named_endpoint_and_transport_status_on_failure(self, caplog) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        failed_status_result = {
+            "ok": False,
+            "transport_ok": True,
+            "transport_status": "http_500",
+            "envelope": {"success": False, "message": "Internal server error.", "data": {}, "error": None},
+            "errors": [],
+        }
+
+        with caplog.at_level(logging.INFO, logger=voice_worker_module.LOGGER_NAME):
+            worker._report_dependency_status(failed_status_result)
+
+        messages = "\n".join(record.message for record in caplog.records)
+        assert "GET /voice/status failed" in messages
+        assert "http_500" in messages
+        assert "Internal server error." in messages
+        # Must degrade honestly, not crash or claim providers are ready.
+        assert "dependency-check mode" in messages
+
+
+class TestCleanDependencyRequiredPrinting:
+    """Item 4: when /voice/status succeeds but every provider is honestly
+    unconfigured, the worker must print clean dependency_required-shaped
+    status lines, never a raw exception or "Internal server error." """
+
+    def test_all_providers_missing_prints_missing_markers_not_errors(self, capsys, caplog) -> None:
+        worker, _transport = _build_worker("William what is moderation?")
+
+        with caplog.at_level(logging.INFO, logger=voice_worker_module.LOGGER_NAME):
+            exit_code = worker.run()
+
+        assert exit_code == 0
+
+        # The command-response block is a raw print() (capsys-visible);
+        # dependency-status lines go through the logger (caplog-visible) --
+        # both must be checked, neither may ever show a raw crash.
+        captured = capsys.readouterr()
+        assert "Internal server error" not in captured.out
+        assert "Traceback" not in captured.out
+
+        log_messages = "\n".join(record.message for record in caplog.records)
+        assert "Internal server error" not in log_messages
+        assert "Traceback" not in log_messages
+        # wake_word_engine (text-based detection) always reports "available"
+        # regardless of provider config -- only the other four are honestly
+        # "external_dependency_required" when nothing is configured.
+        for key in ("audio_input_worker", "stt_provider", "tts_provider", "speaker_recognition_provider"):
+            assert f"{key}: external_dependency_required  [MISSING]" in log_messages
+        assert "wake_word_engine: available  [OK]" in log_messages
+
+
+class TestSpeaksFinalAnswerOnly:
+    """Item 5/7: TTS must speak the real final_answer text and nothing
+    else -- never the raw response dict/JSON, even though command_data
+    (the full /voice/push-to-talk/text response) is what _speak_response
+    receives."""
+
+    def test_speaks_final_answer_text_when_tts_configured(self, monkeypatch) -> None:
+        worker, _transport = _build_worker("William open Notepad", mode="push_to_talk")
+
+        class _FakeTts:
+            def __init__(self) -> None:
+                self.spoken_calls: List[str] = []
+
+            def check_status(self) -> Dict[str, Any]:
+                return {"configured": True, "reason": None, "install_guidance": None}
+
+            def speak(self, text: str) -> Dict[str, Any]:
+                self.spoken_calls.append(text)
+                return {"ok": True, "spoken": True, "error": None}
+
+        fake_tts = _FakeTts()
+        monkeypatch.setattr(voice_worker_module, "tts_provider", fake_tts)
+
+        worker.run()
+
+        assert len(fake_tts.spoken_calls) == 1
+        spoken_text = fake_tts.spoken_calls[0]
+        # Must be the plain final_answer string, never the JSON envelope.
+        assert spoken_text == "Done boss, I sent the command to your Windows device. notepad is opening."
+        assert isinstance(spoken_text, str)
+        assert "{" not in spoken_text and "final_answer" not in spoken_text
+
+    def test_never_speaks_raw_json_even_if_response_has_extra_fields(self, monkeypatch) -> None:
+        worker, _transport = _build_worker("William what is moderation?", mode="push_to_talk")
+
+        class _FakeTts:
+            def __init__(self) -> None:
+                self.spoken_calls: List[str] = []
+
+            def check_status(self) -> Dict[str, Any]:
+                return {"configured": True, "reason": None, "install_guidance": None}
+
+            def speak(self, text: str) -> Dict[str, Any]:
+                self.spoken_calls.append(text)
+                return {"ok": True, "spoken": True, "error": None}
+
+        fake_tts = _FakeTts()
+        monkeypatch.setattr(voice_worker_module, "tts_provider", fake_tts)
+
+        worker.run()
+
+        assert len(fake_tts.spoken_calls) == 1
+        # command_data has route/status/worker_task_id/speech_output_status
+        # alongside final_answer -- only the final_answer text may be spoken.
+        assert fake_tts.spoken_calls[0] == "Done boss, I sent the command to your Windows device. notepad is opening."
+
+
+class TestReturnsToListeningAfterCommand:
+    """Item 8: after handling one real wake-word-triggered command, the
+    always-listening loop must go back to listening for the next wake
+    word -- not stop, not fall into idle/heartbeat-only mode."""
+
+    def test_wake_word_admin_loop_listens_again_after_responding(self, monkeypatch) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        class _FakeProviderStatusModule:
+            @staticmethod
+            def get_full_status() -> Dict[str, Any]:
+                return {"always_listening_available": True, "missing_dependencies": []}
+
+        monkeypatch.setattr(voice_worker_module, "provider_status_module", _FakeProviderStatusModule())
+
+        listen_call_count = {"n": 0}
+
+        class _FakeListener:
+            def __init__(self) -> None:
+                pass
+
+            def listen_until_detected(self, max_seconds: float | None = None) -> Dict[str, Any]:
+                listen_call_count["n"] += 1
+                if listen_call_count["n"] >= 2:
+                    # Proves the loop came back to listen a SECOND time
+                    # after fully handling the first detection -- stop the
+                    # test cleanly here rather than looping forever.
+                    raise KeyboardInterrupt
+                return {"detected": True, "score": 0.9, "trigger": "hey_jarvis"}
+
+            def stop(self) -> None:
+                pass
+
+        class _FakeWakeWordProvider:
+            @staticmethod
+            def WakeWordListener() -> _FakeListener:  # noqa: N802
+                return _FakeListener()
+
+        monkeypatch.setattr(voice_worker_module, "wake_word_provider", _FakeWakeWordProvider())
+
+        transport = FakeTransport(
+            {
+                "/voice/wake-event": _envelope(data={"should_listen": True, "mode": "wake_word_admin"}),
+                "/voice/worker/heartbeat": _envelope(data={"worker_connected": True}),
+            }
+        )
+        worker._client._request = transport  # type: ignore[method-assign]
+
+        respond_calls: List[bool] = []
+        monkeypatch.setattr(
+            worker, "_capture_transcribe_and_respond", lambda **kwargs: respond_calls.append(True) or True
+        )
+
+        try:
+            worker._run_wake_word_admin_loop("wake_word_admin")
+        except KeyboardInterrupt:
+            pass
+
+        # Detected+handled once, then the loop genuinely went back to
+        # listen_until_detected for a second time before this test stopped it.
+        assert len(respond_calls) == 1
+        assert listen_call_count["n"] == 2
