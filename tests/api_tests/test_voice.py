@@ -1114,3 +1114,155 @@ class TestVoiceDeviceSetup:
 
         status_a = client.get("/api/v1/voice/worker/status", headers=owner_a.headers).json()["data"]
         assert status_a["connection_state"] == "connected"
+
+
+def _make_embedding(seed: float) -> list:
+    """Deterministic, real (not random) fixed-length vector -- distinguishable
+    by seed, matching the shape apps/worker_nodes/voice/providers/
+    speaker_embedding.py's real local provider actually produces (24 floats)."""
+    return [seed + (i * 0.01) for i in range(24)]
+
+
+def _create_and_embed_profile(client, owner, *, role: str = "owner", embedding=None) -> tuple:
+    embedding = embedding if embedding is not None else _make_embedding(1.0)
+    create = client.post(
+        "/api/v1/voice/profiles",
+        json={"display_name": "Test Voice", "role": role, "can_use_voice": True, "can_use_wake_word": True},
+        headers=owner.headers,
+    )
+    assert create.status_code == 200
+    profile_id = response_json(create)["data"]["profile"]["id"]
+    embed = client.post(
+        f"/api/v1/voice/profiles/{profile_id}/embedding",
+        json={"embedding": embedding, "provider": "local_speaker_embedding"},
+        headers=owner.headers,
+    )
+    assert embed.status_code == 200
+    return profile_id, embedding
+
+
+class TestTrustedVoiceProfiles:
+    """Trusted Voice Profiles -- real, local speaker-embedding enrollment
+    and verification (apps/api/services/voice_embedding_crypto.py,
+    apps/api/routes/voice.py's POST /voice/profiles/{id}/embedding and
+    POST /voice/profiles/verify)."""
+
+    def test_owner_can_enroll_voice_profile(self, client, make_owner) -> None:
+        owner = make_owner()
+        profile_id, _embedding = _create_and_embed_profile(client, owner, role="owner")
+
+        listed = client.get("/api/v1/voice/profiles", headers=owner.headers)
+        profile = next(p for p in response_json(listed)["data"]["profiles"] if p["id"] == profile_id)
+        assert profile["has_voice_embedding"] is True
+        assert profile["embedding_provider"] == "local_speaker_embedding"
+        assert profile["voiceprint_status"] == "enrolled"
+
+    def test_only_admin_can_enroll_embedding(self, client, make_owner, make_member) -> None:
+        owner = make_owner()
+        member = make_member(owner, role="member")
+        create = client.post(
+            "/api/v1/voice/profiles", json={"display_name": "Owner", "role": "owner"}, headers=owner.headers,
+        )
+        profile_id = response_json(create)["data"]["profile"]["id"]
+
+        embed = client.post(
+            f"/api/v1/voice/profiles/{profile_id}/embedding",
+            json={"embedding": _make_embedding(1.0)},
+            headers=member.headers,
+        )
+        assert embed.status_code == 403
+
+    def test_embedding_is_never_returned_to_frontend(self, client, make_owner) -> None:
+        owner = make_owner()
+        profile_id, _embedding = _create_and_embed_profile(client, owner)
+
+        embed_response = client.post(
+            f"/api/v1/voice/profiles/{profile_id}/embedding",
+            json={"embedding": _make_embedding(2.0)},
+            headers=owner.headers,
+        )
+        assert "embedding_encrypted" not in embed_response.text
+
+        listed = client.get("/api/v1/voice/profiles", headers=owner.headers)
+        assert "embedding_encrypted" not in listed.text
+
+    def test_profile_embedding_scoped_by_workspace(self, client, make_owner) -> None:
+        owner_a = make_owner()
+        owner_b = make_owner()
+        create = client.post(
+            "/api/v1/voice/profiles", json={"display_name": "A's Voice", "role": "owner"}, headers=owner_a.headers,
+        )
+        profile_id = response_json(create)["data"]["profile"]["id"]
+
+        # Workspace B cannot enroll an embedding onto workspace A's profile
+        # -- the profile simply doesn't exist from workspace B's point of
+        # view (query is filtered by workspace_id).
+        embed = client.post(
+            f"/api/v1/voice/profiles/{profile_id}/embedding",
+            json={"embedding": _make_embedding(1.0)},
+            headers=owner_b.headers,
+        )
+        assert embed.status_code == 404
+
+    def test_another_workspace_cannot_use_profile_for_verification(self, client, make_owner) -> None:
+        owner_a = make_owner()
+        owner_b = make_owner()
+        _profile_id, embedding = _create_and_embed_profile(client, owner_a)
+
+        verify_b = client.post("/api/v1/voice/profiles/verify", json={"embedding": embedding}, headers=owner_b.headers)
+        assert verify_b.status_code == 200
+        assert response_json(verify_b)["data"]["matched"] is False
+
+    def test_matching_embedding_verifies_successfully(self, client, make_owner) -> None:
+        owner = make_owner()
+        profile_id, embedding = _create_and_embed_profile(client, owner)
+
+        verify = client.post("/api/v1/voice/profiles/verify", json={"embedding": embedding}, headers=owner.headers)
+        assert verify.status_code == 200
+        data = response_json(verify)["data"]
+        assert data["matched"] is True
+        assert data["profile_id"] == profile_id
+        assert data["confidence"] >= 0.72
+
+    def test_unknown_voice_does_not_match_and_blocks_sensitive_action(self, client, make_owner) -> None:
+        owner = make_owner()
+        _profile_id, embedding = _create_and_embed_profile(client, owner)
+
+        # A near-opposite embedding is honestly "not this speaker".
+        different_embedding = [-v for v in embedding]
+        verify = client.post(
+            "/api/v1/voice/profiles/verify", json={"embedding": different_embedding}, headers=owner.headers,
+        )
+        assert verify.status_code == 200
+        data = response_json(verify)["data"]
+        assert data["matched"] is False
+        assert data["profile_id"] is None
+
+    def test_revoked_profile_no_longer_verifies(self, client, make_owner) -> None:
+        owner = make_owner()
+        profile_id, embedding = _create_and_embed_profile(client, owner)
+
+        revoke = client.delete(f"/api/v1/voice/profiles/{profile_id}", headers=owner.headers)
+        assert revoke.status_code == 200
+        assert response_json(revoke)["data"]["profile"]["status"] == "revoked"
+
+        verify = client.post("/api/v1/voice/profiles/verify", json={"embedding": embedding}, headers=owner.headers)
+        assert response_json(verify)["data"]["matched"] is False
+
+    def test_audit_log_created_for_enroll_verify_revoke(self, client, make_owner) -> None:
+        from database.db import db_manager
+        from database.models.security import AuditLogModel
+
+        owner = make_owner()
+        profile_id, embedding = _create_and_embed_profile(client, owner)
+        client.post("/api/v1/voice/profiles/verify", json={"embedding": embedding}, headers=owner.headers)
+        client.delete(f"/api/v1/voice/profiles/{profile_id}", headers=owner.headers)
+
+        with db_manager.session_scope() as db:
+            actions = {
+                row.action
+                for row in db.query(AuditLogModel).filter(AuditLogModel.workspace_id == owner.workspace_id).all()
+            }
+        assert "voice.profile.embedding_enrolled" in actions
+        assert "voice.profile.verify_attempted" in actions
+        assert "voice.profile.revoked" in actions

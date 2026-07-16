@@ -20,6 +20,9 @@ import {
   RefreshCcw,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
+  UserPlus,
+  Users,
 } from "lucide-react";
 import { readSession, hasMinRole, type SessionData } from "@/lib/auth";
 import {
@@ -28,6 +31,8 @@ import {
   type VoiceDependencyStatus,
   type VoiceDependencyStatusValue,
   type VoiceMode,
+  type VoiceProfile,
+  type VoiceProfileRole,
   type VoiceSettings,
   type VoiceStatusData,
 } from "@/lib/api-client";
@@ -160,6 +165,25 @@ function fieldValue(value?: string | null): string {
   return value && value.trim().length > 0 ? value : "—";
 }
 
+const TRUSTED_VOICE_ROLE_OPTIONS: { value: VoiceProfileRole; label: string }[] =
+  [
+    { value: "admin", label: "Admin" },
+    { value: "trusted_friend", label: "Friend" },
+    { value: "trusted_family", label: "Family" },
+    { value: "trusted_team_member", label: "Team member" },
+    { value: "guest", label: "Guest" },
+  ];
+
+function profileTypeLabel(role: VoiceProfileRole): string {
+  const match = TRUSTED_VOICE_ROLE_OPTIONS.find((option) => option.value === role);
+  if (match) return match.label;
+  if (role === "owner") return "Owner";
+  if (role === "trusted_developer") return "Trusted developer";
+  if (role === "trusted_manager") return "Trusted manager";
+  if (role === "trusted_assistant") return "Trusted assistant";
+  return role;
+}
+
 const PROVIDER_LABELS: Record<
   | "audio_input_status"
   | "stt_status"
@@ -208,6 +232,120 @@ export function VoiceControlSettings() {
     message: string;
   } | null>(null);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
+
+  // Trusted Voice Profiles (Part 5) -- own loading/error state, separate
+  // from the voice-status load above, since profiles are a distinct
+  // resource that can be refreshed independently.
+  const [voiceProfiles, setVoiceProfiles] = useState<VoiceProfile[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(true);
+  const [profilesError, setProfilesError] = useState("");
+  const [enrollingOwner, setEnrollingOwner] = useState(false);
+  const [showAddTrustedVoiceForm, setShowAddTrustedVoiceForm] = useState(false);
+  const [newProfileName, setNewProfileName] = useState("");
+  const [newProfileRole, setNewProfileRole] =
+    useState<VoiceProfileRole>("trusted_friend");
+  const [addingProfile, setAddingProfile] = useState(false);
+  const [revokingProfileId, setRevokingProfileId] = useState<string | null>(
+    null,
+  );
+  const [enrollCliCommand, setEnrollCliCommand] = useState<string | null>(
+    null,
+  );
+
+  const loadVoiceProfiles = useCallback(async () => {
+    setProfilesLoading(true);
+    setProfilesError("");
+    const response = await voiceApi.listProfiles();
+    if (response.success === false) {
+      setProfilesError(
+        response.error.message || "Could not load voice profiles.",
+      );
+      setProfilesLoading(false);
+      return;
+    }
+    setVoiceProfiles(response.data.profiles);
+    setProfilesLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void loadVoiceProfiles();
+  }, [loadVoiceProfiles]);
+
+  async function handleEnrollOwnerVoice() {
+    if (!canConfigureVoice || enrollingOwner) return;
+    setEnrollingOwner(true);
+    setNotice(null);
+    const response = await voiceApi.createProfile({
+      display_name: "Owner",
+      role: "owner",
+      can_use_voice: true,
+      can_use_wake_word: true,
+    });
+    setEnrollingOwner(false);
+    if (response.success === false) {
+      setNotice({
+        type: "error",
+        message: response.error.message || "Could not create owner voice profile.",
+      });
+      return;
+    }
+    setEnrollCliCommand(
+      `python -m apps.worker_nodes.voice.voice_worker --enroll-voice owner`,
+    );
+    setNotice({
+      type: "info",
+      message:
+        "Owner profile created. Run the enrollment command below on the machine with the Voice Worker and a microphone to finish enrollment.",
+    });
+    await loadVoiceProfiles();
+  }
+
+  async function handleAddTrustedVoice() {
+    if (!canConfigureVoice || addingProfile || !newProfileName.trim()) return;
+    setAddingProfile(true);
+    setNotice(null);
+    const response = await voiceApi.createProfile({
+      display_name: newProfileName.trim(),
+      role: newProfileRole,
+      can_use_voice: true,
+      can_use_wake_word: newProfileRole !== "guest",
+    });
+    setAddingProfile(false);
+    if (response.success === false) {
+      setNotice({
+        type: "error",
+        message: response.error.message || "Could not create voice profile.",
+      });
+      return;
+    }
+    setEnrollCliCommand(
+      `python -m apps.worker_nodes.voice.voice_worker --enroll-voice ${newProfileRole}`,
+    );
+    setNotice({
+      type: "info",
+      message: `${newProfileName.trim()} added. Run the enrollment command below on the machine with the Voice Worker and a microphone to finish enrollment.`,
+    });
+    setNewProfileName("");
+    setShowAddTrustedVoiceForm(false);
+    await loadVoiceProfiles();
+  }
+
+  async function handleRevokeProfile(profileId: string) {
+    if (!canConfigureVoice || revokingProfileId) return;
+    setRevokingProfileId(profileId);
+    setNotice(null);
+    const response = await voiceApi.deleteProfile(profileId);
+    setRevokingProfileId(null);
+    if (response.success === false) {
+      setNotice({
+        type: "error",
+        message: response.error.message || "Could not revoke voice profile.",
+      });
+      return;
+    }
+    setNotice({ type: "success", message: "Voice profile revoked." });
+    await loadVoiceProfiles();
+  }
 
   const copyCommand = useCallback(async (key: string, command: string) => {
     try {
@@ -946,6 +1084,217 @@ export function VoiceControlSettings() {
                 </p>
               </div>
             </div>
+          </div>
+
+          <div className="border-t border-neutral-100 pt-5">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="flex items-center gap-2 text-sm font-black text-neutral-950">
+                  <Users className="h-4 w-4 text-[#ff5a3d]" />
+                  Trusted Voice Profiles
+                </p>
+                <p className="mt-1 max-w-xl text-xs leading-5 text-neutral-400">
+                  Owner and trusted friend/family/team-member voices William can
+                  verify for sensitive commands. Defense-in-depth alongside
+                  Security Agent, never a replacement for it.
+                </p>
+              </div>
+              <span
+                className={`inline-flex w-fit items-center gap-1.5 rounded-full border px-3 py-1 text-[10px] font-black ${
+                  status?.speaker_recognition_status.status === "configured"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-orange-400/25 bg-orange-500/10 text-[#ff5a3d]"
+                }`}
+              >
+                {status?.speaker_recognition_status.status === "configured"
+                  ? "Verification: Configured"
+                  : "Verification: Missing"}
+              </span>
+            </div>
+
+            {status?.speaker_recognition_status.status !== "configured" ? (
+              <div className="mb-4 rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3 text-xs font-bold leading-5 text-[#ff5a3d]">
+                Speaker recognition is not configured. Normal commands still
+                work, but sensitive voice actions require dashboard approval.
+              </div>
+            ) : null}
+
+            <div className="mb-4 rounded-2xl border border-neutral-100 bg-neutral-50 px-4 py-3 text-[11px] leading-5 text-neutral-400">
+              Voice samples are processed locally. Raw audio is not stored by
+              default.
+            </div>
+
+            {canConfigureVoice ? (
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleEnrollOwnerVoice()}
+                  disabled={enrollingOwner}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-[#ff5a3d] px-4 py-2 text-xs font-black text-white shadow-lg shadow-[#ff5a3d]/20 transition hover:bg-neutral-950 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Mic className="h-3.5 w-3.5" />
+                  {enrollingOwner ? "Creating..." : "Enroll Owner Voice"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAddTrustedVoiceForm((current) => !current)}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-neutral-100 bg-white px-4 py-2 text-xs font-bold text-neutral-600 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
+                >
+                  <UserPlus className="h-3.5 w-3.5" />
+                  Add Trusted Voice
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void loadVoiceProfiles()}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs font-bold text-neutral-600 transition hover:border-orange-500/30 hover:bg-orange-500/10 hover:text-[#ff5a3d]"
+                >
+                  <RefreshCcw className="h-3.5 w-3.5" />
+                  Refresh Profiles
+                </button>
+              </div>
+            ) : null}
+
+            {showAddTrustedVoiceForm ? (
+              <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-neutral-100 bg-neutral-50 p-4 sm:flex-row sm:items-end">
+                <div className="flex-1">
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+                    Display name
+                  </p>
+                  <input
+                    type="text"
+                    value={newProfileName}
+                    onChange={(event) => setNewProfileName(event.target.value)}
+                    placeholder="e.g. Sarah"
+                    maxLength={160}
+                    className="w-full rounded-2xl border border-neutral-100 bg-white px-4 py-2.5 text-sm font-semibold text-neutral-700 outline-none transition placeholder:text-neutral-400 focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10"
+                  />
+                </div>
+                <div>
+                  <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-400">
+                    Profile type
+                  </p>
+                  <select
+                    value={newProfileRole}
+                    onChange={(event) =>
+                      setNewProfileRole(event.target.value as VoiceProfileRole)
+                    }
+                    className="w-full rounded-2xl border border-neutral-100 bg-white px-4 py-2.5 text-sm font-semibold text-neutral-700 outline-none transition focus:border-orange-500/40 focus:ring-4 focus:ring-orange-500/10 sm:w-44"
+                  >
+                    {TRUSTED_VOICE_ROLE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleAddTrustedVoice()}
+                  disabled={addingProfile || !newProfileName.trim()}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#ff5a3d] px-4 py-2.5 text-sm font-black text-white shadow-lg shadow-[#ff5a3d]/20 transition hover:bg-neutral-950 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {addingProfile ? "Adding..." : "Add"}
+                </button>
+              </div>
+            ) : null}
+
+            {enrollCliCommand ? (
+              <div className="mb-4 flex flex-col gap-2 rounded-2xl border border-neutral-100 bg-neutral-950 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <code className="break-all text-[11px] font-semibold text-neutral-100">
+                  {enrollCliCommand}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => void copyCommand("enroll-voice", enrollCliCommand)}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-[10px] font-black text-white transition hover:bg-white/10"
+                >
+                  {copiedCommand === "enroll-voice" ? (
+                    <Check className="h-3 w-3" />
+                  ) : (
+                    <Copy className="h-3 w-3" />
+                  )}
+                  {copiedCommand === "enroll-voice" ? "Copied" : "Copy"}
+                </button>
+              </div>
+            ) : null}
+
+            {profilesLoading ? (
+              <p className="text-xs font-semibold text-neutral-400">
+                Loading voice profiles...
+              </p>
+            ) : profilesError ? (
+              <p className="text-xs font-bold text-red-600">{profilesError}</p>
+            ) : voiceProfiles.length === 0 ? (
+              <p className="text-xs font-semibold text-neutral-400">
+                No trusted voice profiles enrolled yet.
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border border-neutral-100">
+                <table className="w-full min-w-[560px] text-left text-xs">
+                  <thead className="bg-neutral-50 text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-400">
+                    <tr>
+                      <th className="px-4 py-2.5">Name</th>
+                      <th className="px-4 py-2.5">Type</th>
+                      <th className="px-4 py-2.5">Status</th>
+                      <th className="px-4 py-2.5">Last verified</th>
+                      {canConfigureVoice ? (
+                        <th className="px-4 py-2.5 text-right">Action</th>
+                      ) : null}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {voiceProfiles.map((profile) => (
+                      <tr key={profile.id}>
+                        <td className="px-4 py-3 font-bold text-neutral-950">
+                          {profile.display_name}
+                          {!profile.has_voice_embedding ? (
+                            <span className="ml-2 rounded-full border border-orange-400/25 bg-orange-500/10 px-2 py-0.5 text-[9px] font-black text-[#ff5a3d]">
+                              No embedding
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-neutral-600">
+                          {profileTypeLabel(profile.role)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`rounded-full border px-2.5 py-1 text-[10px] font-black ${
+                              profile.status === "active"
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-neutral-200 bg-neutral-50 text-neutral-500"
+                            }`}
+                          >
+                            {profile.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-neutral-600">
+                          {fieldValue(profile.last_verified_at)}
+                        </td>
+                        {canConfigureVoice ? (
+                          <td className="px-4 py-3 text-right">
+                            {profile.status === "active" ? (
+                              <button
+                                type="button"
+                                onClick={() => void handleRevokeProfile(profile.id)}
+                                disabled={revokingProfileId === profile.id}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[10px] font-black text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                {revokingProfileId === profile.id
+                                  ? "Revoking..."
+                                  : "Revoke"}
+                              </button>
+                            ) : (
+                              <span className="text-neutral-300">—</span>
+                            )}
+                          </td>
+                        ) : null}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       ) : null}

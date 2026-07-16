@@ -796,6 +796,9 @@ export type VoiceProfileRole =
   | "trusted_developer"
   | "trusted_manager"
   | "trusted_assistant"
+  | "trusted_friend"
+  | "trusted_family"
+  | "trusted_team_member"
   | "guest";
 
 export type VoiceProfileStatus = "active" | "disabled" | "revoked";
@@ -828,10 +831,19 @@ export type VoiceProfile = {
   reply_language_mode: string;
   voiceprint_status: VoiceprintStatus;
   voiceprint_reference_id: string | null;
+  // Trusted Voice Profiles (local speaker-embedding enrollment) --
+  // device_id/embedding_provider/has_voice_embedding/last_verified_at.
+  // The real embedding itself is NEVER returned by the backend (see
+  // database/models/voice.py::VoiceIdentityProfile.to_dict()) -- only
+  // whether one exists.
+  device_id: string | null;
+  embedding_provider: string | null;
+  has_voice_embedding: boolean;
   status: VoiceProfileStatus;
   created_at: string;
   updated_at: string;
   last_used_at: string | null;
+  last_verified_at: string | null;
 };
 
 export type VoiceProfileListData = {
@@ -845,6 +857,7 @@ export type VoiceProfileCreatePayload = {
   display_name: string;
   role?: VoiceProfileRole;
   linked_user_id?: string | null;
+  device_id?: string | null;
   allowed_agents?: string[];
   blocked_agents?: string[];
   allowed_capabilities?: string[];

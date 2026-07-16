@@ -561,6 +561,7 @@ def create_profile(
     display_name: str,
     role: str = "guest",
     linked_user_id: Optional[str] = None,
+    device_id: Optional[str] = None,
     allowed_agents: Optional[List[str]] = None,
     blocked_agents: Optional[List[str]] = None,
     allowed_capabilities: Optional[List[str]] = None,
@@ -590,6 +591,7 @@ def create_profile(
         workspace_id=workspace_id,
         created_by_user_id=created_by_user_id,
         linked_user_id=linked_user_id,
+        device_id=device_id,
         display_name=display_name[:160],
         role=role,
         can_use_voice=can_use_voice,
@@ -672,6 +674,103 @@ def revoke_profile(db, workspace_id: str, profile_id: str, *, hard_delete: bool 
     profile.updated_at = _utc_now()
     db.flush()
     return profile.to_dict()
+
+
+# =============================================================================
+# Trusted Voice Profiles -- speaker-embedding enrollment/verification
+# =============================================================================
+
+def enroll_profile_embedding(
+    db, workspace_id: str, profile_id: str, *, embedding_encrypted: str, provider: str,
+) -> Optional[Dict[str, Any]]:
+    """Stores an ALREADY-ENCRYPTED embedding token (see apps/api/services/
+    voice_embedding_crypto.py) onto a profile -- this function itself never
+    sees the plaintext embedding. Returns the profile dict (never including
+    the embedding -- see VoiceIdentityProfile.to_dict())."""
+    from database.models.voice import VOICEPRINT_STATUS_ENROLLED
+
+    profile = get_profile(db, workspace_id, profile_id)
+    if profile is None:
+        return None
+
+    profile.embedding_encrypted = embedding_encrypted
+    profile.embedding_provider = provider
+    profile.voiceprint_status = VOICEPRINT_STATUS_ENROLLED
+    profile.updated_at = _utc_now()
+    db.flush()
+    return profile.to_dict()
+
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def verify_speaker_embedding(db, workspace_id: str, embedding: List[float]) -> Dict[str, Any]:
+    """Compares a freshly-computed embedding against every ACTIVE enrolled
+    profile in THIS workspace only (cross-workspace comparison is
+    impossible by construction -- the query is filtered by workspace_id).
+    Returns the best match if its cosine similarity clears
+    WILLIAM_VOICE_MATCH_THRESHOLD (default 0.72); never returns any
+    profile's embedding, only profile_id/display_name/role/confidence.
+    Updates last_verified_at (and last_used_at) on a real match only."""
+    from database.models.voice import VoiceIdentityProfile, PROFILE_STATUS_ACTIVE
+    from apps.api.services import voice_embedding_crypto as crypto
+
+    threshold = _env_float("WILLIAM_VOICE_MATCH_THRESHOLD", 0.72)
+
+    rows = (
+        db.query(VoiceIdentityProfile)
+        .filter(
+            VoiceIdentityProfile.workspace_id == workspace_id,
+            VoiceIdentityProfile.status == PROFILE_STATUS_ACTIVE,
+            VoiceIdentityProfile.embedding_encrypted.isnot(None),
+        )
+        .all()
+    )
+
+    best_row = None
+    best_score = 0.0
+    for row in rows:
+        stored = crypto.decrypt_embedding(row.embedding_encrypted)
+        if not stored:
+            continue
+        score = _cosine_similarity(embedding, stored)
+        if score > best_score:
+            best_score = score
+            best_row = row
+
+    if best_row is not None and best_score >= threshold:
+        best_row.last_verified_at = _utc_now()
+        best_row.last_used_at = _utc_now()
+        db.flush()
+        return {
+            "matched": True,
+            "profile_id": best_row.id,
+            "display_name": best_row.display_name,
+            "role": best_row.role,
+            "confidence": round(best_score, 4),
+        }
+
+    return {"matched": False, "profile_id": None, "display_name": None, "role": None, "confidence": round(best_score, 4)}
+
+
+def _env_float(name: str, default: float) -> float:
+    import os
+
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 # =============================================================================

@@ -102,6 +102,13 @@ Config (CLI flag, then env var, then default):
                                                           tts_missing); no auth needed
     --test-wake-word                                    listen for the real audio wake word for a few seconds and
                                                           report detected/not detected; no auth needed
+    --enroll-voice <role>                               enroll a Trusted Voice Profile (owner/admin/
+                                                          trusted_friend/trusted_family/trusted_team_member/
+                                                          guest) by speaking 3 short phrases; requires admin
+                                                          auth (--token/--device-token)
+    --list-voice-profiles                               list this workspace's Trusted Voice Profiles
+                                                          (never prints an embedding); requires auth
+    --delete-voice-profile <profile_id>                  revoke a Trusted Voice Profile; requires admin auth
 
 Continuous conversation session (wake_word_admin/wake_word_trusted_users
 only -- see _run_active_conversation_session): after the wake word is
@@ -111,6 +118,13 @@ sleep phrase (SLEEP_PHRASES) is said or the session times out.
     WILLIAM_VOICE_ACTIVE_SESSION_TIMEOUT_SECONDS      inactivity timeout, seconds (default 60)
     WILLIAM_VOICE_COMMAND_RECORD_SECONDS              max seconds per command capture (default 5)
     WILLIAM_VOICE_COMMAND_SILENCE_TIMEOUT             silence-to-stop-recording seconds (default 1.5)
+    WILLIAM_VOICE_NO_SPEECH_MAX_RETRIES               consecutive genuine-silence captures before the
+                                                          session ends and the worker returns to wake-word
+                                                          waiting (default 2) -- never spoken about on every
+                                                          single silent capture, only once at the cap
+    WILLIAM_VOICE_VERBOSE_ERRORS                       "1"/"true" also speaks "No speech detected; still
+                                                          listening." on every silent capture, not just at
+                                                          the retry cap (default off -- log-only)
     WILLIAM_VOICE_REPLY_STYLE                          "short" (default) or "full" -- only the SPOKEN
                                                           copy of a reply is ever shortened; the printed/
                                                           logged text is always shown in full
@@ -123,6 +137,17 @@ sleep phrase (SLEEP_PHRASES) is said or the session times out.
                                                           the captured WAV instead of deleting it
     WILLIAM_VOICE_MIC_DEVICE                           preferred alias for WILLIAM_AUDIO_DEVICE (device
                                                           index or a substring of its name)
+
+Trusted Voice Profiles (--enroll-voice, see apps/worker_nodes/voice/
+providers/speaker_embedding.py):
+    WILLIAM_SPEAKER_RECOGNITION_PROVIDER              set to "local_speaker_embedding" to enable real local
+                                                          enrollment/verification; unset means honest
+                                                          external_dependency_required
+    WILLIAM_VOICE_ENROLLMENT_PHRASES                   number of phrases to record during enrollment
+                                                          (default 3)
+    WILLIAM_VOICE_MATCH_THRESHOLD                      minimum cosine-similarity confidence for a runtime
+                                                          verification match (default 0.72; enforced
+                                                          server-side)
 
 If no token/device-token is configured, the worker still starts (it will
 not crash) -- the status call will honestly fail with an auth error and
@@ -143,7 +168,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------
@@ -177,6 +202,7 @@ try:
         tts as tts_provider,
         wake_word as wake_word_provider,
         provider_status as provider_status_module,
+        speaker_embedding as speaker_embedding_provider,
     )
 except Exception:  # pragma: no cover - import-safe fallback
     audio_input_provider = None  # type: ignore
@@ -184,6 +210,7 @@ except Exception:  # pragma: no cover - import-safe fallback
     tts_provider = None  # type: ignore
     wake_word_provider = None  # type: ignore
     provider_status_module = None  # type: ignore
+    speaker_embedding_provider = None  # type: ignore
 
 
 LOGGER_NAME = "william.worker_nodes.voice"
@@ -241,6 +268,18 @@ MIC_DEVICE_ENV_VAR = "WILLIAM_VOICE_MIC_DEVICE"
 
 def _voice_debug_enabled() -> bool:
     return os.getenv(VOICE_DEBUG_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+
+
+# --enroll-voice: the exact phrases asked for, spoken once each and
+# averaged into one enrollment embedding. WILLIAM_VOICE_ENROLLMENT_PHRASES
+# lets an operator ask for fewer (never more than these 3 are defined).
+ENROLLMENT_PHRASES = [
+    "William, this is my voice.",
+    "William, verify me.",
+    "William, open assistant.",
+]
+DEFAULT_ENROLLMENT_PHRASES = 3
+ENROLLMENT_PHRASES_ENV_VAR = "WILLIAM_VOICE_ENROLLMENT_PHRASES"
 
 # Local, worker-side heuristic ONLY -- deciding whether to hold a command
 # back locally pending speaker verification (see _is_sensitive_transcript).
@@ -302,6 +341,20 @@ COMMAND_RECORD_SECONDS_ENV_VAR = "WILLIAM_VOICE_COMMAND_RECORD_SECONDS"
 DEFAULT_COMMAND_RECORD_SECONDS = 5.0
 COMMAND_SILENCE_TIMEOUT_ENV_VAR = "WILLIAM_VOICE_COMMAND_SILENCE_TIMEOUT"
 DEFAULT_COMMAND_SILENCE_TIMEOUT = 1.5
+
+# No-speech handling: a capture where STT reports ok=False (e.g. "no speech
+# detected") or returns empty text is genuine SILENCE, not a garbled
+# attempt -- distinct from WEAK_TRANSCRIPT_* below (real but low-confidence/
+# garbled speech). Silence is common and expected while the user just
+# isn't talking yet in an active_conversation session, so it must never be
+# spoken about on every single occurrence (that was the reported bug: a
+# silent room made the worker repeat "could not understand" every ~5s).
+# Only after NO_SPEECH_MAX_RETRIES consecutive silent captures does the
+# worker say anything out loud, and then only once, before ending the
+# session.
+NO_SPEECH_MAX_RETRIES_ENV_VAR = "WILLIAM_VOICE_NO_SPEECH_MAX_RETRIES"
+DEFAULT_NO_SPEECH_MAX_RETRIES = 2
+VERBOSE_ERRORS_ENV_VAR = "WILLIAM_VOICE_VERBOSE_ERRORS"
 
 # A transcript this short/empty (after stripping trailing periods) is
 # never sent to the assistant dispatcher -- honest local rejection instead
@@ -405,6 +458,12 @@ class VoiceWorker:
         # existing bool return contract.
         self._active_conversation = False
         self._sleep_requested = False
+        # Consecutive genuine-silence captures (STT ok=False or empty text)
+        # within the current active_conversation session -- reset to 0 by
+        # any real (non-silent) capture; once it reaches
+        # WILLIAM_VOICE_NO_SPEECH_MAX_RETRIES the session ends (see
+        # _capture_transcribe_and_respond).
+        self._consecutive_no_speech = 0
 
     # -----------------------------------------------------------------
     # Construction helpers
@@ -645,6 +704,34 @@ class VoiceWorker:
         }
         return self._call_with_backoff(lambda: self._call_api("POST", "/voice/wake-event", payload), max_attempts=3)
 
+    def verify_speaker(self, embedding: List[float]) -> Dict[str, Any]:
+        """Sends a real, locally-computed embedding vector (never raw
+        audio) to the backend for comparison against this workspace's own
+        trusted profiles (apps/api/routes/voice.py::verify_voice_profile).
+        See _verify_speaker for the honest wrapper that also handles a
+        transport failure (network down, backend error) as "could not
+        verify" rather than crashing the pipeline."""
+        return self._call_with_backoff(
+            lambda: self._call_api("POST", "/voice/profiles/verify", {"embedding": embedding}), max_attempts=2,
+        )
+
+    def _verify_speaker(self, embedding: List[float]) -> Dict[str, Any]:
+        """Honest wrapper: a transport failure or malformed response is
+        never treated as a match -- fail closed, exactly like "no
+        embedding at all" (see _send_transcript_and_respond)."""
+        result = self.verify_speaker(embedding)
+        if not result.get("ok"):
+            self._log(f"Speaker verification request failed: {result.get('transport_status')}")
+            return {"matched": False, "profile_id": None, "display_name": None, "role": None, "confidence": 0.0}
+        data = (result.get("envelope") or {}).get("data") or {}
+        return {
+            "matched": bool(data.get("matched")),
+            "profile_id": data.get("profile_id"),
+            "display_name": data.get("display_name"),
+            "role": data.get("role"),
+            "confidence": data.get("confidence", 0.0),
+        }
+
     def send_command(
         self,
         transcript: str,
@@ -837,6 +924,37 @@ class VoiceWorker:
             return True
         return False
 
+    @staticmethod
+    def _verbose_errors_enabled() -> bool:
+        return os.getenv(VERBOSE_ERRORS_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+
+    def _handle_no_speech_event(self) -> bool:
+        """Called only from within an active_conversation session (see
+        _capture_transcribe_and_respond) when a capture produced no real
+        speech (STT ok=False or empty text). Counts consecutive no-speech
+        events; only speaks out loud once the retry cap is hit (or if
+        WILLIAM_VOICE_VERBOSE_ERRORS=1), never on every single silent
+        capture -- that repeated chatter was the reported bug. Always
+        returns False (nothing was dispatched)."""
+        self._consecutive_no_speech += 1
+        max_retries = _env_int(NO_SPEECH_MAX_RETRIES_ENV_VAR, DEFAULT_NO_SPEECH_MAX_RETRIES)
+
+        if self._consecutive_no_speech >= max_retries:
+            self._consecutive_no_speech = 0
+            self._sleep_requested = True
+            self._set_state(VoiceWorkerState.SLEEPING, "no-speech retry cap reached")
+            self._log(
+                f"No speech detected for {max_retries} consecutive attempt(s); "
+                "returning to wake-word waiting mode."
+            )
+            self._speak_and_print("Okay boss, I'll wait for the wake word.")
+            return False
+
+        self._log("No speech detected; still listening.")
+        if self._verbose_errors_enabled():
+            self._speak_and_print("No speech detected; still listening.")
+        return False
+
     def _speak_and_print(self, text: str) -> None:
         """Standalone short spoken/printed message (wake acknowledgement,
         sleep confirmation, weak-transcript reprompt) -- ALWAYS printed
@@ -974,13 +1092,26 @@ class VoiceWorker:
         *,
         timing: Optional[Dict[str, float]] = None,
         pipeline_started: Optional[float] = None,
+        speaker_embedding: Optional[List[float]] = None,
     ) -> bool:
         """Shared tail of the pipeline: a transcript is already in hand
         (either typed/simulated text, or a real STT transcription from
-        _run_wake_word_admin_loop) -- verify speaker (honest skip, no
-        provider), detect language (honest default), send to the shared
+        _run_wake_word_admin_loop) -- verify speaker for sensitive commands
+        only, detect language (honest default), send to the shared
         assistant dispatcher, print the response, and speak it with real
         TTS if configured. Returns True if a command was sent.
+
+        `speaker_embedding` is a real, locally-computed embedding for the
+        JUST-CAPTURED audio (see _capture_transcribe_and_respond) --
+        None for typed/simulated text (no real audio exists) or when no
+        speaker-recognition provider is configured. Only ever consulted
+        for a SENSITIVE transcript (see _is_sensitive_transcript); normal
+        commands are never gated on it, matching "unknown speaker can use
+        low-risk commands." The server-side SecurityAgent/system_worker
+        classify_worker_action gate is unaffected either way and still
+        independently reviews risky actions regardless of what this
+        worker decides locally -- this is defense-in-depth, not a
+        replacement for it.
 
         `timing`/`pipeline_started` carry real, locally-measured wall-clock
         stage durations (see Phase 3 "SPEED / PERFORMANCE" requirements) --
@@ -991,23 +1122,31 @@ class VoiceWorker:
         timing = timing if timing is not None else {}
         pipeline_started = pipeline_started if pipeline_started is not None else time.monotonic()
 
-        # No real speaker-recognition provider is configured in this
-        # environment (see dependency_status.speaker_recognition_provider)
-        # -- honestly report that this step is skipped rather than
-        # pretending a verification happened. Missing speaker recognition
-        # never blocks normal commands -- it only holds back commands this
-        # worker locally recognizes as sensitive/private/risky (see
-        # _is_sensitive_transcript), since anyone speaking to an unverified
-        # always-listening microphone could otherwise trigger them
-        # hands-free. The server-side SecurityAgent/system_worker
-        # classify_worker_action gate is unaffected either way and still
-        # independently reviews risky actions regardless of what this
-        # worker decides locally.
-        speaker_provider = os.getenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "").strip()
-        speaker_configured = bool(speaker_provider) and speaker_provider.lower() != "none"
-        if not speaker_configured:
-            self._log("Sensitive voice verification unavailable; normal voice commands still work.")
-            if self._is_sensitive_transcript(transcript):
+        if self._is_sensitive_transcript(transcript):
+            if speaker_embedding is not None:
+                self._set_state(VoiceWorkerState.VERIFYING_SPEAKER, "verifying captured voice against trusted profiles")
+                verify_result = self._verify_speaker(speaker_embedding)
+                if verify_result["matched"]:
+                    self._log(
+                        f"Speaker verified: {verify_result['display_name']!r} "
+                        f"(role={verify_result['role']}, confidence={verify_result['confidence']}) -- "
+                        "sensitive command allowed."
+                    )
+                else:
+                    self._log(
+                        f"Command held locally, not sent: {transcript!r} is sensitive/private/risky and "
+                        f"the captured voice did not match any trusted profile "
+                        f"(confidence={verify_result['confidence']})."
+                    )
+                    self._speak_and_print("Boss, I cannot verify this voice. Please confirm from dashboard.")
+                    return False
+            else:
+                # No real embedding to check -- either no speaker-
+                # recognition provider is configured, or this call has no
+                # real audio at all (typed/simulated text). Fail closed:
+                # hold the sensitive command back locally rather than
+                # execute it hands-free with zero verification.
+                self._log("Sensitive voice verification unavailable; normal voice commands still work.")
                 self._set_state(
                     VoiceWorkerState.VERIFYING_SPEAKER,
                     "sensitive command held pending speaker verification (none configured)",
@@ -1019,13 +1158,11 @@ class VoiceWorker:
                     "it, or configure WILLIAM_SPEAKER_RECOGNITION_PROVIDER to allow this hands-free."
                 )
                 return False
-        self._set_state(
-            VoiceWorkerState.VERIFYING_SPEAKER,
-            "no speaker-recognition provider configured; skipping local verification "
-            "(server still applies its own admin/owner or profile-based authorization)"
-            if not speaker_configured
-            else "speaker-recognition provider configured but verification is not yet wired up locally",
-        )
+        else:
+            self._set_state(
+                VoiceWorkerState.VERIFYING_SPEAKER,
+                "command is not sensitive -- speaker verification not required",
+            )
 
         detected_language = "en"
         self._set_state(VoiceWorkerState.LANGUAGE_DETECTED, f"detected_language={detected_language} (default; no language-ID provider configured)")
@@ -1198,6 +1335,7 @@ class VoiceWorker:
         or another; only KeyboardInterrupt (a real Ctrl+C) propagates past
         it, for a clean stop."""
         self._active_conversation = True
+        self._consecutive_no_speech = 0
         try:
             self._speak_and_print("Yes boss?")
             self._set_state(VoiceWorkerState.ACTIVE_CONVERSATION, "active conversation session started")
@@ -1270,21 +1408,33 @@ class VoiceWorker:
             stt_started = time.monotonic()
             transcribe_result = stt_provider.transcribe(audio_path)  # type: ignore[union-attr]
             timing["stt_ms"] = round((time.monotonic() - stt_started) * 1000, 1)
-            if not transcribe_result["ok"]:
-                self._set_state(VoiceWorkerState.ERROR, "transcription failed")
-                self._log(f"STT could not produce a transcript: {transcribe_result['error']}")
-                if self._active_conversation:
-                    self._speak_and_print("Boss, I heard you but could not understand. Please repeat.")
-                return False
 
+            # Genuine silence/empty transcript (STT ok=False, e.g. "no
+            # speech detected") is common and expected while the user just
+            # isn't talking yet -- handled BEFORE the weak-transcript check
+            # below, and deliberately never spoken about on every single
+            # occurrence (that was the reported bug: a silent room made the
+            # worker repeat "could not understand" every ~5s forever).
+            if not transcribe_result["ok"] or not (transcribe_result.get("text") or "").strip():
+                self._set_state(VoiceWorkerState.TRANSCRIBING, "no speech detected in captured audio")
+                if not self._active_conversation:
+                    self._log(f"STT could not produce a transcript: {transcribe_result.get('error')}")
+                    return False
+                return self._handle_no_speech_event()
+
+            self._consecutive_no_speech = 0
             transcript = transcribe_result["text"]
             confidence = transcribe_result.get("confidence")
             self._log(f"Transcript: {transcript!r} (confidence={confidence})")
 
             if self._is_weak_transcript(transcript, confidence):
+                # Real speech was captured (non-empty), just garbled/low-
+                # confidence -- distinct from silence above. Always spoken
+                # once per occurrence (this is genuinely new information for
+                # the user, not repeated noise), no retry cap.
                 self._log(f"Weak/garbled transcript rejected locally, not sent: {transcript!r}")
                 if self._active_conversation:
-                    self._speak_and_print("Boss, I heard you but could not understand. Please repeat.")
+                    self._speak_and_print("Boss, I could not understand. Please repeat.")
                 return False
 
             if self._active_conversation and self._is_sleep_transcript(transcript):
@@ -1294,7 +1444,10 @@ class VoiceWorker:
                 self._speak_and_print("Okay boss, I'll wait for the wake word.")
                 return False
 
-            return self._send_transcript_and_respond(transcript, timing=timing, pipeline_started=pipeline_started)
+            speaker_embedding = self._compute_speaker_embedding_for_sensitive_command(transcript, audio_path)
+            return self._send_transcript_and_respond(
+                transcript, timing=timing, pipeline_started=pipeline_started, speaker_embedding=speaker_embedding,
+            )
         finally:
             keep_audio = (
                 os.getenv(DEBUG_KEEP_AUDIO_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
@@ -1307,6 +1460,29 @@ class VoiceWorker:
                     os.remove(audio_path)
                 except OSError as exc:
                     logger.warning("Could not delete temp audio file %s: %s", audio_path, exc)
+
+    def _compute_speaker_embedding_for_sensitive_command(self, transcript: str, audio_path: str) -> Optional[List[float]]:
+        """Only ever computed for a SENSITIVE transcript (never wasted CPU
+        on normal commands, which don't need speaker verification) and
+        only while the local speaker-embedding provider is genuinely
+        configured -- returns None otherwise, which _send_transcript_and_
+        respond treats as "no real embedding to check" (fail closed on
+        sensitive commands, per its own docstring). Reads `audio_path`
+        BEFORE _capture_transcribe_and_respond's own finally block deletes
+        it -- this is the only real, uncorrupted copy of what was said."""
+        if not self._is_sensitive_transcript(transcript):
+            return None
+        if speaker_embedding_provider is None:
+            return None
+        status = speaker_embedding_provider.check_status()
+        if not status["configured"]:
+            return None
+
+        result = speaker_embedding_provider.compute_embedding(audio_path)
+        if not result["ok"]:
+            self._log(f"Could not compute a speaker embedding for verification: {result['error']}")
+            return None
+        return result["embedding"]
 
     # -----------------------------------------------------------------
     # Local diagnostic commands (--list-audio-devices / --test-mic /
@@ -1451,6 +1627,142 @@ class VoiceWorker:
             return 0
         print("Wake word not detected within 10 seconds.")
         return 1
+
+    # -----------------------------------------------------------------
+    # Trusted Voice Profiles -- local enrollment (--enroll-voice /
+    # --list-voice-profiles / --delete-voice-profile). Unlike the
+    # diagnostics above, these DO require real backend auth (an admin/
+    # owner credential via --token/--device-token) since they create/
+    # revoke real, workspace-scoped rows.
+    # -----------------------------------------------------------------
+
+    def enroll_voice(self, role: str) -> int:
+        """Enrollment flow: create the profile, speak
+        WILLIAM_VOICE_ENROLLMENT_PHRASES phrases (default 3), compute a
+        real local embedding for each, average them into one vector, and
+        upload ONLY that vector (never raw audio) to the backend for
+        encrypted storage. Every captured WAV is deleted immediately after
+        its embedding is computed, unless WILLIAM_VOICE_SAVE_DEBUG_WAV/
+        WILLIAM_VOICE_DEBUG_KEEP_AUDIO is set."""
+        if not self.config.token and not self.config.device_token:
+            print("Enrollment requires --token or --device-token (an admin/owner credential).")
+            return 1
+        if speaker_embedding_provider is None:
+            print("dependency_required: apps.worker_nodes.voice.providers.speaker_embedding is unavailable.")
+            return 1
+        embedding_status = speaker_embedding_provider.check_status()
+        if not embedding_status["configured"]:
+            print(f"dependency_required: {embedding_status['reason']}. {embedding_status.get('install_guidance') or ''}")
+            return 1
+        if audio_input_provider is None:
+            print("dependency_required: apps.worker_nodes.voice.providers.audio_input is unavailable.")
+            return 1
+
+        display_name = f"{role.replace('_', ' ').title()} ({self.session_id[:8]})"
+        create_result = self._call_with_backoff(
+            lambda: self._call_api(
+                "POST", "/voice/profiles",
+                {"display_name": display_name, "role": role, "can_use_voice": True, "can_use_wake_word": True},
+            ),
+            max_attempts=3,
+        )
+        if not create_result["ok"]:
+            self._print_api_failure("POST /voice/profiles", create_result)
+            return 1
+
+        profile = (create_result["envelope"].get("data") or {}).get("profile") or {}
+        profile_id = profile.get("id")
+        if not profile_id:
+            print("Could not create voice profile: no profile id returned.")
+            return 1
+        print(f"Created voice profile {profile_id!r} (role={role!r}). Starting enrollment...\n")
+
+        phrase_count = max(1, min(_env_int(ENROLLMENT_PHRASES_ENV_VAR, DEFAULT_ENROLLMENT_PHRASES), len(ENROLLMENT_PHRASES)))
+        phrases = ENROLLMENT_PHRASES[:phrase_count]
+        keep_wav = (
+            os.getenv(SAVE_DEBUG_WAV_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+            or os.getenv(DEBUG_KEEP_AUDIO_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+        )
+
+        embeddings: List[List[float]] = []
+        for index, phrase in enumerate(phrases, start=1):
+            print(f"Phrase {index}/{len(phrases)} -- please say: {phrase!r}")
+            print("Recording (speak now)...")
+            record_result = audio_input_provider.record_to_tempfile(max_duration_seconds=6.0)
+            if not record_result["ok"]:
+                print(f"Microphone capture failed: {record_result['error']}")
+                return 1
+            audio_path = record_result["audio_path"]
+            try:
+                embed_result = speaker_embedding_provider.compute_embedding(audio_path)
+                if not embed_result["ok"]:
+                    print(f"Could not compute a voice fingerprint for this phrase: {embed_result['error']}")
+                    return 1
+                embeddings.append(embed_result["embedding"])
+                print(f"Captured {record_result['duration_seconds']:.1f}s -- fingerprint computed.\n")
+            finally:
+                if keep_wav:
+                    print(f"Debug WAV kept at: {audio_path}")
+                else:
+                    try:
+                        os.remove(audio_path)
+                    except OSError as exc:
+                        logger.warning("Could not delete temp audio file %s: %s", audio_path, exc)
+
+        # Average the per-phrase embeddings into one enrollment vector,
+        # re-normalized -- real math over real captured audio, never a
+        # fabricated/random vector.
+        dims = len(embeddings[0])
+        averaged = [sum(vec[i] for vec in embeddings) / len(embeddings) for i in range(dims)]
+        norm = sum(v * v for v in averaged) ** 0.5
+        if norm > 0:
+            averaged = [v / norm for v in averaged]
+
+        upload_result = self._call_with_backoff(
+            lambda: self._call_api(
+                "POST", f"/voice/profiles/{profile_id}/embedding",
+                {"embedding": averaged, "provider": speaker_embedding_provider.LOCAL_PROVIDER_NAME},
+            ),
+            max_attempts=3,
+        )
+        if not upload_result["ok"]:
+            self._print_api_failure(f"POST /voice/profiles/{profile_id}/embedding", upload_result)
+            return 1
+
+        print(f"Voice enrolled successfully for profile {profile_id!r} (role={role!r}).")
+        print("Raw audio was never uploaded -- only the local voice fingerprint, encrypted at rest.")
+        return 0
+
+    def list_voice_profiles(self) -> int:
+        result = self._call_with_backoff(lambda: self._call_api("GET", "/voice/profiles"), max_attempts=3)
+        if not result["ok"]:
+            self._print_api_failure("GET /voice/profiles", result)
+            return 1
+
+        profiles = (result["envelope"].get("data") or {}).get("profiles") or []
+        if not profiles:
+            print("No voice profiles enrolled yet.")
+            return 0
+
+        print(f"Found {len(profiles)} voice profile(s):")
+        for profile in profiles:
+            embedding_marker = "embedding enrolled" if profile.get("has_voice_embedding") else "no embedding yet"
+            print(
+                f"  [{profile.get('id')}] {profile.get('display_name')} -- role={profile.get('role')} "
+                f"status={profile.get('status')} ({embedding_marker}) "
+                f"last_verified_at={profile.get('last_verified_at')}"
+            )
+        return 0
+
+    def delete_voice_profile(self, profile_id: str) -> int:
+        result = self._call_with_backoff(
+            lambda: self._call_api("DELETE", f"/voice/profiles/{profile_id}"), max_attempts=3,
+        )
+        if not result["ok"]:
+            self._print_api_failure(f"DELETE /voice/profiles/{profile_id}", result)
+            return 1
+        print(f"Voice profile {profile_id!r} revoked.")
+        return 0
 
     # -----------------------------------------------------------------
     # Output formatting
@@ -1722,6 +2034,25 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         action="store_true",
         help="Listen for the real audio wake word for a few seconds and report detected/not detected. No backend auth required.",
     )
+    parser.add_argument(
+        "--enroll-voice",
+        default=None,
+        metavar="ROLE",
+        help="Enroll a Trusted Voice Profile with the given role (owner/admin/trusted_friend/"
+        "trusted_family/trusted_team_member/guest) by speaking a few short phrases. "
+        "Requires --token/--device-token (admin/owner credential).",
+    )
+    parser.add_argument(
+        "--list-voice-profiles",
+        action="store_true",
+        help="List this workspace's Trusted Voice Profiles (never prints an embedding). Requires auth.",
+    )
+    parser.add_argument(
+        "--delete-voice-profile",
+        default=None,
+        metavar="PROFILE_ID",
+        help="Revoke a Trusted Voice Profile by id. Requires --token/--device-token (admin/owner credential).",
+    )
     return parser.parse_args(argv)
 
 
@@ -1785,6 +2116,16 @@ def main(argv: Optional[list] = None) -> int:
         if args.test_tts is not None:
             custom_text = None if args.test_tts == _TEST_TTS_FLAG_ONLY_SENTINEL else args.test_tts
             return worker.test_tts(text=custom_text)
+
+        # Trusted Voice Profile commands DO require real backend auth
+        # (create/list/revoke real, workspace-scoped rows) -- dispatched
+        # before the no-auth diagnostics loop below.
+        if args.enroll_voice is not None:
+            return worker.enroll_voice(args.enroll_voice)
+        if args.list_voice_profiles:
+            return worker.list_voice_profiles()
+        if args.delete_voice_profile is not None:
+            return worker.delete_voice_profile(args.delete_voice_profile)
 
         for flag_name in _LOCAL_DIAGNOSTIC_FLAGS:
             if getattr(args, flag_name):

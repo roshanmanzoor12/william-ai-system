@@ -193,6 +193,13 @@ VOICE_ROLE_ADMIN = "admin"
 VOICE_ROLE_TRUSTED_DEVELOPER = "trusted_developer"
 VOICE_ROLE_TRUSTED_MANAGER = "trusted_manager"
 VOICE_ROLE_TRUSTED_ASSISTANT = "trusted_assistant"
+# Trusted Voice Profiles feature: friend/family/team-member tiers a
+# workspace owner/admin can enroll without giving the person a dashboard
+# account -- same free-text role vocabulary as the tiers above, just named
+# to match how an owner actually thinks about who they're trusting.
+VOICE_ROLE_TRUSTED_FRIEND = "trusted_friend"
+VOICE_ROLE_TRUSTED_FAMILY = "trusted_family"
+VOICE_ROLE_TRUSTED_TEAM_MEMBER = "trusted_team_member"
 VOICE_ROLE_GUEST = "guest"
 
 VALID_VOICE_ROLES = {
@@ -201,6 +208,9 @@ VALID_VOICE_ROLES = {
     VOICE_ROLE_TRUSTED_DEVELOPER,
     VOICE_ROLE_TRUSTED_MANAGER,
     VOICE_ROLE_TRUSTED_ASSISTANT,
+    VOICE_ROLE_TRUSTED_FRIEND,
+    VOICE_ROLE_TRUSTED_FAMILY,
+    VOICE_ROLE_TRUSTED_TEAM_MEMBER,
     VOICE_ROLE_GUEST,
 }
 
@@ -450,6 +460,24 @@ class VoiceIdentityProfile(Base):
     voiceprint_status = Column(String(40), nullable=False, default=VOICEPRINT_STATUS_PENDING)
     voiceprint_reference_id = Column(String(160), nullable=True)
 
+    # Trusted Voice Profiles (local speaker-embedding enrollment) --
+    # device_id optionally scopes a profile to the specific Voice Worker
+    # device it was enrolled from (nullable: most profiles are not device-
+    # scoped). embedding_encrypted is a Fernet-encrypted JSON float list
+    # (see apps/api/services/voice_embedding_crypto.py) -- it is NEVER
+    # included in to_dict() below, so it can never reach the frontend via
+    # any existing GET/list route; only the backend's own verify-speaker
+    # comparison ever decrypts it. embedding_provider records which local
+    # provider produced it (e.g. "local_speaker_embedding"), purely
+    # informational. last_verified_at is set only by a REAL successful
+    # speaker-verification match (apps/api/routes/voice.py::verify_speaker),
+    # distinct from last_used_at above (set on ordinary command use
+    # regardless of speaker verification).
+    device_id = Column(String(80), nullable=True)
+    embedding_encrypted = Column(Text, nullable=True)
+    embedding_provider = Column(String(60), nullable=True)
+    last_verified_at = Column(DateTime(timezone=True), nullable=True, index=True)
+
     status = Column(String(20), nullable=False, default=PROFILE_STATUS_ACTIVE, index=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now)
@@ -461,6 +489,7 @@ class VoiceIdentityProfile(Base):
         Index("ix_voice_identity_profiles_linked_user", "linked_user_id"),
         Index("ix_voice_identity_profiles_last_used", "last_used_at"),
         Index("ix_voice_identity_profiles_created", "created_at"),
+        Index("ix_voice_identity_profiles_last_verified", "last_verified_at"),
     )
 
     @property
@@ -518,10 +547,18 @@ class VoiceIdentityProfile(Base):
             "reply_language_mode": self.reply_language_mode,
             "voiceprint_status": self.voiceprint_status,
             "voiceprint_reference_id": self.voiceprint_reference_id,
+            "device_id": self.device_id,
+            # embedding_encrypted is DELIBERATELY never included here -- the
+            # real embedding must never reach the frontend or any API
+            # consumer, only this backend's own verify-speaker comparison
+            # (apps/api/routes/voice.py::verify_speaker) ever decrypts it.
+            "embedding_provider": self.embedding_provider,
+            "has_voice_embedding": bool(self.embedding_encrypted),
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
+            "last_verified_at": self.last_verified_at.isoformat() if self.last_verified_at else None,
         }
 
 
@@ -690,6 +727,9 @@ __all__ = [
     "VOICE_ROLE_TRUSTED_DEVELOPER",
     "VOICE_ROLE_TRUSTED_MANAGER",
     "VOICE_ROLE_TRUSTED_ASSISTANT",
+    "VOICE_ROLE_TRUSTED_FRIEND",
+    "VOICE_ROLE_TRUSTED_FAMILY",
+    "VOICE_ROLE_TRUSTED_TEAM_MEMBER",
     "VOICE_ROLE_GUEST",
     "VALID_VOICE_ROLES",
     "SESSION_STATUS_ACTIVE",

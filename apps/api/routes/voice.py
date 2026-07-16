@@ -375,6 +375,7 @@ class VoiceProfileCreateRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=160)
     role: str = Field(default="guest")
     linked_user_id: Optional[str] = None
+    device_id: Optional[str] = Field(default=None, max_length=80)
     allowed_agents: List[str] = Field(default_factory=list)
     blocked_agents: List[str] = Field(default_factory=list)
     allowed_capabilities: List[str] = Field(default_factory=list)
@@ -407,6 +408,19 @@ class VoiceProfileUpdateRequest(BaseModel):
     preferred_language: Optional[str] = None
     reply_language_mode: Optional[str] = None
     status: Optional[str] = None
+
+
+class VoiceProfileEmbeddingRequest(BaseModel):
+    # A real, locally-computed embedding vector (see apps/worker_nodes/
+    # voice/providers/speaker_embedding.py) -- never raw audio. Bounded
+    # length guards against an accidentally-oversized payload; the local
+    # provider's real embedding is ~24 floats.
+    embedding: List[float] = Field(..., min_length=1, max_length=512)
+    provider: str = Field(default="local_speaker_embedding", max_length=60)
+
+
+class VoiceProfileVerifyRequest(BaseModel):
+    embedding: List[float] = Field(..., min_length=1, max_length=512)
 
 
 class WakeEventRequest(BaseModel):
@@ -974,6 +988,82 @@ async def delete_voice_profile(
         )
 
     return api_success("Voice profile revoked.", data={"profile": profile}, request_id=context.request_id)
+
+
+@router.post("/profiles/{profile_id}/embedding")
+async def enroll_voice_profile_embedding(
+    profile_id: str,
+    payload: VoiceProfileEmbeddingRequest,
+    context: "AuthContext" = Depends(require_auth_role(Role.ADMIN.value)),
+) -> Dict[str, Any]:
+    """Stores a real, locally-computed speaker-embedding vector (from the
+    Voice Worker's --enroll-voice CLI flow) onto a Trusted Voice Profile.
+    The embedding is encrypted before it ever touches the database (see
+    apps/api/services/voice_embedding_crypto.py) and is NEVER included in
+    any API response -- VoiceIdentityProfile.to_dict() deliberately omits
+    it. Owner/admin only, matching every other profile-management route."""
+    from database.db import db_manager
+    from apps.api.services import voice_service as vs
+    from apps.api.services import voice_embedding_crypto as crypto
+
+    if not crypto.is_available():
+        raise_api_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Voice embedding encryption is not available on this server (the 'cryptography' package is missing).",
+            "ENCRYPTION_UNAVAILABLE", context.request_id,
+        )
+
+    token = crypto.encrypt_embedding(payload.embedding)
+    if token is None:
+        raise_api_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Could not encrypt the voice embedding.",
+            "ENCRYPTION_FAILED", context.request_id,
+        )
+
+    with db_manager.session_scope() as db:
+        profile = vs.enroll_profile_embedding(
+            db, context.workspace_id, profile_id, embedding_encrypted=token, provider=payload.provider,
+        )
+        if profile is None:
+            raise_api_error(status.HTTP_404_NOT_FOUND, "Voice profile not found.", "PROFILE_NOT_FOUND", context.request_id)
+        vs.write_voice_audit(
+            db, user_id=context.user_id, workspace_id=context.workspace_id, action="voice.profile.embedding_enrolled",
+            resource_id=profile_id, metadata={"provider": payload.provider},
+        )
+
+    return api_success("Voice embedding enrolled.", data={"profile": profile}, request_id=context.request_id)
+
+
+@router.post("/profiles/verify")
+async def verify_voice_profile(
+    payload: VoiceProfileVerifyRequest,
+    # Reachable by an installed Voice Worker's device token (not just a
+    # dashboard user JWT) -- runtime speaker verification (Part 6) happens
+    # from the worker process during real command handling, exactly like
+    # /voice/wake-event and /voice/push-to-talk/text.
+    context: "AuthContext" = Depends(get_voice_worker_auth_context),
+) -> Dict[str, Any]:
+    """Compares a freshly-captured embedding against this WORKSPACE's own
+    trusted profiles only (query is filtered by workspace_id -- a profile
+    enrolled in one workspace can never match a verification attempt from
+    another). Never returns any profile's embedding. Every attempt is
+    audited, matched or not, so a workspace owner can see verification
+    activity even when nothing matched."""
+    from database.db import db_manager
+    from apps.api.services import voice_service as vs
+
+    with db_manager.session_scope() as db:
+        result = vs.verify_speaker_embedding(db, context.workspace_id, payload.embedding)
+        vs.write_voice_audit(
+            db, user_id=context.user_id, workspace_id=context.workspace_id, action="voice.profile.verify_attempted",
+            resource_id=result.get("profile_id") or "", status="success" if result["matched"] else "failed",
+            metadata={"confidence": result["confidence"]},
+        )
+
+    return api_success(
+        "Speaker verified." if result["matched"] else "No trusted voice match found.",
+        data=result, request_id=context.request_id,
+    )
 
 
 @router.post("/wake-event")

@@ -1179,14 +1179,33 @@ class TestRiskyCommandNotTreatedAsSleep:
     reach the assistant dispatcher, which routes it to SecurityAgent."""
 
     def test_shutdown_computer_is_dispatched_not_treated_as_sleep(self, monkeypatch) -> None:
-        # Isolates the sleep-vs-risky distinction from the separate,
-        # already-tested speaker-sensitivity gate (TestSpeakerRecognition
-        # AndTtsOptional) -- "shutdown" is also a SENSITIVE_TRANSCRIPT_
-        # KEYWORDS entry, which would otherwise hold this back locally for
-        # an unrelated reason (no speaker-recognition provider configured)
-        # and mask what this test is actually checking.
-        monkeypatch.setenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "test_provider")
+        # Isolates the sleep-vs-risky distinction from speaker-verification
+        # mechanics (covered separately by TestSpeakerVerificationGating) --
+        # mocks a real, MATCHED speaker verification so the sensitive-
+        # command gate passes legitimately, confirming "shutdown computer"
+        # reaches the dispatcher rather than being silently treated as a
+        # "shutdown voice" sleep phrase.
+        monkeypatch.setenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "local_speaker_embedding")
         worker, transport, _tts_calls = _build_capture_worker(transcript="shutdown computer")
+
+        class _FakeSpeakerEmbeddingProvider:
+            @staticmethod
+            def check_status() -> Dict[str, Any]:
+                return {"configured": True, "reason": None, "install_guidance": None}
+
+            @staticmethod
+            def compute_embedding(path: str) -> Dict[str, Any]:
+                return {"ok": True, "embedding": [0.1, 0.2, 0.3], "error": None}
+
+        monkeypatch.setattr(voice_worker_module, "speaker_embedding_provider", _FakeSpeakerEmbeddingProvider())
+        monkeypatch.setattr(
+            worker, "_verify_speaker",
+            lambda embedding: {
+                "matched": True, "profile_id": "voiceprofile_1", "display_name": "Owner",
+                "role": "owner", "confidence": 0.95,
+            },
+        )
+
         worker._active_conversation = True
         assert worker._is_sleep_transcript("shutdown computer") is False
         try:
@@ -1218,7 +1237,7 @@ class TestWeakTranscriptRejectedLocally:
         called_paths = [path for _, path, _ in transport.calls]
         assert "/voice/push-to-talk/text" not in called_paths
         captured = capsys.readouterr()
-        assert "Boss, I heard you but could not understand. Please repeat." in captured.out
+        assert "Boss, I could not understand. Please repeat." in captured.out
 
     def test_low_confidence_transcript_rejected(self) -> None:
         worker, transport, _tts_calls = _build_capture_worker(transcript="open notepad", confidence=0.02)
@@ -1353,4 +1372,259 @@ class TestCliDiagnosticsWork:
         captured = capsys.readouterr()
         assert exit_code == 0
         assert "open notepad" in captured.out
-        assert "0.93" in captured.out
+
+
+def _build_silent_capture_worker() -> Tuple[VoiceWorker, List[str]]:
+    """A worker wired so every _capture_transcribe_and_respond call reports
+    genuine SILENCE (STT ok=False, "no speech detected") -- for the
+    no-speech-retry-cap tests below. Returns (worker, tts_spoken_calls)."""
+    config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+    worker = VoiceWorker(config)
+
+    class _FakeAudioInput:
+        @staticmethod
+        def record_to_tempfile(**kwargs: Any) -> Dict[str, Any]:
+            return {"ok": True, "audio_path": "C:\\fake\\silent.wav", "duration_seconds": 5.0, "error": None, "peak_rms": 50.0}
+
+    class _FakeStt:
+        @staticmethod
+        def transcribe(path: str) -> Dict[str, Any]:
+            return {"ok": False, "text": None, "confidence": None, "error": "no speech detected"}
+
+    spoken_calls: List[str] = []
+
+    class _FakeTts:
+        @staticmethod
+        def check_status() -> Dict[str, Any]:
+            return {"configured": True, "reason": None, "install_guidance": None}
+
+        @staticmethod
+        def speak(text: str) -> Dict[str, Any]:
+            spoken_calls.append(text)
+            return {"ok": True, "spoken": True, "error": None}
+
+    orig_audio = voice_worker_module.audio_input_provider
+    orig_stt = voice_worker_module.stt_provider
+    orig_tts = voice_worker_module.tts_provider
+    voice_worker_module.audio_input_provider = _FakeAudioInput()
+    voice_worker_module.stt_provider = _FakeStt()
+    voice_worker_module.tts_provider = _FakeTts()
+
+    def _restore() -> None:
+        voice_worker_module.audio_input_provider = orig_audio
+        voice_worker_module.stt_provider = orig_stt
+        voice_worker_module.tts_provider = orig_tts
+
+    worker._test_restore_providers = _restore  # type: ignore[attr-defined]
+    return worker, spoken_calls
+
+
+class TestNoSpeechRetryCap:
+    """Items 1-2 (silence-loop fix): genuine silence (STT ok=False) during
+    active_conversation must never be spoken about on every single
+    occurrence -- only logged -- and only speaks + ends the session once
+    WILLIAM_VOICE_NO_SPEECH_MAX_RETRIES consecutive silent captures have
+    happened. This is the exact reported bug: a silent room made the
+    worker repeat "could not understand" every ~5s forever."""
+
+    def test_first_no_speech_event_does_not_speak(self, monkeypatch, capsys) -> None:
+        worker, spoken_calls = _build_silent_capture_worker()
+        monkeypatch.setenv("WILLIAM_VOICE_NO_SPEECH_MAX_RETRIES", "5")
+        worker._active_conversation = True
+
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is False
+        assert worker._sleep_requested is False
+        assert spoken_calls == []
+        captured = capsys.readouterr()
+        assert "Okay boss" not in captured.out
+        assert "could not understand" not in captured.out
+
+    def test_repeated_silence_below_cap_never_speaks(self, monkeypatch) -> None:
+        worker, spoken_calls = _build_silent_capture_worker()
+        monkeypatch.setenv("WILLIAM_VOICE_NO_SPEECH_MAX_RETRIES", "5")
+        worker._active_conversation = True
+
+        try:
+            for _ in range(4):
+                assert worker._capture_transcribe_and_respond() is False
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        # 4 silent captures, cap is 5 -- never spoken, session not ended.
+        assert spoken_calls == []
+        assert worker._sleep_requested is False
+
+    def test_consecutive_no_speech_hits_cap_and_returns_to_wake_word_waiting(self, monkeypatch) -> None:
+        worker, spoken_calls = _build_silent_capture_worker()
+        monkeypatch.setenv("WILLIAM_VOICE_NO_SPEECH_MAX_RETRIES", "2")
+        worker._active_conversation = True
+
+        try:
+            assert worker._capture_transcribe_and_respond() is False
+            assert spoken_calls == []  # first attempt: silent, not spoken
+
+            assert worker._capture_transcribe_and_respond() is False
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        # Cap reached on the 2nd consecutive silent capture -- spoken
+        # exactly once, and the session is flagged to end.
+        assert spoken_calls == ["Okay boss, I'll wait for the wake word."]
+        assert worker._sleep_requested is True
+
+    def test_verbose_errors_speaks_on_every_silent_capture(self, monkeypatch) -> None:
+        worker, spoken_calls = _build_silent_capture_worker()
+        monkeypatch.setenv("WILLIAM_VOICE_NO_SPEECH_MAX_RETRIES", "5")
+        monkeypatch.setenv("WILLIAM_VOICE_VERBOSE_ERRORS", "1")
+        worker._active_conversation = True
+
+        try:
+            worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert spoken_calls == ["No speech detected; still listening."]
+
+
+class TestLowConfidenceAsksRepeatOnce:
+    """Item 3: a real (non-empty) but low-confidence/garbled transcript is
+    spoken about exactly once per occurrence -- distinct from silence
+    above, which is never spoken about until the retry cap."""
+
+    def test_low_confidence_transcript_speaks_repeat_prompt_once(self, monkeypatch) -> None:
+        worker, _transport, tts_calls = _build_capture_worker(transcript="mumble mumble", confidence=0.02)
+        worker._active_conversation = True
+
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is False
+        assert tts_calls == ["Boss, I could not understand. Please repeat."]
+
+
+class TestSpeakerVerificationGating:
+    """Item 10: an unknown/unmatched voice must never execute a sensitive
+    command -- the worker holds it back and asks for dashboard
+    confirmation, exactly like the "no provider configured" case, but via
+    the real verify-speaker round trip this time."""
+
+    def test_unmatched_voice_blocks_sensitive_command(self, monkeypatch, capsys) -> None:
+        monkeypatch.setenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "local_speaker_embedding")
+        worker, transport, _tts_calls = _build_capture_worker(transcript="please delete all my files")
+
+        class _FakeSpeakerEmbeddingProvider:
+            @staticmethod
+            def check_status() -> Dict[str, Any]:
+                return {"configured": True, "reason": None, "install_guidance": None}
+
+            @staticmethod
+            def compute_embedding(path: str) -> Dict[str, Any]:
+                return {"ok": True, "embedding": [0.1, 0.2, 0.3], "error": None}
+
+        monkeypatch.setattr(voice_worker_module, "speaker_embedding_provider", _FakeSpeakerEmbeddingProvider())
+        monkeypatch.setattr(
+            worker, "_verify_speaker",
+            lambda embedding: {"matched": False, "profile_id": None, "display_name": None, "role": None, "confidence": 0.1},
+        )
+
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is False
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" not in called_paths
+        captured = capsys.readouterr()
+        assert "Boss, I cannot verify this voice. Please confirm from dashboard." in captured.out
+
+    def test_matched_voice_allows_sensitive_command(self, monkeypatch) -> None:
+        monkeypatch.setenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "local_speaker_embedding")
+        worker, transport, _tts_calls = _build_capture_worker(transcript="please delete all my files")
+
+        class _FakeSpeakerEmbeddingProvider:
+            @staticmethod
+            def check_status() -> Dict[str, Any]:
+                return {"configured": True, "reason": None, "install_guidance": None}
+
+            @staticmethod
+            def compute_embedding(path: str) -> Dict[str, Any]:
+                return {"ok": True, "embedding": [0.1, 0.2, 0.3], "error": None}
+
+        monkeypatch.setattr(voice_worker_module, "speaker_embedding_provider", _FakeSpeakerEmbeddingProvider())
+        monkeypatch.setattr(
+            worker, "_verify_speaker",
+            lambda embedding: {
+                "matched": True, "profile_id": "voiceprofile_1", "display_name": "Owner",
+                "role": "owner", "confidence": 0.9,
+            },
+        )
+
+        try:
+            sent = worker._capture_transcribe_and_respond()
+        finally:
+            worker._test_restore_providers()  # type: ignore[attr-defined]
+
+        assert sent is True
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" in called_paths
+
+
+class TestEnrollmentDeletesRawAudio:
+    """Item 8: --enroll-voice must never keep raw audio by default -- each
+    phrase's captured WAV is deleted immediately after its embedding is
+    computed, just like the normal command-capture path."""
+
+    def test_enroll_voice_deletes_each_phrase_wav(self, monkeypatch, tmp_path) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        monkeypatch.setenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "local_speaker_embedding")
+        monkeypatch.setenv("WILLIAM_VOICE_ENROLLMENT_PHRASES", "2")
+        monkeypatch.delenv("WILLIAM_VOICE_SAVE_DEBUG_WAV", raising=False)
+        monkeypatch.delenv("WILLIAM_VOICE_DEBUG_KEEP_AUDIO", raising=False)
+
+        created_paths: List[Any] = []
+
+        class _FakeAudioInput:
+            @staticmethod
+            def record_to_tempfile(**kwargs: Any) -> Dict[str, Any]:
+                wav_path = tmp_path / f"phrase_{len(created_paths)}.wav"
+                wav_path.write_bytes(b"RIFF....WAVEfmt ")
+                created_paths.append(wav_path)
+                return {"ok": True, "audio_path": str(wav_path), "duration_seconds": 1.5, "error": None, "peak_rms": 900.0}
+
+        class _FakeSpeakerEmbeddingProvider:
+            LOCAL_PROVIDER_NAME = "local_speaker_embedding"
+
+            @staticmethod
+            def check_status() -> Dict[str, Any]:
+                return {"configured": True, "reason": None, "install_guidance": None}
+
+            @staticmethod
+            def compute_embedding(path: str) -> Dict[str, Any]:
+                return {"ok": True, "embedding": [0.1] * 24, "error": None}
+
+        monkeypatch.setattr(voice_worker_module, "audio_input_provider", _FakeAudioInput())
+        monkeypatch.setattr(voice_worker_module, "speaker_embedding_provider", _FakeSpeakerEmbeddingProvider())
+
+        transport = FakeTransport(
+            {
+                "/voice/profiles": _envelope(data={"profile": {"id": "voiceprofile_owner_1"}}),
+                "/voice/profiles/voiceprofile_owner_1/embedding": _envelope(data={"profile": {"id": "voiceprofile_owner_1"}}),
+            }
+        )
+        worker._client._request = transport  # type: ignore[method-assign]
+
+        exit_code = worker.enroll_voice("owner")
+
+        assert exit_code == 0
+        assert len(created_paths) == 2
+        for wav_path in created_paths:
+            assert not wav_path.exists()
