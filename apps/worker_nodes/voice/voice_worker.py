@@ -167,6 +167,13 @@ except Exception:  # pragma: no cover - import-safe fallback
 LOGGER_NAME = "william.worker_nodes.voice"
 logger = logging.getLogger(LOGGER_NAME)
 
+# Guards against double-registration if this module is ever imported under
+# two different names in the same process (e.g. once as "__main__" via
+# `python -m`, once via a real `import apps.worker_nodes.voice.voice_worker`
+# elsewhere) -- logging.getLogger(LOGGER_NAME) always returns the SAME
+# logger object either way (the registry is keyed by name, independent of
+# Python's module import system), so this check is safe and sufficient:
+# it is never possible for this exact handler to be added twice.
 if not logger.handlers:
     _handler = logging.StreamHandler(stream=sys.stdout)
     _handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
@@ -520,12 +527,23 @@ class VoiceWorker:
     def _report_dependency_status(self, status_result: Dict[str, Any], brief: bool = False) -> None:
         if not status_result.get("ok"):
             envelope = status_result.get("envelope") or {}
-            message = envelope.get("message") or "Could not reach /voice/status."
-            self._log(f"Dependency status check failed: {message} (transport_status={status_result.get('transport_status')})")
+            transport_status = status_result.get("transport_status")
+            # A real transport_status like "http_500"/"http_401" is a safe,
+            # actionable detail (never leaks response body/stack trace); the
+            # envelope message is whatever this codebase's own api_success/
+            # raise_api_error helpers put there (also always safe -- no raw
+            # tracebacks cross the API boundary), so both are fine to print
+            # verbatim. The endpoint name is stated explicitly so "which
+            # call failed" is never left for the operator to guess.
+            message = envelope.get("message") or "No response body."
+            self._log(
+                f"GET /voice/status failed: {message} (transport_status={transport_status})"
+            )
             self._log(
                 "Continuing in dependency-check mode: no confirmed audio_input_worker / "
                 "stt_provider / tts_provider / speaker_recognition_provider available "
-                "(status unknown -- backend unreachable or auth failed)."
+                "(status unknown -- backend unreachable, auth failed, or a backend error "
+                "occurred; text push-to-talk and --simulate-text still work regardless)."
             )
             return
 
