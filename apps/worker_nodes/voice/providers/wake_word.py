@@ -73,9 +73,19 @@ def resolve_bundled_model_name() -> Dict[str, Any]:
     }
 
 
+# "openwakeword_local" is accepted as an honest alias for "openwakeword" --
+# same local engine, matching the "_local" naming convention
+# WILLIAM_AUDIO_INPUT_PROVIDER already uses ("local_microphone"). Without
+# this alias, an operator who reasonably follows that same convention for
+# WILLIAM_WAKE_WORD_PROVIDER gets silently rejected here.
+_LOCAL_OPENWAKEWORD_PROVIDER_NAMES = {"openwakeword", "openwakeword_local"}
+
+
 def _provider_name() -> str:
     raw = os.getenv("WILLIAM_WAKE_WORD_PROVIDER", "").strip().lower()
-    return "" if raw == "none" else raw
+    if raw == "none":
+        return ""
+    return "openwakeword" if raw in _LOCAL_OPENWAKEWORD_PROVIDER_NAMES else raw
 
 
 def check_status() -> Dict[str, Any]:

@@ -33,11 +33,17 @@ def local_package_available() -> bool:
     return WhisperModel is not None
 
 
-# "local_whisper" is accepted as an honest alias for "faster_whisper" --
-# same local engine, matching the exact provider value names the product
-# spec documents (WILLIAM_STT_PROVIDER=openai/local_whisper/faster_whisper/
-# none) without adding a second code path.
-_LOCAL_WHISPER_PROVIDER_NAMES = {"faster_whisper", "local_whisper"}
+# "local_whisper"/"faster_whisper_local"/"whisper_local" are accepted as
+# honest aliases for "faster_whisper" -- same local engine. The "_local"
+# suffix forms specifically match the naming convention
+# WILLIAM_AUDIO_INPUT_PROVIDER already uses ("local_microphone") -- without
+# these aliases, an operator who reasonably follows that same convention
+# for WILLIAM_STT_PROVIDER gets silently rejected here (found via a real
+# live run: WILLIAM_STT_PROVIDER=faster_whisper_local with faster-whisper
+# actually installed still reported external_dependency_required).
+_LOCAL_WHISPER_PROVIDER_NAMES = {
+    "faster_whisper", "local_whisper", "faster_whisper_local", "whisper_local",
+}
 
 
 def _provider_name() -> str:

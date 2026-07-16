@@ -32,9 +32,19 @@ def local_package_available() -> bool:
     return pyttsx3 is not None
 
 
+# "pyttsx3_local" is accepted as an honest alias for "pyttsx3" -- same
+# local engine, matching the "_local" naming convention
+# WILLIAM_AUDIO_INPUT_PROVIDER already uses ("local_microphone"). Without
+# this alias, an operator who reasonably follows that same convention for
+# WILLIAM_TTS_PROVIDER gets silently rejected here.
+_LOCAL_PYTTSX3_PROVIDER_NAMES = {"pyttsx3", "pyttsx3_local"}
+
+
 def _provider_name() -> str:
     raw = os.getenv("WILLIAM_TTS_PROVIDER", "").strip().lower()
-    return "" if raw == "none" else raw
+    if raw == "none":
+        return ""
+    return "pyttsx3" if raw in _LOCAL_PYTTSX3_PROVIDER_NAMES else raw
 
 
 def check_status() -> Dict[str, Any]:

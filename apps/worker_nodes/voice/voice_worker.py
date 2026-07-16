@@ -210,6 +210,34 @@ ALWAYS_LISTENING_MODES = {"wake_word_admin", "wake_word_trusted_users"}
 # for troubleshooting a bad transcription. Never enabled by default.
 DEBUG_KEEP_AUDIO_ENV_VAR = "WILLIAM_VOICE_DEBUG_KEEP_AUDIO"
 
+# Local, worker-side heuristic ONLY -- deciding whether to hold a command
+# back locally pending speaker verification (see _is_sensitive_transcript).
+# This is never the real authorization boundary: the server-side
+# SecurityAgent/system_worker classify_worker_action gate (apps/api/routes/
+# system_worker.py) still independently reviews risky actions regardless of
+# what this worker does locally. This list exists only so a workspace
+# without a speaker-recognition provider doesn't let ANY voice speaker
+# execute a sensitive command hands-free with zero local friction.
+SENSITIVE_TRANSCRIPT_KEYWORDS = {
+    "delete", "remove all", "wipe", "format", "shutdown", "shut down", "restart",
+    "reboot", "uninstall", "factory reset",
+    "payment", "pay ", "transfer", "wire ", "invoice", "refund", "charge",
+    "purchase", "buy ", "bank account", "credit card", "routing number",
+    "password", "credential", "api key", "secret key", "private key",
+    "confidential", "unlock", "grant access", "revoke access", "admin access",
+}
+
+# Env vars the worker itself reads locally for its real-listening gate --
+# printed at startup (requirement: honest, exact effective values, not the
+# BACKEND process's view of the same names). See _print_local_provider_env.
+LOCAL_PROVIDER_ENV_VARS = (
+    "WILLIAM_AUDIO_INPUT_PROVIDER",
+    "WILLIAM_STT_PROVIDER",
+    "WILLIAM_TTS_PROVIDER",
+    "WILLIAM_WAKE_WORD_PROVIDER",
+    "WILLIAM_WAKE_WORD_PHRASE",
+)
+
 
 class VoiceWorkerState(str, Enum):
     """
@@ -338,6 +366,26 @@ class VoiceWorker:
 
     def _effective_wake_word_seed(self) -> str:
         return (self.config.wake_word or DEFAULT_WAKE_WORD).strip().lower() or DEFAULT_WAKE_WORD
+
+    @staticmethod
+    def _effective_wake_word_phrase_for_display() -> str:
+        """Human-readable form of the REAL audio wake phrase the
+        openwakeword listener is actually loaded with (WILLIAM_WAKE_WORD_
+        PHRASE, resolved to a real bundled model name via wake_word.py::
+        resolve_bundled_model_name) -- deliberately reads the same env var
+        wake_word.WakeWordListener() itself resolves from, not this
+        worker's separate --wake-word/DEFAULT_WAKE_WORD (which only
+        configures the always-available TEXT-based detector used by
+        --simulate-text/push-to-talk, a different phrase entirely)."""
+        if wake_word_provider is not None:
+            try:
+                resolved = wake_word_provider.resolve_bundled_model_name()
+                phrase = resolved["model_name"]
+            except Exception:  # pragma: no cover - defensive only
+                phrase = os.getenv("WILLIAM_WAKE_WORD_PHRASE", DEFAULT_WAKE_WORD)
+        else:
+            phrase = os.getenv("WILLIAM_WAKE_WORD_PHRASE", DEFAULT_WAKE_WORD)
+        return phrase.strip().replace("_", " ").replace("-", " ").title() or DEFAULT_WAKE_WORD.title()
 
     def _sync_wake_word(self, server_wake_word: Optional[str]) -> None:
         """Keeps the local detector's primary wake word aligned with the
@@ -566,11 +614,20 @@ class VoiceWorker:
         else:
             self._log(f"Voice mode for this workspace: {mode}")
         self._log(f"Configured wake word: {wake_word!r}")
-        self._log("Dependency status:")
+        self._log("Dependency status (as reported by the BACKEND process's own env -- see "
+                   "'Effective local env' above for what THIS worker process actually uses "
+                   "for its own real-listening gate; the two are not guaranteed to match "
+                   "unless the backend and this worker share the same environment):")
         for key in (
             "wake_word_engine",
             "audio_input_worker",
             "stt_provider",
+            # wake_word_provider (the real *audio* engine, distinct from the
+            # always-available text-based wake_word_engine above) was
+            # missing from this loop entirely -- an operator could never
+            # see its true backend-reported status here, only infer it
+            # indirectly from the dependency_required message below.
+            "wake_word_provider",
             "tts_provider",
             "speaker_recognition_provider",
         ):
@@ -592,12 +649,25 @@ class VoiceWorker:
             for key, value in dependency_status.items()
             if _dep_status(value) not in ("configured", "available")
         ]
-        if missing:
+        # Only audio_input_worker/stt_provider/wake_word_provider actually
+        # block real always-listening audio (see provider_status.py::
+        # get_full_status's always_listening_available formula) --
+        # tts_provider/speaker_recognition_provider missing must never be
+        # reported here as if they stop real listening; they don't.
+        blocking = [key for key in missing if key in ("audio_input_worker", "stt_provider", "wake_word_provider")]
+        if blocking:
             self._log(
-                "No real audio/STT/TTS libraries are installed in this environment "
-                f"({', '.join(missing)}). Starting in dependency-check mode: text-based "
-                "wake-word detection and the API control plane still work; real "
-                "microphone/speech capture does not."
+                "Per the backend's own env, real always-listening audio is blocked by: "
+                f"{', '.join(blocking)}. Starting in dependency-check mode: text-based "
+                "wake-word detection and the API control plane still work regardless. "
+                "(This worker's own local providers are what actually decide -- see below.)"
+            )
+        elif missing:
+            self._log(
+                f"Non-blocking dependencies missing per the backend's own env: {', '.join(missing)} "
+                "-- real always-listening audio can still start; TTS falls back to text-only "
+                "responses (speech_output_status=tts_missing) and speaker recognition falls back "
+                "to normal typed/voice confirmation for sensitive commands only."
             )
         else:
             self._log("All voice dependencies report configured/available.")
@@ -630,6 +700,16 @@ class VoiceWorker:
         remainder = remainder.lstrip(",:;-— \t")
         remainder = " ".join(remainder.split())
         return remainder or text.strip()
+
+    @staticmethod
+    def _is_sensitive_transcript(text: str) -> bool:
+        """Local, worker-side heuristic only (see SENSITIVE_TRANSCRIPT_
+        KEYWORDS) -- never the real authorization boundary. Used solely to
+        decide whether a missing speaker-recognition provider should hold
+        a command back locally; normal, non-sensitive commands are never
+        affected by this check."""
+        lowered = f" {text.strip().lower()} "
+        return any(keyword in lowered for keyword in SENSITIVE_TRANSCRIPT_KEYWORDS)
 
     # -----------------------------------------------------------------
     # Core text-input pipeline (used by --simulate-text and the
@@ -747,11 +827,37 @@ class VoiceWorker:
         # No real speaker-recognition provider is configured in this
         # environment (see dependency_status.speaker_recognition_provider)
         # -- honestly report that this step is skipped rather than
-        # pretending a verification happened.
+        # pretending a verification happened. Missing speaker recognition
+        # never blocks normal commands -- it only holds back commands this
+        # worker locally recognizes as sensitive/private/risky (see
+        # _is_sensitive_transcript), since anyone speaking to an unverified
+        # always-listening microphone could otherwise trigger them
+        # hands-free. The server-side SecurityAgent/system_worker
+        # classify_worker_action gate is unaffected either way and still
+        # independently reviews risky actions regardless of what this
+        # worker decides locally.
+        speaker_provider = os.getenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "").strip()
+        speaker_configured = bool(speaker_provider) and speaker_provider.lower() != "none"
+        if not speaker_configured:
+            self._log("Sensitive voice verification unavailable; normal voice commands still work.")
+            if self._is_sensitive_transcript(transcript):
+                self._set_state(
+                    VoiceWorkerState.VERIFYING_SPEAKER,
+                    "sensitive command held pending speaker verification (none configured)",
+                )
+                self._log(
+                    f"Command held locally, not sent: {transcript!r} looks sensitive/private/risky "
+                    "and no speaker-recognition provider is configured to verify who is speaking. "
+                    "Use a verified channel (the dashboard, or an admin's typed confirmation) to run "
+                    "it, or configure WILLIAM_SPEAKER_RECOGNITION_PROVIDER to allow this hands-free."
+                )
+                return False
         self._set_state(
             VoiceWorkerState.VERIFYING_SPEAKER,
             "no speaker-recognition provider configured; skipping local verification "
-            "(server still applies its own admin/owner or profile-based authorization)",
+            "(server still applies its own admin/owner or profile-based authorization)"
+            if not speaker_configured
+            else "speaker-recognition provider configured but verification is not yet wired up locally",
         )
 
         detected_language = "en"
@@ -822,12 +928,26 @@ class VoiceWorker:
         if provider_status_module is None:
             return {
                 "always_listening_available": False,
-                "reason": "apps.worker_nodes.voice.providers is unavailable",
+                "blocking_dependencies": ["audio_input_worker", "stt_provider", "wake_word_provider"],
+                "reason": None,
                 "full_status": {},
             }
         full_status = provider_status_module.get_full_status()
+        # always_listening_blocking_dependencies is the true blocking
+        # subset (audio_input_worker/stt_provider/wake_word_provider only
+        # -- never tts_provider/speaker_recognition_provider, which don't
+        # gate real listening). Falls back to filtering the older, fuller
+        # missing_dependencies list for an outdated provider_status module
+        # that predates this field, rather than crashing on a KeyError.
+        blocking = full_status.get("always_listening_blocking_dependencies")
+        if blocking is None:
+            blocking = [
+                key for key in (full_status.get("missing_dependencies") or [])
+                if key in ("audio_input_worker", "stt_provider", "wake_word_provider")
+            ]
         return {
             "always_listening_available": bool(full_status.get("always_listening_available")),
+            "blocking_dependencies": blocking,
             "reason": None,
             "full_status": full_status,
         }
@@ -838,19 +958,28 @@ class VoiceWorker:
         same dispatcher every other path uses, then real TTS. Falls back
         to the safe heartbeat-only idle loop (never a crash, never a fake
         "listening") if any of audio_input/stt/wake_word isn't actually
-        configured on this machine."""
+        configured on this machine. tts_provider/speaker_recognition_
+        provider are deliberately never checked here -- missing TTS means
+        text-only responses (speech_output_status=tts_missing, never a
+        blocker); missing speaker recognition only holds back sensitive
+        commands locally (see _is_sensitive_transcript), never the listen
+        loop itself."""
         readiness = self._local_provider_readiness()
         if not readiness["always_listening_available"]:
-            full_status = readiness["full_status"]
-            missing = full_status.get("missing_dependencies") or ["audio_input_worker", "stt_provider", "wake_word_provider"]
+            blocking = readiness["blocking_dependencies"] or ["audio_input_worker", "stt_provider", "wake_word_provider"]
             self._log(
                 f"dependency_required: mode={mode!r} wants real always-listening audio, but "
-                f"{', '.join(missing)} are not all configured on this machine. Keeping heartbeat "
-                "alive; text push-to-talk and --simulate-text still work regardless. Run "
+                f"{', '.join(blocking)} {'is' if len(blocking) == 1 else 'are'} not configured on this "
+                "machine. See 'Effective local env' above for what this worker actually read. Keeping "
+                "heartbeat alive; text push-to-talk and --simulate-text still work regardless. Run "
                 "check_voice_dependencies.ps1 for exact setup guidance."
             )
             self._run_idle_loop()
             return
+
+        display_phrase = self._effective_wake_word_phrase_for_display()
+        print(f"Listening for wake word: {display_phrase}")
+        self._log(f"Listening for wake word: {display_phrase}")
 
         self._set_state(
             VoiceWorkerState.IDLE,
@@ -1201,6 +1330,23 @@ class VoiceWorker:
         self._log(f"Session id     : {self.session_id}")
         self._log(f"Wake word seed : {self._effective_wake_word_seed()!r}")
         self._log(f"Auth mode      : {'device_token' if self.config.device_token else ('jwt' if self.config.token else 'none')}")
+        self._print_local_provider_env()
+
+    @staticmethod
+    def _print_local_provider_env() -> None:
+        """Debug startup output: the EXACT effective env values THIS
+        worker process reads for its own real-listening gate (audio_input/
+        stt/tts/wake_word providers + wake word phrase) -- printed as-is
+        from os.getenv, never guessed or fabricated. This is deliberately
+        distinct from GET /voice/status's dependency report further below,
+        which reflects the BACKEND process's own env and may run on a
+        different machine with different values; this worker's own
+        real-listening decision is always based on what's printed here,
+        not on the backend's view."""
+        logger.info("Effective local env (this worker process):")
+        for name in LOCAL_PROVIDER_ENV_VARS:
+            value = os.getenv(name, "")
+            logger.info("    %s = %r%s", name, value, "" if value else "  [not set]")
 
 
 # ---------------------------------------------------------------------

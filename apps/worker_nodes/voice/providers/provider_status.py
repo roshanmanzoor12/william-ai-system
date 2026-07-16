@@ -79,6 +79,27 @@ def get_full_status() -> Dict[str, Any]:
         if entry["status"] != "configured"
     ]
 
+    # Subset of missing_dependencies that ACTUALLY gates always_listening_
+    # available (audio_input_worker/stt_provider/wake_word_provider only,
+    # matching the formula above) -- tts_provider and
+    # speaker_recognition_provider never belong here even when they're also
+    # missing, because they don't block real always-listening audio. A
+    # dependency_required message built from missing_dependencies instead
+    # of this list wrongly names TTS/speaker recognition as blockers (the
+    # exact bug reported live: TTS and wake_word_provider were both
+    # "configured" per the backend's presence-only env check, but named as
+    # blockers anyway by a message that dumped the full missing_dependencies
+    # list rather than the true blocking subset).
+    always_listening_blocking_dependencies: List[str] = [
+        key
+        for key, ok in (
+            ("audio_input_worker", real_microphone_available),
+            ("stt_provider", stt_entry["status"] == "configured"),
+            ("wake_word_provider", wake_word_entry["status"] == "configured"),
+        )
+        if not ok
+    ]
+
     return {
         "audio_input_status": audio_entry,
         "stt_status": stt_entry,
@@ -92,6 +113,7 @@ def get_full_status() -> Dict[str, Any]:
         # never require any of the above -- always true, stated outright.
         "text_command_available": True,
         "missing_dependencies": missing_dependencies,
+        "always_listening_blocking_dependencies": always_listening_blocking_dependencies,
         "setup_commands": {
             "install_dependencies": r"powershell -ExecutionPolicy Bypass -File .\scripts\windows\install_voice_dependencies.ps1",
             "check_dependencies": r"powershell -ExecutionPolicy Bypass -File .\scripts\windows\check_voice_dependencies.ps1",

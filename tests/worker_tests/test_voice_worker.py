@@ -703,3 +703,248 @@ class TestReturnsToListeningAfterCommand:
         # listen_until_detected for a second time before this test stopped it.
         assert len(respond_calls) == 1
         assert listen_call_count["n"] == 2
+
+
+class TestLocalProviderEnvAliasesMatchBackendGuidance:
+    """Regression coverage for the exact live bug report: the backend's own
+    install_guidance (agents/voice_agent/provider_capabilities.py's
+    provider_value_hint) tells an operator to set
+    WILLIAM_STT_PROVIDER=faster_whisper_local /
+    WILLIAM_TTS_PROVIDER=pyttsx3_local /
+    WILLIAM_WAKE_WORD_PROVIDER=openwakeword_local -- these exact values
+    must be accepted by the real provider modules (apps/worker_nodes/
+    voice/providers/*.py), not just their un-suffixed canonical forms.
+    Uses the REAL provider modules (no fakes) -- this is exactly the check
+    that failed live, with faster-whisper/pyttsx3/openwakeword genuinely
+    installed but WILLIAM_STT_PROVIDER=faster_whisper_local (etc.) still
+    reporting external_dependency_required."""
+
+    def test_stt_accepts_local_suffixed_alias(self, monkeypatch) -> None:
+        from apps.worker_nodes.voice.providers import stt as real_stt
+
+        monkeypatch.setenv("WILLIAM_STT_PROVIDER", "faster_whisper_local")
+        assert real_stt.check_status()["configured"] is True
+
+    def test_tts_accepts_local_suffixed_alias(self, monkeypatch) -> None:
+        from apps.worker_nodes.voice.providers import tts as real_tts
+
+        monkeypatch.setenv("WILLIAM_TTS_PROVIDER", "pyttsx3_local")
+        assert real_tts.check_status()["configured"] is True
+
+    def test_wake_word_accepts_local_suffixed_alias(self, monkeypatch) -> None:
+        from apps.worker_nodes.voice.providers import wake_word as real_wake_word
+
+        monkeypatch.setenv("WILLIAM_WAKE_WORD_PROVIDER", "openwakeword_local")
+        assert real_wake_word.check_status()["configured"] is True
+
+    def test_provider_env_is_read_fresh_from_this_process_every_call(self, monkeypatch) -> None:
+        """Item 8: provider env values are read fresh from THIS process's
+        os.environ on every check_status() call -- never cached at import
+        time -- which is what makes it correct for the worker to use its
+        own local env for the real-listening gate rather than trusting the
+        backend process's (possibly different-machine) view."""
+        from apps.worker_nodes.voice.providers import stt as real_stt
+
+        monkeypatch.delenv("WILLIAM_STT_PROVIDER", raising=False)
+        assert real_stt.check_status()["configured"] is False
+        monkeypatch.setenv("WILLIAM_STT_PROVIDER", "faster_whisper_local")
+        assert real_stt.check_status()["configured"] is True
+
+
+class TestListeningGateIgnoresTtsAndSpeakerRecognition:
+    """Wake-word listening gate fix: only audio_input_worker/stt_provider/
+    wake_word_provider actually gate _run_wake_word_admin_loop's real
+    always-listening loop -- tts_provider/speaker_recognition_provider
+    missing must never keep the worker in the safe idle loop, and the
+    dependency_required message (when something IS genuinely missing) must
+    never name tts_provider/speaker_recognition_provider as blockers."""
+
+    @staticmethod
+    def _fake_listener_stops_immediately() -> Any:
+        class _FakeListener:
+            def listen_until_detected(self, max_seconds: float | None = None) -> Dict[str, Any]:
+                raise KeyboardInterrupt
+
+            def stop(self) -> None:
+                pass
+
+        return _FakeListener()
+
+    def test_enters_listening_when_tts_missing(self, monkeypatch) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        class _FakeProviderStatusModule:
+            @staticmethod
+            def get_full_status() -> Dict[str, Any]:
+                return {
+                    "always_listening_available": True,  # audio/stt/wake_word all configured
+                    "missing_dependencies": ["tts_provider"],  # TTS genuinely missing
+                    "always_listening_blocking_dependencies": [],  # never a blocker
+                }
+
+        monkeypatch.setattr(voice_worker_module, "provider_status_module", _FakeProviderStatusModule())
+
+        listener = self._fake_listener_stops_immediately()
+
+        class _FakeWakeWordProvider:
+            @staticmethod
+            def WakeWordListener() -> Any:  # noqa: N802
+                return listener
+
+        monkeypatch.setattr(voice_worker_module, "wake_word_provider", _FakeWakeWordProvider())
+
+        idle_loop_calls: List[bool] = []
+        monkeypatch.setattr(worker, "_run_idle_loop", lambda: idle_loop_calls.append(True))
+
+        try:
+            worker._run_wake_word_admin_loop("wake_word_admin")
+        except KeyboardInterrupt:
+            pass
+
+        assert idle_loop_calls == []  # never fell back to idle just because TTS is missing
+
+    def test_dependency_required_message_lists_only_true_blockers(self, monkeypatch, caplog) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+
+        class _FakeProviderStatusModule:
+            @staticmethod
+            def get_full_status() -> Dict[str, Any]:
+                return {
+                    "always_listening_available": False,
+                    "missing_dependencies": ["stt_provider", "tts_provider", "speaker_recognition_provider"],
+                    "always_listening_blocking_dependencies": ["stt_provider"],
+                }
+
+        monkeypatch.setattr(voice_worker_module, "provider_status_module", _FakeProviderStatusModule())
+        monkeypatch.setattr(worker, "_run_idle_loop", lambda: None)
+
+        with caplog.at_level(logging.INFO, logger=voice_worker_module.LOGGER_NAME):
+            worker._run_wake_word_admin_loop("wake_word_admin")
+
+        messages = "\n".join(record.message for record in caplog.records)
+        assert "dependency_required" in messages
+        assert "stt_provider" in messages
+        assert "tts_provider" not in messages
+        assert "speaker_recognition_provider" not in messages
+
+    def test_prints_listening_for_wake_word_message(self, monkeypatch, capsys) -> None:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        monkeypatch.setenv("WILLIAM_WAKE_WORD_PHRASE", "hey_jarvis")
+
+        class _FakeProviderStatusModule:
+            @staticmethod
+            def get_full_status() -> Dict[str, Any]:
+                return {
+                    "always_listening_available": True,
+                    "missing_dependencies": [],
+                    "always_listening_blocking_dependencies": [],
+                }
+
+        monkeypatch.setattr(voice_worker_module, "provider_status_module", _FakeProviderStatusModule())
+
+        listener = self._fake_listener_stops_immediately()
+
+        class _FakeWakeWordProvider:
+            @staticmethod
+            def WakeWordListener() -> Any:  # noqa: N802
+                return listener
+
+            @staticmethod
+            def resolve_bundled_model_name() -> Dict[str, Any]:
+                return {"model_name": "hey_jarvis", "matched_configured_phrase": True, "configured_phrase": "hey_jarvis"}
+
+        monkeypatch.setattr(voice_worker_module, "wake_word_provider", _FakeWakeWordProvider())
+
+        try:
+            worker._run_wake_word_admin_loop("wake_word_admin")
+        except KeyboardInterrupt:
+            pass
+
+        captured = capsys.readouterr()
+        assert "Listening for wake word: Hey Jarvis" in captured.out
+
+
+class TestTtsAndSpeakerRecognitionOptionalForCommandExecution:
+    """Wake-word listening gate fix items 2-4: TTS and speaker recognition
+    must never block command execution once a transcript is in hand
+    (either from real STT or typed text) -- only a locally-recognized
+    sensitive/private/risky transcript is held back when no
+    speaker-recognition provider is configured, and even then only that
+    specific command, never TTS."""
+
+    @staticmethod
+    def _build_bare_worker() -> Tuple[VoiceWorker, FakeTransport]:
+        config = VoiceWorkerConfig(api_base_url="http://fake-backend.invalid/api/v1", token="fake-jwt-token")
+        worker = VoiceWorker(config)
+        transport = FakeTransport(
+            {
+                "/voice/push-to-talk/text": _envelope(
+                    data={
+                        "final_answer": "Done boss, notepad is opening.",
+                        "status": "completed",
+                        "route": ["system"],
+                        "worker_task_id": "wtask_fake789",
+                        "speech_output_status": "tts_missing",
+                    }
+                ),
+            }
+        )
+        worker._client._request = transport  # type: ignore[method-assign]
+        return worker, transport
+
+    def test_missing_tts_does_not_block_command_execution(self, monkeypatch) -> None:
+        worker, transport = self._build_bare_worker()
+        monkeypatch.delenv("WILLIAM_TTS_PROVIDER", raising=False)
+        monkeypatch.setenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", "test_provider")
+
+        sent = worker._send_transcript_and_respond("open Notepad")
+
+        assert sent is True
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" in called_paths
+
+    def test_missing_speaker_recognition_does_not_block_normal_command(self, monkeypatch) -> None:
+        worker, transport = self._build_bare_worker()
+        monkeypatch.delenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", raising=False)
+
+        sent = worker._send_transcript_and_respond("open Notepad")
+
+        assert sent is True
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" in called_paths
+
+    def test_missing_speaker_recognition_blocks_only_sensitive_command(self, monkeypatch, caplog) -> None:
+        worker, transport = self._build_bare_worker()
+        monkeypatch.delenv("WILLIAM_SPEAKER_RECOGNITION_PROVIDER", raising=False)
+
+        with caplog.at_level(logging.INFO, logger=voice_worker_module.LOGGER_NAME):
+            sent = worker._send_transcript_and_respond("please delete all my files")
+
+        assert sent is False
+        called_paths = [path for _, path, _ in transport.calls]
+        assert "/voice/push-to-talk/text" not in called_paths
+        messages = "\n".join(record.message for record in caplog.records)
+        assert "Sensitive voice verification unavailable; normal voice commands still work." in messages
+
+
+class TestWakeWordAdminSimulateTextRoutesToWindowsWorker:
+    """Item 9: "Hey Jarvis open Notepad" (typed/simulated) must reach the
+    same real dispatcher normal push-to-talk-text commands do -- "jarvis"
+    is always one of the local text-detector's default wake words (see
+    _build_wake_detector), independent of the workspace's configured
+    wake_word phrase."""
+
+    def test_hey_jarvis_open_notepad_routes_through_dispatcher(self) -> None:
+        worker, transport = _build_worker("Hey Jarvis open Notepad", mode="wake_word_admin")
+
+        exit_code = worker.run()
+
+        assert exit_code == 0
+        push_to_talk_calls = [
+            payload for method, path, payload in transport.calls if path == "/voice/push-to-talk/text"
+        ]
+        assert len(push_to_talk_calls) == 1
+        assert "notepad" in push_to_talk_calls[0]["text"].lower()
